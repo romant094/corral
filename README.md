@@ -14,6 +14,8 @@ An agent board layout for [Herdr](https://herdr.dev). Every Claude Code session 
 - **Live workspace.** Plain terminals of the active space as chips: drag to reorder, drop on Right or Below to show one beside the active pane, double-click to rename. Split buttons and context use in each pane header.
 - **Files.** The agent's folder as a tree, with git marks (M, A, D). A read-only code view with selection, copy and syntax colors.
 - **Changes.** `git status` and `git diff HEAD` of the agent's folder, refreshed every 4 seconds. Pick another worktree of the repository from a searchable list. Changed files show as a folder tree or a flat list ("Group by directory", kept per repository).
+- **Log.** Branch tree, commit list with a graph of lanes, and the details of the picked commit; click a changed file to see its diff in a fourth panel. Search by subject, hash or author.
+- **Compact.** A button by the context use in an agent's pane header sends `/compact` to it, after a confirmation.
 - **Paths.** Right-click a file or folder in Files or Changes to copy its relative or absolute path, or press ⌘⇧C / ⌥⇧C (Ctrl+Shift+C / Alt+Shift+C on Linux and Windows).
 - **Resizable panels.** Drag the divider in Files and Changes; each agent keeps its own width.
 - **Light and dark.** The layout follows the system appearance: `one-light` or `one-dark`. Code colors follow the theme.
