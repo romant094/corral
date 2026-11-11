@@ -28,6 +28,7 @@ const SYNC_MS = 500;
 const GIT_MS = 4000;
 const ROW_H = 20;
 const WT_POPUP_MAX = 460;
+const POPUP_MAX = 560;
 const LIMIT_LABELS = { five_hour: "5h", seven_day: "7d" };
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -90,7 +91,27 @@ const visibleAgents = (active) => {
 const closedProjects = () => projects().filter(p => !spaces().some(s => s.folder === p.folder && !s.machine));
 const spacesPopupHeight = () => {
   const closed = closedProjects().length;
-  return 40 + spaces().length * 52 + (closed ? 26 + closed * 52 : 0) + 64;
+  return Math.min(POPUP_MAX, 84 + spaces().length * 54 + (closed ? 26 + closed * 54 : 0) + 64);
+};
+const matches = (q, ...texts) => !q || texts.some(t => (t ?? "").toLowerCase().includes(q));
+// macOS: a native dialog that takes several folders at once. Elsewhere, or if it can't run, Herdr's single picker.
+const pickFolders = async () => {
+  const script = [
+    "activate",
+    'set picked to choose folder with prompt "Add projects" with multiple selections allowed',
+    'set out to ""',
+    "repeat with f in picked",
+    "set out to out & POSIX path of f & linefeed",
+    "end repeat",
+    "return out",
+  ];
+  try {
+    const r = await exec("osascript", script.flatMap(line => ["-e", line]), { timeout: 600000 });
+    if (r.code === 0) return r.stdout.split("\n").map(f => f.trim().replace(/\/$/, "")).filter(Boolean);
+    if (r.stderr.includes("-128")) return [];
+  } catch { /* not macOS */ }
+  const folder = await pickFolder({ prompt: "Add project" });
+  return folder ? [folder] : [];
 };
 const removeProject = (folder) => setShared(PROJECTS_KEY, projects().filter(p => p.folder !== folder));
 // Reuse the project's space when one is open there; otherwise start a space for it.
@@ -138,14 +159,24 @@ const LANGUAGES = {
   yml: "yaml", yaml: "yaml", toml: "toml", html: "html", css: "css", c: "c", h: "c", cpp: "cpp", hpp: "cpp",
   java: "java", rb: "ruby", sql: "sql", swift: "swift", kt: "kotlin", lua: "lua", diff: "diff",
 };
-const SYNTAX = {
+const SYNTAX_DARK = {
   keyword: "#b477cf", string: "#a1c181", "string.escape": "#878a97", comment: "#5d636f", function: "#73ade9",
   type: "#6eb4bf", number: "#bf956a", boolean: "#bf956a", constant: "#dfc184", variable: "#dce0e5",
   operator: "#6eb4bf", punctuation: "#acb2be",
 };
+const SYNTAX_LIGHT = {
+  keyword: "#a626a4", string: "#50a14f", "string.escape": "#0184bc", comment: "#a0a1a7", function: "#4078f2",
+  type: "#c18401", number: "#986801", boolean: "#986801", constant: "#986801", variable: "#383a41",
+  operator: "#0184bc", punctuation: "#383a41",
+};
+// Light or dark by the theme's background, so code colors read on either.
+const isLight = () => {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(theme().background ?? "");
+  return !!m && (0.299 * parseInt(m[1], 16) + 0.587 * parseInt(m[2], 16) + 0.114 * parseInt(m[3], 16)) > 140;
+};
 const languageOf = (path) => LANGUAGES[path.split("/").pop().split(".").pop().toLowerCase()];
 const newEditor = (path) => {
-  const options = { readonly: true, line_numbers: true, folding: false, soft_wrap: false, font_family: "Geist Mono", font_size: 12, syntax: SYNTAX };
+  const options = { readonly: true, line_numbers: true, folding: false, soft_wrap: false, font_family: "Geist Mono", font_size: 12, syntax: isLight() ? SYNTAX_LIGHT : SYNTAX_DARK };
   const language = languageOf(path);
   try { return EditorState.new(language ? { ...options, language } : options); } catch { return EditorState.new(options); }
 };
@@ -176,6 +207,11 @@ export default class Board extends View {
   init(p, cx) {
     this.observed = {};
     this.confirming = null;
+    if (p?.role === "spaces") {
+      this.spaceSearch = InputState.new({ placeholder: "Filter spaces and projects" });
+      this.spaceSearch.on("change", (_e, cx) => cx.notify());
+      this.spaceSearch.focus();
+    }
     if (p?.role === "worktrees") {
       this.wtSearch = InputState.new({ placeholder: "Search branch or path" });
       this.wtSearch.on("change", (_e, cx) => cx.notify());
@@ -693,47 +729,56 @@ export default class Board extends View {
     const all = agents();
     const saved = new Set(projects().map(p => p.folder));
     const section = (label) => div().px(10).pt(6).pb(2).text_size(10).text_color(C.muted).child(label);
-    const row = (id, onClick) => h_flex().id(id).gap(10).items_center().px(10).py(8).rounded(6).cursor_pointer()
+    const row = (id, onClick) => h_flex().id(id).flex_none().gap(10).items_center().px(10).py(8).rounded(6).cursor_pointer()
       .hover(st => st.bg(C.selected)).on_click(onClick);
     const details = (name, folder) => v_flex().flex_1().min_w(0).gap(2)
       .child(div().text_size(13).font_semibold().truncate().child(name))
       .child(div().font_family("Geist Mono").text_size(11).text_color(C.muted).truncate().child(tilde(folder) || "~"));
-    const closed = closedProjects();
+    const q = (this.spaceSearch?.value() ?? "").trim().toLowerCase();
+    const open = spaces().filter(s => matches(q, s.name, s.folder, tilde(s.folder)));
+    const closed = closedProjects().filter(p => matches(q, p.name, p.folder, tilde(p.folder)));
     return v_flex().size_full().p(6).gap(2).bg(C.bg).text_color(C.ink)
-      .child(section("SPACES"))
-      .children(spaces().map(s => {
-        const n = all.filter(a => a.space === s.id).length;
-        const isSaved = saved.has(s.folder);
-        return row(`space-${s.id}`, () => { run("space.select", { id: s.id }); closeOverlay(overlay); })
-          .when(s.active, el => el.bg(C.selected))
-          .child(dot(states().find(x => x.key === s.status)?.color ?? C.dim, 8))
-          .child(details(s.name, s.folder))
-          .child(div().text_size(11).text_color(C.muted).flex_none().child(n ? `${n} agent${n > 1 ? "s" : ""}` : "no agents"))
-          .when(isSaved, el => el.child(div().text_size(10).text_color(C.accent).flex_none().tooltip("Saved project").child("PROJECT")))
-          .when(!isSaved && !!s.folder && !s.machine, el => el.child(chip(C, `save-${s.id}`, "Save", false, (_e, cx) => {
-            cx.stop_propagation();
-            setShared(PROJECTS_KEY, [...projects(), { name: baseName(s.folder), folder: s.folder }]);
-          })));
-      }))
-      .when(closed.length > 0, el => el.child(section("PROJECTS"))
-        .children(closed.map(p => row(`open-${p.folder}`, () => { openProject(p); closeOverlay(overlay); })
-          .tooltip("Open a space here and start Claude")
-          .child(div().size(8).rounded(2).bg(C.accent).flex_none())
-          .child(details(p.name, p.folder))
-          .child(div().text_size(11).text_color(C.muted).flex_none().child("not open"))
-          .child(xButton(C, `remove-${p.folder}`, "Remove project", () => removeProject(p.folder), 20)))))
+      .when(!!this.spaceSearch, el => el.child(div().px(4).pt(4).pb(4).text_size(12).child(Input.new(this.spaceSearch))))
+      .child(v_flex().id("space-list").flex_1().min_h(0).overflow_y_scrollbar().gap(2)
+        .when(open.length > 0, el => el.child(section("SPACES")))
+        .children(open.map(s => {
+          const n = all.filter(a => a.space === s.id).length;
+          const isSaved = saved.has(s.folder);
+          return row(`space-${s.id}`, () => { run("space.select", { id: s.id }); closeOverlay(overlay); })
+            .when(s.active, el => el.bg(C.selected))
+            .child(dot(states().find(x => x.key === s.status)?.color ?? C.dim, 8))
+            .child(details(s.name, s.folder))
+            .child(div().text_size(11).text_color(C.muted).flex_none().child(n ? `${n} agent${n > 1 ? "s" : ""}` : "no agents"))
+            .when(isSaved, el => el.child(div().text_size(10).text_color(C.accent).flex_none().tooltip("Saved project").child("PROJECT")))
+            .when(!isSaved && !!s.folder && !s.machine, el => el.child(chip(C, `save-${s.id}`, "Save", false, (_e, cx) => {
+              cx.stop_propagation();
+              setShared(PROJECTS_KEY, [...projects(), { name: baseName(s.folder), folder: s.folder }]);
+            })));
+        }))
+        .when(closed.length > 0, el => el.child(section("PROJECTS"))
+          .children(closed.map(p => row(`open-${p.folder}`, () => { openProject(p); closeOverlay(overlay); })
+            .tooltip("Open a space here and start Claude")
+            .child(div().size(8).rounded(2).bg(C.accent).flex_none())
+            .child(details(p.name, p.folder))
+            .child(div().text_size(11).text_color(C.muted).flex_none().child("not open"))
+            .child(xButton(C, `remove-${p.folder}`, "Remove project", () => removeProject(p.folder), 20)))))
+        .when(!open.length && !closed.length, el => el.child(div().px(10).py(12).text_size(12).text_color(C.muted)
+          .child("Nothing matches."))))
       .child(div().h(1).mx(4).my(6).bg(C.line))
       .child(row("project-add", (_e, cx) => cx.spawn(async () => {
-        const folder = await pickFolder({ prompt: "Add project" });
+        const folders = await pickFolders();
         closeOverlay(overlay);
-        if (!folder) return;
-        if (!projects().some(p => p.folder === folder)) {
-          setShared(PROJECTS_KEY, [...projects(), { name: baseName(folder), folder }]);
-        }
-        openProject({ name: baseName(folder), folder });
+        if (!folders.length) return;
+        const known = new Set(projects().map(p => p.folder));
+        const added = folders.filter(f => !known.has(f)).map(folder => ({ name: baseName(folder), folder }));
+        if (added.length) setShared(PROJECTS_KEY, [...projects(), ...added]);
+        // One folder opens at once; several are only saved, to open from this list.
+        if (folders.length === 1) openProject({ name: baseName(folders[0]), folder: folders[0] });
+        else notify({ title: `Added ${added.length} project${added.length === 1 ? "" : "s"}`,
+          body: "Open them from the space list.", level: "info", timeout: 3000 });
       }))
         .text_size(12).text_color(C.muted).hover(st => st.text_color(C.ink))
-        .child("+").child("Add project… (opens a space with Claude)"));
+        .child("+").child("Add projects… (one opens a space with Claude)"));
   }
   // Inline tab rename in a terminal chip: Enter or leaving the field saves, an empty name keeps the old one.
   startRename(tab, old, cx) {

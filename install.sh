@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs Corral into Herdr: the layout, the mod and the one-dark theme.
+# Installs Corral into Herdr: the layout, the mod and the one-dark and one-light themes.
 # With --statusline it also installs the Claude Code statusline hook that feeds the cards.
 # With --link the code and the layout are symlinks to this checkout, so edits apply at once.
 # Icons stay copies: Herdr does not load SVGs through a symlinked folder.
@@ -43,7 +43,7 @@ else
 fi
 cp "$SRC/mods/corral/mod.json" "$SRC/mods/corral/preview.svg" "$HERDR_HOME/mods/corral/"
 cp "$SRC"/mods/corral/icons/*.svg "$HERDR_HOME/mods/corral/icons/"
-cp "$SRC/themes/one-dark.json" "$HERDR_HOME/themes/one-dark.json"
+cp "$SRC"/themes/*.json "$HERDR_HOME/themes/"
 echo "Installed the corral layout into $HERDR_HOME$($link && echo " (main.js and the layout linked to $SRC)")."
 
 if command -v herdr-app >/dev/null 2>&1; then

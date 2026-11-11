@@ -1,5 +1,5 @@
 {
-  "id": "root", "type": "column", "titlebar": "none", "theme": "one-dark", "preview": "mods/corral/preview.svg",
+  "id": "root", "type": "column", "titlebar": "none", "theme": { "light": "one-light", "dark": "one-dark" }, "preview": "mods/corral/preview.svg",
   "ui_font": "Geist", "font_size": 13,
   "terminal_padding": [12, 10], "gap": 0, "resizable": false,
   "children": [
