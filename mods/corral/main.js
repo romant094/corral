@@ -1,8 +1,8 @@
 import { View, div, svg, image, uniform_list } from "gpui-kit";
-import { h_flex, v_flex, Input, InputState, Editor, EditorState } from "gpui-base";
+import { h_flex, v_flex, Input, InputState, Editor, EditorState, h_resizable, resizable_panel } from "gpui-base";
 import {
   agents, spaces, panes, props, run, setAgentOrder, theme, shared, setShared, pickFolder,
-  home, hc, exec, readTextFile, openOverlay, closeOverlay, notify,
+  home, hc, exec, readTextFile, openOverlay, closeOverlay, notify, window as appWindow,
 } from "herdr";
 import * as fs from "fs/promises";
 
@@ -21,6 +21,20 @@ const GIT_KEY = "corral.git";
 // Files: show dotfiles. Changes/Files: a worktree picked for an agent, { address, path }.
 const HIDDEN_KEY = "corral.hidden";
 const WORKTREE_KEY = "corral.worktree";
+// Side panel widths in Files and Changes, per agent: { [address]: { files, changes } }.
+const WIDTHS_KEY = "corral.widths";
+const SIDE_WIDTH = { files: 280, changes: 320 };
+// Changes as a folder tree (the default) or a flat list, per repository: { [root]: boolean }.
+const CHANGE_TREE_KEY = "corral.changeTree";
+const changeTree = () => {
+  const root = gitState().root;
+  const saved = shared(CHANGE_TREE_KEY);
+  return (saved && typeof saved === "object" ? saved[root] : undefined) ?? true;
+};
+const setChangeTree = (on) => {
+  const saved = shared(CHANGE_TREE_KEY);
+  setShared(CHANGE_TREE_KEY, { ...(saved && typeof saved === "object" ? saved : {}), [gitState().root]: on });
+};
 const ATTENTION = ["blocked", "done"];
 const RELOAD_MS = 3000;
 const PID_RETRY_MS = 10000;
@@ -54,6 +68,15 @@ const searchField = (C, state) => h_flex().flex_none().h(32).mx(4).mb(4).px(10).
   .child(div().flex_1().min_w(0).child(Input.new(state)));
 // The picker sits after the view switch and the slash; its popups open under it.
 const PICKER_X = 310;
+// Copy-path chords: Cmd on macOS, Ctrl elsewhere (GPUI's "cmd" is the Windows/Super key there).
+// The window is not there while the module loads, so this is asked on use.
+const copyKeys = () => (appWindow()?.platform ?? "macos") === "macos"
+  ? { relative: "cmd-shift-c", absolute: "alt-shift-c", relLabel: "⌘⇧C", absLabel: "⌥⇧C" }
+  : { relative: "ctrl-shift-c", absolute: "alt-shift-c", relLabel: "Ctrl+Shift+C", absLabel: "Alt+Shift+C" };
+const copyText = (cx, text) => {
+  cx.write_to_clipboard(text);
+  notify({ title: "Path copied", body: text, level: "info", timeout: 2000 });
+};
 const pctColor = (C, pct) => pct >= 80 ? C.danger : pct >= 60 ? theme().blocked : C.accent;
 const tilde = (path) => {
   const h = home();
@@ -256,6 +279,12 @@ export default class Board extends View {
     cx.timer.every(30000, (cx) => cx.notify());
     // Only the board copy reads the session files; the header and pane copies read its shared summary.
     if (!p?.role) {
+      this.treeFocus = cx.focus_handle();
+      const keys = copyKeys();
+      cx.bind_keys([
+        { keystroke: keys.relative, action: "corral-copy-relative", context: "CorralPaths" },
+        { keystroke: keys.absolute, action: "corral-copy-absolute", context: "CorralPaths" },
+      ]);
       // Saved projects from the Board layout this grew out of come along once.
       if (shared(PROJECTS_KEY) == null && shared("board.projects")) setShared(PROJECTS_KEY, shared("board.projects"));
       this.dir = `${home()}/.cache/corral/sessions`;
@@ -270,6 +299,7 @@ export default class Board extends View {
       this.dirs = {};
       this.dirError = null;
       this.file = null;
+      this.treeSel = null;
       this.changeSel = null;
       this.diff = null;
       this.gitAt = 0;
@@ -288,6 +318,7 @@ export default class Board extends View {
       this.dirs = {};
       this.dirError = null;
       this.file = null;
+      this.treeSel = null;
       this.changeSel = null;
       this.diff = null;
       this.gitAt = 0;
@@ -365,6 +396,7 @@ export default class Board extends View {
     // Created here, in the click: editor state can't be made during render.
     this.editor?.release();
     this.editor = newEditor(path);
+    this.treeSel = path;
     this.file = { path, lines: null, note: "Loading…" };
     cx.notify();
     cx.spawn(async (cx) => {
@@ -650,8 +682,42 @@ export default class Board extends View {
       .child(div().font_family("Geist Mono").text_size(11).text_color(C.dim).truncate().child(tilde(g.root ?? viewFolder() ?? "")))
       .child(div().flex_1())
       .when(!!g.root, el => el
+        .child(chip(C, "group-by-dir", "Group by directory", changeTree(),
+          () => setChangeTree(!changeTree())))
         .child(div().text_size(12).text_color(C.muted).flex_none().child(`${g.files.length} file${g.files.length === 1 ? "" : "s"}`))
         .child(num(`+${add}`, theme().done)).child(num(`−${del}`, C.danger)));
+  }
+  // Changed files grouped by folder. A folder holding only one folder joins it in one row ("apps/extension/src").
+  changeTree(files) {
+    this.changeCollapsed ??= new Set();
+    const node = () => ({ dirs: new Map(), files: [] });
+    const root = node();
+    for (const f of files) {
+      let n = root;
+      for (const part of f.path.split("/").slice(0, -1)) {
+        if (!n.dirs.has(part)) n.dirs.set(part, node());
+        n = n.dirs.get(part);
+      }
+      n.files.push(f);
+    }
+    const count = (n) => n.files.length + [...n.dirs.values()].reduce((sum, d) => sum + count(d), 0);
+    const rows = [];
+    const walk = (n, prefix, depth) => {
+      for (const [name, first] of [...n.dirs].sort((x, y) => x[0].localeCompare(y[0]))) {
+        let d = first, label = name, path = prefix + name;
+        while (d.files.length === 0 && d.dirs.size === 1) {
+          const [[next, inner]] = [...d.dirs];
+          label += "/" + next;
+          path += "/" + next;
+          d = inner;
+        }
+        rows.push({ dir: true, path, label, depth, count: count(d) });
+        if (!this.changeCollapsed.has(path)) walk(d, path + "/", depth + 1);
+      }
+      for (const f of [...n.files].sort((x, y) => x.path.localeCompare(y.path))) rows.push({ dir: false, file: f, depth });
+    };
+    walk(root, "", 0);
+    return rows;
   }
   // Branch of the shown folder; with more than one worktree it opens a list of them.
   worktreePicker(C) {
@@ -1013,16 +1079,24 @@ export default class Board extends View {
     if (g.root) for (const f of g.files) marks[`${g.root}/${f.path}`] = f.mark;
     const rows = this.treeRows();
     const file = this.file;
-    const tree = this.panel(C).w(280).flex_none().p(6)
+    const tree = this.panel(C).size_full().p(6).when(!!this.treeFocus, el => el.track_focus(this.treeFocus))
       .when(rows.length === 0, el => el.child(div().p(8).text_size(12).text_color(C.muted)
         .child(this.dirError ? `Can't read the folder: ${this.dirError}` : this.dirs[this.folder] ? "Empty folder." : "Loading…")))
       .child(v_flex().id("tree").flex_1().min_h(0).overflow_y_scrollbar().gap(1).children(rows.map(r => {
-        const selected = !r.dir && file?.path === r.path;
+        const selected = (this.treeSel ?? file?.path) === r.path;
         const mark = marks[r.path];
         return h_flex().id(`row-${r.path}`).h(24).flex_none().pl(8 + r.depth * 16).pr(8).gap(6).items_center().rounded(5)
           .bg(selected ? theme().selection ?? C.selected : C.card).hover(s => s.bg(selected ? theme().selection ?? C.selected : C.bar))
           .cursor_pointer().text_size(12).text_color(mark === "D" ? C.dim : C.ink)
-          .on_click((_e, cx) => r.dir ? this.toggleDir(r.path, cx) : this.openFile(r.path, cx))
+          .on_click((_e, cx) => {
+            this.treeSel = r.path;
+            this.treeFocus?.focus();
+            r.dir ? this.toggleDir(r.path, cx) : this.openFile(r.path, cx);
+          })
+          .on_mouse_down("right", (e, cx) => {
+            this.treeSel = r.path;
+            this.openPathMenu(e, r.path, cx);
+          })
           .child(r.dir
             ? svg(`mods/${MOD}/icons/${this.expanded.has(r.path) ? "chevron-down" : "chevron-right"}.svg`).size(11).text_color(C.dim).flex_none()
             : div().size(11).flex_none())
@@ -1050,8 +1124,48 @@ export default class Board extends View {
         ? div().flex_1().min_h(0).py(4).child(Editor.new(this.editor).size_full())
         : this.empty(C, file.note));
     }
-    return v_flex().size_full().px(24).pt(14).pb(16).bg(C.bg)
-      .child(h_flex().flex_1().min_h(0).gap(12).items_stretch().child(tree).child(this.panel(C).flex_1().children(body)));
+    return this.pathKeys(v_flex().size_full().px(24).pt(14).pb(16).bg(C.bg), () => this.treeSel ?? file?.path)
+      .child(this.split("files", tree, this.panel(C).size_full().children(body)));
+  }
+  // The side panel and the main one with a draggable divider. Each agent keeps its own width.
+  split(kind, side, main) {
+    const key = targetAgent()?.address ?? "none";
+    const saved = (shared(WIDTHS_KEY) ?? {})[key]?.[kind];
+    return h_resizable(`${kind}-${key}`).flex_1().min_h(0)
+      .on_resize((sizes) => {
+        const all = shared(WIDTHS_KEY) ?? {};
+        setShared(WIDTHS_KEY, { ...all, [key]: { ...all[key], [kind]: Math.round(sizes[0]) } });
+      })
+      .child(resizable_panel().size(saved ?? SIDE_WIDTH[kind]).size_range(180, 900).child(div().size_full().pr(6).child(side)))
+      .child(resizable_panel().child(div().size_full().pl(6).child(main)));
+  }
+  // Copy-path chords work while the view holds the keyboard; target() names the picked path.
+  pathKeys(el, target) {
+    return el.key_context("CorralPaths")
+      .on_action("corral-copy-relative", (_e, cx) => target() && copyText(cx, relPath(this.projectRoot(), target())))
+      .on_action("corral-copy-absolute", (_e, cx) => target() && copyText(cx, target()));
+  }
+  openPathMenu(e, path, cx) {
+    this.treeFocus?.focus();
+    cx.notify();
+    openOverlay({ mod: MOD, props: { role: "pathmenu", path, root: this.projectRoot() }, kind: "popup",
+      width: 280, height: 92, at: { x: Math.round(e.position.x), y: Math.round(e.position.y) } });
+  }
+  // Relative paths start at the repository root, or at the agent folder outside git.
+  projectRoot() {
+    return gitState().root ?? this.folder;
+  }
+  pathMenu(C) {
+    const { path, root, overlay } = props();
+    const item = (id, label, keys, text) => h_flex().id(id).h(36).px(10).gap(10).items_center().rounded(6).cursor_pointer()
+      .hover(st => st.bg(C.selected))
+      .on_click((_e, cx) => { copyText(cx, text); closeOverlay(overlay); })
+      .child(svg(`mods/${MOD}/icons/copy.svg`).size(13).text_color(C.muted).flex_none())
+      .child(div().flex_1().text_size(13).child(label))
+      .child(div().flex_none().font_family("Geist Mono").text_size(11).text_color(C.muted).child(keys));
+    return v_flex().w_full().h(92).p(6).gap(2).bg(C.bg).text_color(C.ink)
+      .child(item("copy-relative", "Copy relative path", copyKeys().relLabel, relPath(root, path)))
+      .child(item("copy-absolute", "Copy absolute path", copyKeys().absLabel, path));
   }
   changesView(C) {
     const g = gitState();
@@ -1059,22 +1173,46 @@ export default class Board extends View {
     if (!g.root) return this.empty(C, `${tilde(this.folder)} is not a git repository.`);
     const sel = g.files.find(f => f.path === this.changeSel) ?? g.files[0];
     const num = (text, color) => div().font_family("Geist Mono").text_size(11).text_color(color).flex_none().child(text);
-    const list = this.panel(C).w(320).flex_none().p(6).gap(1)
+    const asTree = changeTree();
+    const pick = (path) => (_e, cx) => { this.changeSel = path; this.treeFocus?.focus(); this.loadDiff(cx); cx.notify(); };
+    const menu = (path, abs) => (e, cx) => {
+      if (path) { this.changeSel = path; this.loadDiff(cx); }
+      this.openPathMenu(e, abs, cx);
+    };
+    const fileRow = (f, depth) => {
+      const current = sel?.path === f.path;
+      const parts = f.path.split("/");
+      return h_flex().id(`change-${f.path}`).h(asTree ? 26 : 40).flex_none().pl(8 + depth * 16).pr(8).gap(8).items_center()
+        .rounded(5).cursor_pointer()
+        .bg(current ? theme().selection ?? C.selected : C.card).hover(s => s.bg(current ? theme().selection ?? C.selected : C.bar))
+        .on_click(pick(f.path))
+        .on_mouse_down("right", menu(f.path, `${g.root}/${f.path}`))
+        .child(div().w(18).flex_none().text_center().font_family("Geist Mono").text_size(11).font_semibold()
+          .text_color(markColor(f.mark)).child(f.mark))
+        .child(v_flex().flex_1().min_w(0)
+          .child(div().text_size(12).font_medium().text_color(C.ink).truncate().child(parts[parts.length - 1]))
+          .when(!asTree, el => el.child(div().font_family("Geist Mono").text_size(10).text_color(C.muted).truncate()
+            .child(parts.slice(0, -1).join("/") || "."))))
+        .child(num(`+${f.add}`, theme().done))
+        .when(f.del > 0, el => el.child(num(`−${f.del}`, C.danger)));
+    };
+    const dirRow = (r) => h_flex().id(`change-dir-${r.path}`).h(26).flex_none().pl(8 + r.depth * 16).pr(8).gap(6).items_center()
+      .rounded(5).cursor_pointer().hover(s => s.bg(C.bar)).text_size(12)
+      .on_click((_e, cx) => {
+        this.changeCollapsed.has(r.path) ? this.changeCollapsed.delete(r.path) : this.changeCollapsed.add(r.path);
+        cx.notify();
+      })
+      .on_mouse_down("right", menu(null, `${g.root}/${r.path}`))
+      .child(svg(`mods/${MOD}/icons/${this.changeCollapsed.has(r.path) ? "chevron-right" : "chevron-down"}.svg`)
+        .size(11).text_color(C.dim).flex_none())
+      .child(svg(`mods/${MOD}/icons/folder.svg`).size(13).text_color(C.accent).flex_none())
+      .child(div().flex_shrink(1).min_w(0).truncate().text_color(C.ink).child(r.label))
+      .child(div().flex_none().text_size(11).text_color(C.muted).child(`${r.count} file${r.count === 1 ? "" : "s"}`));
+    const list = this.panel(C).size_full().p(6).gap(1).when(!!this.treeFocus, el => el.track_focus(this.treeFocus))
       .child(v_flex().id("changed-files").flex_1().min_h(0).overflow_y_scrollbar().gap(1)
-        .children(g.files.map(f => {
-          const current = sel?.path === f.path;
-          const parts = f.path.split("/");
-          return h_flex().id(`change-${f.path}`).h(40).flex_none().px(8).gap(8).items_center().rounded(5).cursor_pointer()
-            .bg(current ? theme().selection ?? C.selected : C.card).hover(s => s.bg(current ? theme().selection ?? C.selected : C.bar))
-            .on_click((_e, cx) => { this.changeSel = f.path; this.loadDiff(cx); cx.notify(); })
-            .child(div().w(18).flex_none().text_center().font_family("Geist Mono").text_size(11).font_semibold()
-              .text_color(markColor(f.mark)).child(f.mark))
-            .child(v_flex().flex_1().min_w(0)
-              .child(div().text_size(12).font_medium().text_color(C.ink).truncate().child(parts[parts.length - 1]))
-              .child(div().font_family("Geist Mono").text_size(10).text_color(C.muted).truncate().child(parts.slice(0, -1).join("/") || ".")))
-            .child(num(`+${f.add}`, theme().done))
-            .when(f.del > 0, el => el.child(num(`−${f.del}`, C.danger)));
-        })));
+        .children(asTree
+          ? this.changeTree(g.files).map(r => r.dir ? dirRow(r) : fileRow(r.file, r.depth))
+          : g.files.map(f => fileRow(f, 0))));
     const body = [];
     if (!sel) {
       body.push(this.empty(C, "No uncommitted changes."));
@@ -1102,8 +1240,8 @@ export default class Board extends View {
         })).flex_1().py(6)
         : this.empty(C, "Loading…"));
     }
-    return v_flex().size_full().px(24).pt(14).pb(16).bg(C.bg)
-      .child(h_flex().flex_1().min_h(0).gap(12).items_stretch().child(list).child(this.panel(C).flex_1().children(body)));
+    return this.pathKeys(v_flex().size_full().px(24).pt(14).pb(16).bg(C.bg), () => sel && `${g.root}/${sel.path}`)
+      .child(this.split("changes", list, this.panel(C).size_full().children(body)));
   }
   render() {
     const C = palette();
@@ -1118,6 +1256,7 @@ export default class Board extends View {
     if (role === "worktrees") return this.worktreesPopup(C);
     if (role === "projectfilter") return this.projectFilterPopup(C);
     if (role === "statusfilter") return this.statusFilterPopup(C);
+    if (role === "pathmenu") return this.pathMenu(C);
     if (view() === "files") return this.filesView(C);
     if (view() === "changes") return this.changesView(C);
     const list = visibleAgents(active);
