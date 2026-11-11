@@ -1,5 +1,5 @@
 import { View, div, svg, image, uniform_list, PathBuilder } from "gpui-kit";
-import { h_flex, v_flex, Input, InputState, Editor, EditorState, h_resizable, resizable_panel } from "gpui-base";
+import { h_flex, v_flex, Input, InputState, Editor, EditorState, h_resizable, resizable_panel, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import {
   agents, spaces, panes, props, run, setAgentOrder, theme, shared, setShared, pickFolder,
   home, hc, exec, readTextFile, openOverlay, closeOverlay, notify, window as appWindow, layout,
@@ -41,14 +41,52 @@ const PID_RETRY_MS = 10000;
 const SYNC_MS = 250;
 const GIT_MS = 4000;
 const ROW_H = 20;
+// Changed-file trees: one indent step, and how far a file sits in from its folder (past the folder's chevron).
+const TREE_STEP = 20;
+const TREE_FILE = 17;
 // Log: how many commits one load reads, row height, lane pitch, and the search typed in the header.
-const LOG_MAX = 800;
+// The whole history loads, up to LOG_MAX; the first LOG_FIRST commits come first so the list shows at once.
+const LOG_MAX = 100000;
+const LOG_FIRST = 500;
 const LOG_ROW = 26;
 const LANE_W = 14;
 const LOG_MS = 10000;
-const LOG_QUERY_KEY = "corral.logQuery";
+// Log filters, set from the toolbar and its popups: a ref, authors, a start date, paths, and how the text search matches.
+const LOG_FILTER_KEY = "corral.logFilter";
+const logFilter = () => ({ ref: null, users: [], since: null, paths: [], regex: false, cs: false, ...(shared(LOG_FILTER_KEY) ?? {}) });
+const setLogFilter = (change) => setShared(LOG_FILTER_KEY, { ...logFilter(), ...change });
+// What the filter popups list: the repo's refs and the authors of the loaded commits.
+const LOG_META_KEY = "corral.logMeta";
+const SINCE = [["24 hours ago", "Last 24 hours"], ["7 days ago", "Last 7 days"], ["30 days ago", "Last 30 days"], ["1 year ago", "Last year"]];
+const shortRef = (ref) => ref.replace(/^refs\/(heads|remotes|tags)\//, "");
 // The terminal area under the bar: collapsed or not, and its height to come back to.
 const DOCK_KEY = "corral.dock";
+// Bumped after a git command changes refs, so the Log reloads at once.
+const GIT_BUMP_KEY = "corral.gitBump";
+// Branches with a push, update or checkout running: { [branch]: "Pushing…" }.
+const GIT_BUSY_KEY = "corral.gitBusy";
+// Starred refs per repository, shown on top of the tree: { [main checkout]: [refname] }.
+const FAV_KEY = "corral.favorites";
+const repoKey = (g) => g.worktrees[0]?.path ?? g.root;
+const favorites = (g) => (shared(FAV_KEY) ?? {})[repoKey(g)] ?? [];
+const toggleFavorite = (repo, ref) => {
+  const all = shared(FAV_KEY) ?? {};
+  const list = all[repo] ?? [];
+  setShared(FAV_KEY, { ...all, [repo]: list.includes(ref) ? list.filter(r => r !== ref) : [...list, ref] });
+};
+// Git commands asked for from a menu: the menu closes at once, so the board copy runs them.
+const GIT_JOBS_KEY = "corral.gitJobs";
+// Outcomes of queued jobs a dialog waits for: { [job id]: { ok, message } }.
+const GIT_RESULTS_KEY = "corral.gitResults";
+const queueGit = (job) => setShared(GIT_JOBS_KEY, [...(shared(GIT_JOBS_KEY) ?? []), { id: `${Date.now()}-${Math.random()}`, ...job }]);
+// Marks a branch busy while a git command runs on it.
+const gitBusy = async (name, label, work) => {
+  setShared(GIT_BUSY_KEY, { ...(shared(GIT_BUSY_KEY) ?? {}), [name]: label });
+  try { return await work(); } finally {
+    const { [name]: _done, ...rest } = shared(GIT_BUSY_KEY) ?? {};
+    setShared(GIT_BUSY_KEY, rest);
+  }
+};
 const DOCK_BAR = 40;
 const DOCK_MS = 200;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -87,7 +125,8 @@ const copyKeys = () => (appWindow()?.platform ?? "macos") === "macos"
   ? { relative: "cmd-shift-c", absolute: "alt-shift-c", relLabel: "⌘⇧C", absLabel: "⌥⇧C" }
   : { relative: "ctrl-shift-c", absolute: "alt-shift-c", relLabel: "Ctrl+Shift+C", absLabel: "Alt+Shift+C" };
 const copyText = (cx, text) => cx.write_to_clipboard(text);
-const pctColor = (C, pct) => pct >= 80 ? C.danger : pct >= 60 ? theme().blocked : C.accent;
+// Context and plan limits, colored as the statusline colors them: green under 50%, yellow under 80%, red from there.
+const ctxColor = (C, pct) => pct >= 80 ? C.danger : pct >= 50 ? theme().blocked : theme().done;
 const tilde = (path) => {
   const h = home();
   return path && path.startsWith(h) ? "~" + path.slice(h.length) : path ?? "";
@@ -233,6 +272,40 @@ const parseDiff = (text) => {
   }
   return lines;
 };
+// Runs a git command that changes the repository. A failure shows its last lines as an error;
+// answers the result so a dialog can show it too.
+// Git never waits for a password here: with no terminal to type it in, it fails at once and says why.
+const gitRun = async (root, args, done) => {
+  const r = await exec("env", ["GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=15", "git", ...args],
+    { cwd: root, timeout: 120000 }).catch(e => ({ code: 1, stdout: "", stderr: String(e) }));
+  setShared(GIT_BUMP_KEY, Date.now());
+  const message = (r.stderr || r.stdout || "").trim().split("\n").slice(-4).join("\n");
+  // Both outcomes toast at the "info" level, the one the toast mod is seen to show; a failure stays longer.
+  if (r.code !== 0) notify({ title: `git ${args[0]} failed`, body: message || undefined, level: "info", timeout: 8000 });
+  // A success says what was done, with git's last line under it ("main -> main", "Fast-forward"), when there is one.
+  else if (done) notify({ title: done, body: message.split("\n").pop() || undefined, level: "info", timeout: 3000 });
+  return { ok: r.code === 0, message };
+};
+// "ahead 1, behind 20" from %(upstream:track,nobracket).
+const trackCounts = (track) => ({
+  ahead: Number(track?.match(/ahead (\d+)/)?.[1] ?? 0),
+  behind: Number(track?.match(/behind (\d+)/)?.[1] ?? 0),
+});
+// Where a new worktree goes: beside the repo's other ones under .claude/worktrees, else next to the main checkout.
+const worktreePath = (g, name) => {
+  const main = g.worktrees[0]?.path ?? g.root;
+  const slug = name.trim().replace(/[\/\s]+/g, "-");
+  return g.worktrees.some(w => w.path.includes("/.claude/worktrees/"))
+    ? `${main}/.claude/worktrees/${slug}`
+    : `${main.replace(/\/[^/]+$/, "")}/${baseName(main)}-${slug}`;
+};
+// A color with alpha ("#rrggbbaa") laid over an opaque one, as one opaque color.
+const opaque = (color, under) => {
+  if (!/^#[0-9a-f]{8}$/i.test(color) || !/^#[0-9a-f]{6}/i.test(under)) return color;
+  const ch = (c, i) => parseInt(c.slice(i, i + 2), 16);
+  const a = ch(color, 7) / 255;
+  return "#" + [1, 3, 5].map(i => Math.round(ch(color, i) * a + ch(under, i) * (1 - a)).toString(16).padStart(2, "0")).join("");
+};
 const laneColors = () => { const t = theme(); return [t.ansi4, t.ansi2, t.ansi5, t.ansi3, t.ansi6, t.ansi1, t.ansi12, t.ansi14]; };
 const relPath = (root, path) => root && path.startsWith(root + "/") ? path.slice(root.length + 1) : path;
 // "Today 2:01 AM", "Yesterday 9:56 PM", "Nov 9, 11:15 PM", with the year when it isn't this one.
@@ -248,34 +321,72 @@ const logDate = (sec) => {
 };
 // Lanes for the commit graph, newest first. Each row keeps its commit's lane and the segments of
 // its upper half (lines coming in from above) and lower half (lines going on to the parents).
+// As in IntelliJ: an edge to a parent more than LONG_EDGE rows down is cut into a down arrow under the child
+// and an up arrow over the parent, and lanes close up to the left as soon as one frees, so the graph stays narrow.
+const LONG_EDGE = 30;
+// Lanes are { h: hash it waits for, col: color index }, or a stub { stub, col, to } that ends in the next row.
+// Segments are [from lane, to lane, color index]. A cut edge leaves the child as a line that runs on into the
+// next row and ends in a down arrow; the parent gets a lane one row early, starting with an up arrow.
+// `jump` is the commit a click on the row's arrow leads to.
 const layoutGraph = (commits) => {
-  const lanes = [];
-  const free = () => { const i = lanes.indexOf(null); return i < 0 ? lanes.length : i; };
-  return commits.map(c => {
-    let lane = lanes.indexOf(c.hash);
+  const rowOf = new Map(commits.map((c, i) => [c.hash, i]));
+  const cutFrom = new Map();
+  let lanes = [];
+  let colors = 0;
+  const at = (h) => lanes.findIndex(l => l && !l.stub && l.h === h);
+  return commits.map((c, i) => {
+    let lane = at(c.hash);
     const fresh = lane < 0;
-    if (fresh) { lane = free(); lanes[lane] = c.hash; }
+    if (fresh) { lane = lanes.length; lanes.push({ h: c.hash, col: colors++ }); }
+    const col = lanes[lane].col;
     const top = [];
-    lanes.forEach((h, j) => {
-      if (h == null || (fresh && j === lane)) return;
-      top.push([j, h === c.hash ? lane : j]);
-      if (h === c.hash && j !== lane) lanes[j] = null;
+    const tips = [];
+    lanes.forEach((l, j) => {
+      if (l == null || (fresh && j === lane)) return;
+      if (l.stub) { tips.push([j, l.col, l.to]); lanes[j] = null; return; }
+      top.push([j, l.h === c.hash ? lane : j, l.col]);
+      if (l.h === c.hash && j !== lane) lanes[j] = null;
     });
+    const near = (p) => rowOf.has(p) && rowOf.get(p) - i <= LONG_EDGE;
+    // The up arrow at the parent takes the color of the down arrow at the child, so the pair reads as one edge.
+    const cutTo = (p) => { if (!cutFrom.has(p)) cutFrom.set(p, { hash: c.hash, col }); };
     const [first, ...rest] = c.parents;
-    lanes[lane] = first ?? null;
     const bottom = [];
+    if (first && !near(first)) { lanes[lane] = { stub: true, col, to: first }; cutTo(first); }
+    else lanes[lane] = first ? { h: first, col } : null;
     for (const p of rest) {
-      let k = lanes.indexOf(p);
-      if (k < 0) { k = free(); lanes[k] = p; }
-      bottom.push([lane, k]);
+      let k;
+      if (!near(p)) { k = lanes.length; lanes.push({ stub: true, col, to: p }); cutTo(p); }
+      else {
+        k = at(p);
+        if (k < 0) { k = lanes.length; lanes.push({ h: p, col: colors++ }); }
+      }
+      bottom.push([lane, k, lanes[k].col]);
     }
-    lanes.forEach((h, j) => {
-      if (h == null || bottom.some(([a, b]) => a === lane && b === j && j !== lane)) return;
-      bottom.push([j, j]);
+    lanes.forEach((l, j) => {
+      if (l == null || bottom.some(([a, b]) => a === lane && b === j && j !== lane)) return;
+      bottom.push([j, j, l.col]);
     });
-    while (lanes.length && lanes[lanes.length - 1] == null) lanes.pop();
-    const width = Math.max(lane + 1, ...top.flat().map(j => j + 1), ...bottom.flat().map(j => j + 1));
-    return { lane, top, bottom, width, merge: c.parents.length > 1 };
+    // Close the gaps: every lane slides left over the lower half of this row.
+    const to = [];
+    let next = 0;
+    lanes.forEach((l, j) => { to[j] = l == null ? null : next++; });
+    let moved = bottom.map(([a, b, k]) => [a, to[b] ?? b, k]);
+    lanes = lanes.filter(l => l != null);
+    // The next commit is the far end of a cut edge: a lane starts here under an up arrow and joins its dot,
+    // also when other lines already lead into that commit.
+    let rise = null;
+    const below = commits[i + 1];
+    if (below && cutFrom.has(below.hash)) {
+      const from = cutFrom.get(below.hash);
+      rise = [lanes.length, from.col, from.hash];
+      lanes.push({ h: below.hash, col: from.col });
+    }
+    const width = Math.max(lane + 1, rise ? rise[0] + 1 : 0, ...tips.map(([j]) => j + 1),
+      ...top.map(([a, b]) => Math.max(a, b) + 1), ...moved.map(([a, b]) => Math.max(a, b) + 1));
+    // The arrow a click follows: a down arrow leads to the parent, an up arrow back to the child.
+    const arrow = tips.length ? { lane: tips[0][0], to: tips[0][2] } : rise ? { lane: rise[0], to: rise[2] } : null;
+    return { lane, col, top, bottom: moved, tips, rise, arrow, width, merge: c.parents.length > 1 };
   });
 };
 // Read-only code view: the editor brings selection, copy, line numbers and highlighting.
@@ -328,8 +439,8 @@ const limitPill = (C, items, title, titleColor, border) => h_flex().h(34).px(12)
   .when(!!title, el => el.child(div().text_size(12).font_semibold().text_color(titleColor).child(title)))
   .children(items.flatMap((l, i) => [i ? vbar(C) : null, h_flex().gap(8).items_center()
     .child(div().text_size(12).font_semibold().text_color(C.ink).child(l.label))
-    .child(meter(C, title ? 60 : 80, l.pct, title ? C.fable : pctColor(C, l.pct)))
-    .child(div().font_family("Geist Mono").text_size(12).text_color(title ? C.fable : pctColor(C, l.pct)).child(`${l.pct}%`))
+    .child(meter(C, title ? 60 : 80, l.pct, ctxColor(C, l.pct)))
+    .child(div().font_family("Geist Mono").text_size(12).text_color(ctxColor(C, l.pct)).child(`${l.pct}%`))
     .when(!!l.reset, el => el.child(div().text_size(11).text_color(C.muted).child(`resets ${l.reset}`)))]).filter(Boolean));
 
 export default class Board extends View {
@@ -344,10 +455,37 @@ export default class Board extends View {
       this.spaceSearch.focus();
     }
     if (p?.role === "terminals") this.railFocus = cx.focus_handle();
+    if (p?.role === "gitdialog" && p.kind !== "delete") {
+      const start = p.kind === "rename" ? p.name : p.kind === "worktree" ? "" : "";
+      this.nameInput = InputState.new({ placeholder: "feat/my-change", value: start });
+      this.nameInput.focus();
+      if (p.kind === "worktree") {
+        this.pathInput = InputState.new({ placeholder: "Folder", value: "" });
+        // The folder follows the name until it is edited by hand.
+        this.nameInput.on("change", (_e, cx) => {
+          if (!this.pathEdited) { this.settingPath = true; this.pathInput.set_value(worktreePath(gitState(), this.nameInput.value())); this.settingPath = false; }
+          cx.notify();
+        });
+        this.pathInput.on("change", () => { if (!this.settingPath) this.pathEdited = true; });
+      }
+    }
     if (!p?.role || p.role === "header") this.selfFocus = cx.focus_handle();
-    if (p?.role === "header") {
-      this.logSearch = InputState.new({ placeholder: "Text or hash", value: shared(LOG_QUERY_KEY) ?? "" });
-      this.logSearch.on("change", () => setShared(LOG_QUERY_KEY, this.logSearch.value()));
+    if (p?.role === "logfilter") {
+      if (p.field !== "date") {
+        this.filterSearch = InputState.new({ placeholder: p.field === "branch" ? "Branch or tag" : p.field === "user" ? "Author" : "Path" });
+        this.filterSearch.on("change", (_e, cx) => cx.notify());
+        this.filterSearch.focus();
+      }
+      // Paths lists the repository's top level.
+      if (p.field === "paths") cx.spawn(async (cx) => {
+        try {
+          const entries = await fs.readdir(gitState().root, { withFileTypes: true });
+          this.pathEntries = entries.filter(e => e.name !== ".git")
+            .map(e => ({ name: e.name, dir: typeof e.isDirectory === "function" ? e.isDirectory() : !!e.isDirectory }))
+            .sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
+        } catch { this.pathEntries = []; }
+        cx.notify();
+      });
     }
     if (p?.role === "worktrees") {
       this.wtSearch = InputState.new({ placeholder: "Search branch or path" });
@@ -357,9 +495,16 @@ export default class Board extends View {
     cx.timer.every(30000, (cx) => cx.notify());
     // Only the board copy reads the session files; the header and pane copies read its shared summary.
     if (!p?.role) {
+      // A restart forgets running commands: drop their busy marks and queue.
+      setShared(GIT_BUSY_KEY, {});
+      setShared(GIT_JOBS_KEY, []);
+      this.jobsStarted = new Set();
       this.treeFocus = cx.focus_handle();
       this.refSearch = InputState.new({ placeholder: "Branch or tag" });
       this.refSearch.on("change", (_e, cx) => cx.notify());
+      this.logSearch = InputState.new({ placeholder: "Text or hash" });
+      this.logSearch.on("change", (_e, cx) => cx.notify());
+      this.logScroll = VirtualListScrollHandle.new();
       const keys = copyKeys();
       cx.bind_keys([
         { keystroke: keys.relative, action: "corral-copy-relative", context: "CorralPaths" },
@@ -386,7 +531,25 @@ export default class Board extends View {
       cx.timer.every(SYNC_MS, (cx) => this.sync(cx));
     }
   }
+  runGitJobs(cx) {
+    for (const job of shared(GIT_JOBS_KEY) ?? []) {
+      if (this.jobsStarted.has(job.id)) continue;
+      this.jobsStarted.add(job.id);
+      cx.spawn(async () => {
+        const r = await gitBusy(job.name, job.label ?? "Working…", () => gitRun(job.root, job.args, job.done));
+        // A dialog that asked for the job closes on success, or reads the error from the results.
+        if (job.overlay && r.ok) closeOverlay(job.overlay);
+        if (job.overlay) {
+          const kept = Object.entries(shared(GIT_RESULTS_KEY) ?? {}).slice(-20);
+          setShared(GIT_RESULTS_KEY, { ...Object.fromEntries(kept), [job.id]: r });
+        }
+        setShared(GIT_JOBS_KEY, (shared(GIT_JOBS_KEY) ?? []).filter(j => j.id !== job.id));
+        this.jobsStarted.delete(job.id);
+      });
+    }
+  }
   sync(cx) {
+    this.runGitJobs(cx);
     // A space opened in a new folder makes that folder a project.
     const known = new Set(projects().map(p => p.folder));
     const fresh = [...new Set(spaces().filter(s => s.folder && !s.machine && !known.has(s.folder)).map(s => s.folder))];
@@ -532,8 +695,10 @@ export default class Board extends View {
     });
   }
   async reload() {
-    if (this.loading) return;
+    // A read that never came back must not stop the updates for good.
+    if (this.loading && Date.now() - this.loadingAt < 20000) return;
     this.loading = true;
+    this.loadingAt = Date.now();
     try {
       let names = [];
       try { names = (await fs.readdir(this.dir)).filter(n => n.endsWith(".json")); } catch { names = []; }
@@ -682,8 +847,8 @@ export default class Board extends View {
         ? h_flex().gap(8).items_center()
           .child(div().text_size(11).text_color(C.muted).child("Context"))
           .child(div().flex_1().h(5).rounded(5).bg(C.selected).overflow_hidden()
-            .child(div().h(5).rounded(5).w(`${Math.min(100, info.ctx)}%`).bg(pctColor(C, info.ctx))))
-          .child(div().font_family("Geist Mono").text_size(11).text_color(pctColor(C, info.ctx))
+            .child(div().h(5).rounded(5).w(`${Math.min(100, info.ctx)}%`).bg(ctxColor(C, info.ctx))))
+          .child(div().font_family("Geist Mono").text_size(11).text_color(ctxColor(C, info.ctx))
             .child(`${info.ctx}% (${kTokens(info.tokens)})`))
         : div().text_size(11).text_color(C.muted).child("No session data yet. It appears after the first reply."))
       .child(h_flex().gap(8).items_center().text_size(11).text_color(C.muted)
@@ -796,13 +961,15 @@ export default class Board extends View {
     walk(root, "", 0);
     return rows;
   }
-  // The log of the shown repository: its refs for the tree and the newest LOG_MAX commits of every branch
-  // (or of the picked ref), each with its graph row. Reloaded every LOG_MS, and at once when the repo or ref changes.
+  // The log of the shown repository: its refs for the tree and every commit of every branch (or of the filters),
+  // each with its graph row. Checked every LOG_MS: the history is read again only when a ref has moved.
   loadLog(cx) {
     const root = gitState().root;
     if (!root) { this.log = null; return; }
-    const key = `${root}|${this.logRef ?? ""}`;
-    if (this.log?.key === key && Date.now() - this.log.at < LOG_MS) return;
+    const f = logFilter();
+    const key = `${root}|${f.ref ?? ""}|${f.since ?? ""}|${f.paths.join(",")}`;
+    const bump = shared(GIT_BUMP_KEY) ?? 0;
+    if (this.log?.key === key && Date.now() - this.log.at < LOG_MS && this.log.bump === bump) return;
     if (this.logLoading === key) return;
     this.logLoading = key;
     if (this.log?.key !== key) {
@@ -811,28 +978,86 @@ export default class Board extends View {
       this.commit = null;
     }
     cx.spawn(async (cx) => {
-      const git = (args) => exec("git", args, { cwd: root, timeout: 20000 }).catch(() => null);
-      const out = await git(["log", "--date-order", `-n${LOG_MAX}`, "--format=%H%x1f%P%x1f%an%x1f%at%x1f%D%x1f%s",
-        ...(this.logRef ? [this.logRef] : ["--branches", "--remotes", "--tags", "HEAD"]), "--"]);
-      const refsOut = await git(["for-each-ref", "--format=%(refname)%1f%(HEAD)", "refs/heads", "refs/remotes", "refs/tags"]);
-      if (this.logLoading === key) this.logLoading = null;
-      if (this.log?.key !== key) return;
+      const git = (args) => exec("git", args, { cwd: root, timeout: 60000 }).catch(() => null);
+      const refsOut = await git(["for-each-ref", "--format=%(refname)%1f%(HEAD)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(objectname)",
+        "refs/heads", "refs/remotes", "refs/tags"]);
+      const headOut = await git(["rev-parse", "HEAD"]);
+      if (this.log?.key !== key) { if (this.logLoading === key) this.logLoading = null; return; }
       this.log.at = Date.now();
+      this.log.bump = bump;
       this.log.refs = (refsOut?.stdout ?? "").split("\n").filter(Boolean)
-        .map(l => { const [name, head] = l.split("\x1f"); return { name, head: head === "*" }; })
+        .map(l => { const [name, head, upstream, track] = l.split("\x1f"); return { name, head: head === "*", upstream, ...trackCounts(track) }; })
         .filter(r => !r.name.endsWith("/HEAD"));
-      const text = out?.stdout ?? "";
-      if (text !== this.log.text) {
-        const commits = text.split("\n").filter(Boolean).map(line => {
-          const [hash, parents, author, at, refs, ...subject] = line.split("\x1f");
-          return { hash, parents: parents ? parents.split(" ") : [], author, time: Number(at),
-            refs: refs ? refs.split(", ") : [], subject: subject.join("\x1f") };
-        });
-        Object.assign(this.log, { text, commits, rows: layoutGraph(commits) });
-        if (!this.logSel && commits[0]) this.selectCommit(commits[0].hash, cx);
+      // The folders on the way to HEAD's branch, and origin, start open.
+      if (!this.refOpen) {
+        this.refOpen = new Set(["Remote/origin"]);
+        const head = this.log.refs.find(r => r.head);
+        const parts = head ? shortRef(head.name).split("/").slice(0, -1) : [];
+        parts.forEach((_p, i) => this.refOpen.add(`Local/${parts.slice(0, i + 1).join("/")}`));
       }
+      const fp = `${refsOut?.stdout ?? ""}|${headOut?.stdout ?? ""}`;
+      if (fp !== this.log.fp || !this.log.full) {
+        const args = (n) => ["log", "--date-order", `-n${n}`, "--format=%H%x1f%P%x1f%an%x1f%at%x1f%D%x1f%s",
+          ...(f.since ? [`--since=${f.since}`] : []),
+          ...(f.ref ? [f.ref] : ["--branches", "--remotes", "--tags", "HEAD"]), "--", ...f.paths];
+        // A first look: the newest commits only, then the whole history in place of them.
+        if (!this.log.commits) {
+          const first = await git(args(LOG_FIRST));
+          if (this.log?.key !== key) { if (this.logLoading === key) this.logLoading = null; return; }
+          this.applyLog(first?.stdout ?? "", cx);
+          cx.notify();
+        }
+        const out = await git(args(LOG_MAX));
+        if (this.log?.key !== key) { if (this.logLoading === key) this.logLoading = null; return; }
+        this.applyLog(out?.stdout ?? "", cx);
+        this.log.fp = fp;
+        this.log.full = true;
+      }
+      if (this.logLoading === key) this.logLoading = null;
+      const meta = { refs: this.log.refs.map(r => r.name), authors: [...new Set((this.log.commits ?? []).map(c => c.author))].sort() };
+      if (JSON.stringify(meta) !== JSON.stringify(shared(LOG_META_KEY))) setShared(LOG_META_KEY, meta);
       cx.notify();
     });
+  }
+  applyLog(text, cx) {
+    if (text === this.log.text) return;
+    const commits = text.split("\n").filter(Boolean).map(line => {
+      const [hash, parents, author, at, refs, ...subject] = line.split("\x1f");
+      return { hash, parents: parents ? parents.split(" ") : [], author, time: Number(at),
+        refs: refs ? refs.split(", ") : [], subject: subject.join("\x1f") };
+    });
+    // Commits reachable from HEAD get a tint; HEAD's own dot is drawn as a ring.
+    const byHash = new Map(commits.map(c => [c.hash, c]));
+    const head = commits.find(c => c.refs.some(r => r === "HEAD" || r.startsWith("HEAD -> ")))?.hash ?? null;
+    const onHead = new Set();
+    for (const stack = head ? [head] : []; stack.length;) {
+      const h = stack.pop();
+      if (onHead.has(h) || !byHash.has(h)) continue;
+      onHead.add(h);
+      stack.push(...byHash.get(h).parents);
+    }
+    Object.assign(this.log, { text, commits, rows: layoutGraph(commits), head, onHead });
+    if (!this.logSel && commits[0]) this.selectCommit(commits[0].hash, cx);
+  }
+  // A click on a ref in the tree selects its newest commit and scrolls to it; the list stays as it is.
+  jumpToRef(r, cx) {
+    const commits = this.log?.commits ?? [];
+    const short = r.key === "HEAD" ? null : shortRef(r.ref);
+    const names = r.key === "HEAD" ? null
+      : r.ref.startsWith("refs/tags/") ? [`tag: ${short}`] : [short, `HEAD -> ${short}`];
+    const hash = r.key === "HEAD" ? this.log?.head : commits.find(c => c.refs.some(x => names.includes(x)))?.hash;
+    if (!hash) {
+      notify({ title: "Not in the history shown", body: `${short ?? "HEAD"} has no commit in the list.`, level: "info", timeout: 3000 });
+      return;
+    }
+    const k = this.logShown?.indexOf(commits.findIndex(c => c.hash === hash)) ?? -1;
+    this.selectCommit(hash, cx);
+    if (k >= 0) this.logScroll?.scroll_to_item(k, "center");
+  }
+  jumpToHash(hash, cx) {
+    const k = this.logShown?.indexOf((this.log?.commits ?? []).findIndex(c => c.hash === hash)) ?? -1;
+    this.selectCommit(hash, cx);
+    if (k >= 0) this.logScroll?.scroll_to_item(k, "center");
   }
   // Message, author and changed files of one commit, against its first parent.
   selectCommit(hash, cx) {
@@ -879,56 +1104,240 @@ export default class Board extends View {
     });
   }
   // One row of the graph: the lines through this commit's row and its dot, in lane colors.
-  graphCell(row, lanes) {
+  graphCell(row, lanes, isHead) {
     const colors = laneColors();
     const color = (j) => colors[j % colors.length];
     const x = (j) => 9 + j * LANE_W;
     const mid = LOG_ROW / 2;
     const paint = (path, fill) => window.paint_path(path, fill).absolute().top(0).left(0).size_full();
-    const seg = ([a, b], y0, y1, lane) => {
+    const seg = ([a, b, k], y0, y1) => {
       if (a >= lanes || b >= lanes) return null;
       const p = PathBuilder.stroke(1.5).move_to(x(a), y0);
       if (a === b) p.line_to(x(b), y1);
       else p.cubic_bezier_to(x(b), y1, x(a), (y0 + y1) / 2, x(b), (y0 + y1) / 2);
-      return paint(p.build(), color(lane));
+      return paint(p.build(), color(k));
     };
-    const r = row.merge ? 4 : 3.5;
     const cx0 = x(row.lane);
-    const dot = PathBuilder.fill().move_to(cx0 + r, mid)
+    const circle = (builder, r) => builder.move_to(cx0 + r, mid)
       .arc_to(r, r, 0, false, true, cx0 - r, mid).arc_to(r, r, 0, false, true, cx0 + r, mid).close().build();
+    const dot = circle(PathBuilder.fill(), isHead ? 2.2 : row.merge ? 4 : 3.5);
+    const ring = isHead ? circle(PathBuilder.stroke(1.5), 5.2) : null;
+    // A cut edge ends in this row's upper half with a down arrow; a lane rising here starts under an up arrow.
+    const head = (tx, ty, dir) => PathBuilder.stroke(1.8).move_to(tx - 5, ty - dir * 5.5).line_to(tx, ty).line_to(tx + 5, ty - dir * 5.5).build();
+    const arrows = [];
+    for (const [j, k] of row.tips) {
+      if (j >= lanes) continue;
+      arrows.push(paint(PathBuilder.stroke(1.5).move_to(x(j), 0).line_to(x(j), mid + 2).build(), color(k)));
+      arrows.push(paint(head(x(j), mid + 2, 1), color(k)));
+    }
+    if (row.rise && row.rise[0] < lanes) {
+      const [j, k] = row.rise;
+      arrows.push(paint(PathBuilder.stroke(1.5).move_to(x(j), LOG_ROW).line_to(x(j), mid - 2).build(), color(k)));
+      arrows.push(paint(head(x(j), mid - 2, -1), color(k)));
+    }
     return div().relative().flex_none().w(6 + lanes * LANE_W).h(LOG_ROW)
       .children([
-        ...row.top.map(s => seg(s, 0, mid, s[0])),
-        ...row.bottom.map(s => seg(s, mid, LOG_ROW, s[1])),
-        row.lane < lanes ? paint(dot, color(row.lane)) : null,
+        ...arrows,
+        ...row.top.map(s => seg(s, 0, mid)),
+        ...row.bottom.map(s => seg(s, mid, LOG_ROW)),
+        row.lane < lanes ? paint(dot, color(row.col)) : null,
+        ring && row.lane < lanes ? paint(ring, color(row.col)) : null,
       ].filter(Boolean));
   }
+  // Ref kinds as IntelliJ colors them: HEAD yellow, local branches green, remote ones purple, tags teal.
+  refKinds(refs) {
+    const remotes = new Set((this.log?.refs ?? []).filter(r => r.name.startsWith("refs/remotes/")).map(r => shortRef(r.name)));
+    const out = [];
+    // A remote's HEAD only says which branch it points at: left out, as IntelliJ does.
+    for (const ref of refs.filter(r => !/^[^/\s]+\/HEAD$/.test(r))) {
+      if (ref === "HEAD") out.push({ kind: "head", name: "HEAD" });
+      else if (ref.startsWith("HEAD -> ")) { out.push({ kind: "head", name: "HEAD" }); out.push({ kind: "local", name: ref.slice(8) }); }
+      else if (ref.startsWith("tag: ")) out.push({ kind: "tag", name: ref.slice(5) });
+      else out.push({ kind: remotes.has(ref) ? "remote" : "local", name: ref });
+    }
+    return out;
+  }
+  // Tags pointing left in a stack: HEAD in front on the right, then local, remote and tag ones behind it to the left,
+  // each filled with the row's background so the front one hides the ones behind.
+  tagStack(C, kinds, bg) {
+    const paint = (path, fill) => window.paint_path(path, fill).absolute().top(0).left(0).size_full();
+    // IntelliJ's tag: a square corner up right with a hole, the point down left (a 24-unit outline, scaled).
+    const k = 0.58;
+    const shape = (builder, dx) => builder.add_polygon([[21, 12], [21, 3], [12, 3], [3, 12], [12, 21]].map(([x, y]) => [dx + x * k, y * k]), true).build();
+    const hole = (dx) => PathBuilder.fill().move_to(dx + 16.4 * k + 1.3, 7.6 * k)
+      .arc_to(1.3, 1.3, 0, false, true, dx + 16.4 * k - 1.3, 7.6 * k).arc_to(1.3, 1.3, 0, false, true, dx + 16.4 * k + 1.3, 7.6 * k).close().build();
+    // The fill must be opaque, or the tags behind show through; a tinted row background is flattened first.
+    const fill = opaque(bg, C.card);
+    const paths = [];
+    const order = ["head", "local", "remote", "tag"];
+    const sorted = [...kinds].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    const last = sorted.length - 1;
+    for (let n = last; n >= 0; n--) {
+      paths.push(paint(shape(PathBuilder.fill(), (last - n) * 5), fill));
+      paths.push(paint(shape(PathBuilder.stroke(1.3), (last - n) * 5), this.refColor(C, sorted[n])));
+      paths.push(paint(hole((last - n) * 5), this.refColor(C, sorted[n])));
+    }
+    return div().relative().flex_none().w(14 + (kinds.length - 1) * 5).h(14).children(paths);
+  }
+  refColor(C, kind) {
+    const t = theme();
+    return { head: t.blocked, local: t.done, remote: t.ansi5, tag: t.ansi6 }[kind] ?? C.muted;
+  }
   refPill(C, ref) {
-    const tag = ref.startsWith("tag: ");
-    const head = ref.startsWith("HEAD");
-    const name = ref.replace(/^tag: /, "").replace(/^HEAD -> /, "");
-    const color = tag ? theme().blocked : C.accent;
+    const [k] = this.refKinds([ref]).filter(x => x.kind !== "head" || ref === "HEAD");
+    if (!k) return null;
+    const color = this.refColor(C, k.kind);
     return h_flex().flex_none().max_w(200).h(18).px(6).gap(4).items_center().rounded(4).bg(wash(color, C))
       .text_size(10).text_color(color)
-      .child(svg(`mods/${MOD}/icons/${tag ? "tag" : "branch"}.svg`).size(10).flex_none())
-      .child(div().min_w(0).truncate().when(head, el => el.font_semibold()).child(name));
+      .child(svg(`mods/${MOD}/icons/tag.svg`).size(10).flex_none())
+      .child(div().min_w(0).truncate().when(ref.startsWith("HEAD"), el => el.font_semibold()).child(k.name));
+  }
+  // The refs of a commit row, as IntelliJ shows them: stacked colored tags and the names in grey, a branch and its
+  // remote twin as one "origin & develop"; the tooltip lists them all.
+  refLabel(C, id, refs, bg) {
+    const kinds = this.refKinds(refs);
+    const local = kinds.filter(k => k.kind === "local").map(k => k.name);
+    const remote = kinds.filter(k => k.kind === "remote").map(k => k.name);
+    const parts = [];
+    const paired = new Set();
+    for (const name of local) {
+      const twin = remote.find(r => r.slice(r.indexOf("/") + 1) === name);
+      if (twin) { paired.add(twin); parts.push(`${twin.slice(0, twin.indexOf("/"))} & ${name}`); }
+      else parts.push(name);
+    }
+    parts.push(...remote.filter(r => !paired.has(r)), ...kinds.filter(k => k.kind === "tag").map(k => k.name));
+    const icons = [...new Set(kinds.map(k => k.kind))];
+    // Narrow, so a long branch name never squeezes the subject; the tooltip has the full names.
+    return h_flex().id(id).flex_none().max_w(170).gap(5).items_center().tooltip(kinds.map(k => k.name).join("\n"))
+      .child(this.tagStack(C, icons, bg))
+      .child(div().min_w(0).truncate().text_size(12).text_color(C.muted).child(parts.join(", ") || "HEAD"));
+  }
+  trackCount(C, id, text, color, tip, range) {
+    return div().id(id).flex_none().px(3).rounded(4).font_family("Geist Mono").text_size(11).text_color(color).cursor_pointer()
+      .hover(s => s.bg(wash(color, C))).tooltip(tip)
+      .on_click((_e, cx) => { cx.stop_propagation(); setLogFilter({ ref: range }); })
+      .child(text);
+  }
+  // Right-click menu of a branch in the Log tree. Remote branches only branch off.
+  branchMenu(C) {
+    const { name, ref, repo, current, local, upstream, root, overlay } = props();
+    const remoteName = upstream.split("/")[0];
+    const remoteBranch = upstream.slice(remoteName.length + 1);
+    const dialog = (kind, height) => () => {
+      closeOverlay(overlay);
+      openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 460, height,
+        props: { role: "gitdialog", kind, name, current, local, root, upstream, path: props().path } });
+    };
+    // Push, update and checkout show as busy beside the branch until git returns.
+    const act = (args, done, label) => () => {
+      closeOverlay(overlay);
+      queueGit({ root, args, done, name, label });
+    };
+    const fav = (favorites({ worktrees: [{ path: repo }] })).includes(ref);
+    const favItem = { label: fav ? "Remove from Favorites" : "Add to Favorites", run: () => { closeOverlay(overlay); toggleFavorite(repo, ref); } };
+    const items = [
+      { label: `New Branch from '${name}'…`, run: dialog("branch", 190) },
+      { label: `New Worktree from '${name}'…`, run: dialog("worktree", 250) },
+    ];
+    // Checkout switches the shown worktree's folder to that branch; a remote one gets a local tracking branch.
+    if (!current) items.push({ label: `Checkout '${name}'`,
+      run: local ? act(["checkout", name], `Checked out ${name}`, "Checking out…")
+        : act(["checkout", "--track", name], `Checked out ${name.replace(/^[^/]+\//, "")}`, "Checking out…") });
+    if (!local) items.push(null, favItem, null, { label: `Delete '${name}' on the remote…`, danger: true, run: dialog("delete", 190) });
+    if (local) items.push(
+      null,
+      { label: "Update", disabled: !upstream, tip: upstream ? `Fast-forward from ${upstream}` : "No tracked branch",
+        run: current ? act(["pull", "--ff-only"], `Updated ${name}`, "Updating…")
+          : act(["fetch", remoteName, `${remoteBranch}:${name}`], `Updated ${name}`, "Updating…") },
+      { label: upstream ? `Push to '${upstream}'` : "Push…",
+        run: upstream ? act(["push", remoteName, `${name}:${remoteBranch}`], `Pushed ${name}`, "Pushing…")
+          : act(["push", "-u", "origin", name], `Pushed ${name} to origin`, "Pushing…") },
+      null,
+      { label: "Rename…", run: dialog("rename", 190) },
+      ...(current ? [] : [{ label: "Delete", danger: true, run: dialog("delete", 170) }]),
+      null,
+      favItem);
+    return v_flex().w_full().p(6).gap(1).bg(C.bg).text_color(C.ink)
+      .children(items.map((it, i) => it == null
+        ? div().flex_none().h(1).mx(6).my(3).bg(C.line)
+        : h_flex().id(`branch-item-${i}`).flex_none().h(30).px(10).items_center().rounded(5).text_size(13)
+          .text_color(it.disabled ? C.dim : it.danger ? C.danger : C.ink)
+          .when(!!it.tip, el => el.tooltip(it.tip))
+          .when(!it.disabled, el => el.cursor_pointer().hover(s => s.bg(theme().selection ?? C.selected)).on_click(it.run))
+          .child(div().truncate().child(it.label))));
+  }
+  // Name prompts and the delete confirmation for the branch menu. Errors stay in the dialog.
+  gitDialog(C) {
+    const { kind, name, root, local, overlay } = props();
+    // A remote branch is deleted on its remote: "origin/feat/x" is `git push origin --delete feat/x`.
+    const remote = kind === "delete" && local === false;
+    const g = gitState();
+    const title = { branch: `New branch from '${name}'`, worktree: `New worktree from '${name}'`,
+      rename: `Rename '${name}'`, delete: remote ? `Delete '${name}' on the remote?` : `Delete '${name}'?` }[kind];
+    // The board copy runs the command: a dialog does not get to finish work it waits on. It closes the dialog on
+    // success; a failure comes back through the shared results.
+    const result = this.jobId ? (shared(GIT_RESULTS_KEY) ?? {})[this.jobId] : null;
+    const busy = !!this.jobId && !result;
+    const error = result && !result.ok ? result.message || "git failed without a message." : null;
+    const canForce = !!error && kind === "delete" && !remote;
+    const go = (force) => {
+      const value = this.nameInput?.value().trim();
+      if (busy || (kind !== "delete" && !value)) return;
+      // Only this dialog's command is built: the others read fields a delete dialog doesn't have.
+      const args = {
+        branch: () => ["branch", value, name],
+        worktree: () => ["worktree", "add", "-b", value, this.pathInput?.value().trim() || worktreePath(g, value), name],
+        rename: () => ["branch", "-m", name, value],
+        delete: () => remote ? ["push", name.split("/")[0], "--delete", name.slice(name.indexOf("/") + 1)] : ["branch", force ? "-D" : "-d", name],
+      }[kind]();
+      const done = { branch: `Created ${value}`, worktree: `Created worktree ${value}`, rename: `Renamed to ${value}`, delete: `Deleted ${name}` }[kind];
+      this.jobId = `${Date.now()}-${Math.random()}`;
+      queueGit({ id: this.jobId, root, args, done, name, label: kind === "delete" ? "Deleting…" : "Working…", overlay });
+    };
+    const button = (id, label, primary, onClick) => h_flex().id(id).h(30).px(14).items_center().rounded(6).cursor_pointer()
+      .text_size(12).font_semibold()
+      .bg(primary ? (kind === "delete" ? C.danger : C.accent) : C.card).text_color(primary ? C.card : C.ink)
+      .when(!primary, el => el.border(1).border_color(C.line))
+      .hover(s => s.opacity(0.85)).on_click(onClick).child(label);
+    const field = (label, state) => v_flex().gap(4)
+      .child(div().text_size(11).text_color(C.muted).child(label))
+      .child(div().h(32).px(10).flex().items_center().rounded(6).bg(C.card).border(1).border_color(C.input).text_size(13)
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(state)));
+    return v_flex().size_full().p(18).gap(12).bg(C.bg).text_color(C.ink)
+      .child(div().text_size(14).font_semibold().child(title))
+      .when(kind === "delete", el => el.child(div().text_size(12).text_color(C.muted)
+        .child(remote ? "The branch goes from the remote for everyone; local branches stay."
+          : "Only the local branch goes; a branch with unmerged commits asks again.")))
+      .when(!!this.nameInput, el => el.child(field(kind === "rename" ? "New name" : "Branch name", this.nameInput)))
+      .when(!!this.pathInput, el => el.child(field("Folder", this.pathInput)))
+      .when(!!error, el => el.child(div().text_size(11).text_color(C.danger).child(error)))
+      .child(div().flex_1())
+      .child(h_flex().gap(8).justify_end()
+        .child(button("git-cancel", "Cancel", false, () => closeOverlay(overlay)))
+        .when(canForce, el => el.child(button("git-force", busy ? "Working…" : "Delete anyway", true, (_e, cx) => { go(true); cx.notify(); })))
+        .when(!canForce, el => el.child(button("git-ok", busy ? "Working…" : { branch: "Create", worktree: "Create", rename: "Rename", delete: "Delete" }[kind],
+          true, (_e, cx) => { go(false); cx.notify(); }))));
   }
   // The ref tree: all branches, HEAD, then Local, Remote and Tags, grouped by "/" folders.
+  // The ref tree: HEAD, then Local, Remote and Tags in "/" folders. Starred refs come first in their folder.
   refRows() {
     const refs = this.log?.refs ?? [];
     const q = (this.refSearch?.value() ?? "").trim().toLowerCase();
-    this.refCollapsed ??= new Set(["Remote", "Tags"]);
-    const rows = [{ kind: "all", key: "all", label: "All branches", depth: 0 }];
-    const head = refs.find(r => r.head);
-    if (head && !q) rows.push({ kind: "ref", key: "HEAD", ref: head.name, label: "HEAD", sub: head.name.replace("refs/heads/", ""), depth: 0, icon: "commit" });
+    this.refCollapsed ??= new Set(["Tags"]);
+    this.refOpen ??= new Set(["Remote/origin"]);
+    const favs = favorites(gitState());
+    const rows = [];
+    if (refs.some(r => r.head) && !q) rows.push({ kind: "ref", key: "HEAD", ref: "HEAD", label: "HEAD (Current Branch)", depth: 0, icon: null });
     for (const [title, prefix] of [["Local", "refs/heads/"], ["Remote", "refs/remotes/"], ["Tags", "refs/tags/"]]) {
-      const icon = title === "Tags" ? "tag" : "branch";
+      const iconOf = (r) => favs.includes(r.name) ? "star" : title === "Tags" ? "tag" : "branch";
+      const make = (r, label, depth) => ({ kind: "ref", key: r.name, ref: r.name, label, short: r.short, depth, head: r.head, icon: iconOf(r),
+        local: title === "Local", remote: title === "Remote", upstream: r.upstream, ahead: r.ahead, behind: r.behind });
       const list = refs.filter(r => r.name.startsWith(prefix)).map(r => ({ ...r, short: r.name.slice(prefix.length) }))
         .filter(r => matches(q, r.short));
       if (!list.length) continue;
       rows.push({ kind: "group", key: title, label: title, depth: 0 });
       if (q) {
-        for (const r of list) rows.push({ kind: "ref", key: r.name, ref: r.name, label: r.short, depth: 1, head: r.head, icon });
+        for (const r of list) rows.push(make(r, r.short, 1));
         continue;
       }
       if (this.refCollapsed.has(title)) continue;
@@ -943,15 +1352,15 @@ export default class Board extends View {
         }
         n.refs.push({ ...r, leaf: parts[parts.length - 1] });
       }
+      const byName = (x, y) => x.leaf.localeCompare(y.leaf);
       const walk = (n, path, depth) => {
+        for (const r of n.refs.filter(r => favs.includes(r.name)).sort(byName)) rows.push(make(r, r.leaf, depth));
         for (const [name, d] of [...n.dirs].sort((x, y) => x[0].localeCompare(y[0]))) {
           const key = `${title}/${path}${name}`;
           rows.push({ kind: "group", key, label: name, depth, folder: true });
-          if (!this.refCollapsed.has(key)) walk(d, `${path}${name}/`, depth + 1);
+          if (this.refOpen.has(key)) walk(d, `${path}${name}/`, depth + 1);
         }
-        for (const r of n.refs.sort((x, y) => x.leaf.localeCompare(y.leaf))) {
-          rows.push({ kind: "ref", key: r.name, ref: r.name, label: r.leaf, depth, head: r.head, icon });
-        }
+        for (const r of n.refs.filter(r => !favs.includes(r.name)).sort(byName)) rows.push(make(r, r.leaf, depth));
       };
       walk(root, "", 1);
     }
@@ -967,7 +1376,7 @@ export default class Board extends View {
     const more = d?.body ? d.body.split("\n").slice(1).join("\n").trim() : "";
     const open = this.commitFile?.hash === c.hash ? this.commitFile.path : null;
     const sel = theme().selection ?? C.selected;
-    const fileRow = (f, depth) => h_flex().id(`commit-file-${f.path}`).h(24).flex_none().pl(8 + depth * 16).pr(8).gap(8)
+    const fileRow = (f, depth) => h_flex().id(`commit-file-${f.path}`).h(26).flex_none().pl(8 + depth * TREE_STEP + TREE_FILE).pr(8).gap(8)
       .items_center().rounded(5).cursor_pointer().bg(open === f.path ? sel : C.card).hover(s => s.bg(open === f.path ? sel : C.bar))
       .on_click((_e, cx) => { this.openCommitFile(f, cx); cx.notify(); })
       .on_mouse_down("right", (e, cx) => this.openPathMenu(e, `${g.root}/${f.path}`, cx))
@@ -975,7 +1384,7 @@ export default class Board extends View {
       .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(C.ink).child(f.path.split("/").pop()))
       .child(num(`+${f.add}`, theme().done))
       .when(f.del > 0, el => el.child(num(`−${f.del}`, C.danger)));
-    const dirRow = (r) => h_flex().id(`commit-dir-${r.path}`).h(24).flex_none().pl(8 + r.depth * 16).pr(8).gap(6).items_center()
+    const dirRow = (r) => h_flex().id(`commit-dir-${r.path}`).h(26).flex_none().pl(8 + r.depth * TREE_STEP).pr(8).gap(6).items_center()
       .rounded(5).cursor_pointer().hover(s => s.bg(C.bar)).text_size(12)
       .on_click((_e, cx) => {
         this.commitCollapsed.has(r.path) ? this.commitCollapsed.delete(r.path) : this.commitCollapsed.add(r.path);
@@ -996,7 +1405,8 @@ export default class Board extends View {
           .child(div().flex_none().text_color(C.ink).child(c.author))
           .when(!!d?.email, el => el.child(div().min_w(0).truncate().text_color(C.muted).child(`<${d.email}>`))))
         .child(div().text_size(12).text_color(C.muted).child(logDate(c.time)))
-        .when(c.refs.length > 0, el => el.child(h_flex().flex_wrap().gap(4).children(c.refs.map(r => this.refPill(C, r))))))
+        .when(this.refKinds(c.refs).length > 0, el => el.child(h_flex().flex_wrap().gap(4)
+          .children(c.refs.map(r => this.refPill(C, r)).filter(Boolean)))))
       .child(v_flex().id("commit-files").flex_1().min_h(0).overflow_y_scrollbar().p(6).gap(1)
         .when(!d?.files, el => el.child(div().p(8).text_size(12).text_color(C.muted).child("Loading…")))
         .when(!!d?.files, el => el
@@ -1010,56 +1420,138 @@ export default class Board extends View {
     if (!g.root) return this.empty(C, `${tilde(this.folder)} is not a git repository.`);
     const log = this.log;
     const all = log?.commits ?? [];
-    const q = (shared(LOG_QUERY_KEY) ?? "").trim().toLowerCase();
-    // A search shows the matching commits without the graph: their lanes would not join up.
-    const shown = q
-      ? all.flatMap((c, i) => c.subject.toLowerCase().includes(q) || c.hash.startsWith(q) || c.author.toLowerCase().includes(q) ? [i] : [])
-      : all.map((_c, i) => i);
-    const lanes = q ? 0 : Math.min(12, Math.max(1, ...log.rows.slice(0, 400).map(r => r.width)));
+    const f = logFilter();
+    // Text, author and path filters show the matching commits without the graph: their lanes would not join up.
+    const text = (this.logSearch?.value() ?? "").trim();
+    let test = null;
+    if (text && f.regex) { try { const re = new RegExp(text, f.cs ? "" : "i"); test = (s) => re.test(s); } catch { test = () => false; } }
+    else if (text) { const t = f.cs ? text : text.toLowerCase(); test = (s) => (f.cs ? s : s.toLowerCase()).includes(t); }
+    const shown = all.flatMap((c, i) =>
+      (!test || test(c.subject) || c.hash.startsWith(text.toLowerCase())) && (!f.users.length || f.users.includes(c.author)) ? [i] : []);
+    this.logShown = shown;
+    const graph = !text && !f.users.length && !f.paths.length;
+    // One width for the whole list, so the subjects don't move while scrolling.
+    const lanesWide = graph ? Math.min(10, Math.max(1, ...(log?.rows ?? []).map(r => r.width))) : 0;
     const sel = theme().selection ?? C.selected;
-    const row = (i) => {
+    const onHead = wash(C.accent, C, "12");
+    const row = (i, lanes) => {
       const c = all[i];
       const selected = this.logSel === c.hash;
+      const tint = selected ? sel : log.onHead?.has(c.hash) ? onHead : C.card;
+      // A row with an arrow lights its graph under the pointer, to show the arrow can be followed.
+      const arrow = lanes && log.rows[i].arrow && log.rows[i].arrow.lane < lanes ? log.rows[i].arrow : null;
       return h_flex().h(LOG_ROW).pr(10).gap(8).items_center().rounded(4)
-        .bg(selected ? sel : C.card).hover(s => s.bg(selected ? sel : C.bar))
-        .child(lanes ? this.graphCell(log.rows[i], lanes) : div().w(10).flex_none())
+        .bg(tint).hover(s => s.bg(selected ? sel : C.bar))
+        .child(lanes
+          ? div().relative().flex_none()
+            .child(this.graphCell(log.rows[i], lanes, c.hash === log.head))
+            .when(!!arrow, el => el.child(div().id(`arrow-${c.hash}`).absolute().top(1).bottom(1).left(9 + arrow.lane * LANE_W - 8).w(16).rounded(4)
+              .cursor_pointer().hover(s => s.bg(wash(C.accent, C, "33"))).tooltip("Go to the linked commit")))
+          : div().w(10).flex_none())
         .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(c.parents.length > 1 ? C.muted : C.ink).child(c.subject))
-        .children(c.refs.slice(0, 2).map(r => this.refPill(C, r)))
-        .when(c.refs.length > 2, el => el.child(div().flex_none().text_size(10).text_color(C.muted).child(`+${c.refs.length - 2}`)))
+        .when(this.refKinds(c.refs).length > 0, el => el.child(this.refLabel(C, `refs-${c.hash}`, c.refs, tint)))
         .child(div().w(140).flex_none().truncate().text_size(12).text_color(C.muted).child(c.author))
         .child(div().w(150).flex_none().text_size(12).text_color(C.muted).child(logDate(c.time)));
     };
+    const busy = shared(GIT_BUSY_KEY) ?? {};
     const refRow = (r) => {
-      const selected = r.kind === "all" ? !this.logRef : r.kind === "ref" && this.logRef === r.ref && r.key !== "HEAD";
-      const open = r.kind === "group" && !this.refCollapsed.has(r.key);
+      const selected = this.refSel === r.key;
+      const open = r.kind === "group" && (r.folder ? this.refOpen.has(r.key) : !this.refCollapsed.has(r.key));
       return h_flex().id(`ref-${r.kind}-${r.key}`).h(24).flex_none().pl(8 + r.depth * 14).pr(8).gap(6).items_center()
         .rounded(5).cursor_pointer().bg(selected ? sel : C.card).hover(s => s.bg(selected ? sel : C.bar))
         .text_size(12).text_color(r.kind === "group" && !r.folder ? C.muted : C.ink)
         .on_click((_e, cx) => {
-          if (r.kind === "group") open ? this.refCollapsed.add(r.key) : this.refCollapsed.delete(r.key);
-          else { this.logRef = r.kind === "all" ? null : r.ref; this.loadLog(cx); }
+          if (r.kind === "group") {
+            const set = r.folder ? this.refOpen : this.refCollapsed;
+            (r.folder ? open : !open) ? set.delete(r.key) : set.add(r.key);
+          } else { this.refSel = r.key; this.jumpToRef(r, cx); }
           cx.notify();
         })
+        // A double click filters the log to that ref, as the Branch filter does.
+        .when(r.kind === "ref" && r.key !== "HEAD", el => el.on_mouse_down("left", (e) => { if (e.click_count === 2) setLogFilter({ ref: r.ref }); }))
         .child(r.kind === "group"
           ? svg(`mods/${MOD}/icons/${open ? "chevron-down" : "chevron-right"}.svg`).size(11).text_color(C.dim).flex_none()
           : div().size(11).flex_none())
         .when(r.kind === "group" && !!r.folder, el => el.child(svg(`mods/${MOD}/icons/folder.svg`).size(13).text_color(C.accent).flex_none()))
-        .when(r.kind === "ref", el => el.child(svg(`mods/${MOD}/icons/${r.icon}.svg`).size(12).text_color(r.head ? C.accent : C.muted).flex_none()))
-        .child(div().flex_1().min_w(0).truncate().when(!!r.head, el => el.font_semibold()).child(r.label))
-        .when(!!r.sub, el => el.child(div().flex_none().font_family("Geist Mono").text_size(11).text_color(C.muted).child(r.sub)));
+        .when(r.kind === "ref" && !!r.icon, el => el.child(svg(`mods/${MOD}/icons/${r.icon}.svg`).size(12)
+          .text_color(r.icon === "star" ? theme().blocked : r.head ? C.accent : C.muted).flex_none()))
+        // The name keeps its room; the tracked branch on the right gives way first.
+        .child(div().flex_shrink(0).max_w(220).truncate().when(!!r.head, el => el.font_semibold()).child(r.label))
+        .child(div().flex_1())
+        .when(r.kind === "ref" && !!busy[r.short], el => el.child(div().flex_none().text_size(11).text_color(C.accent)
+          .loop("opacity", { from: 0.35, to: 1, period: 900 }).child(busy[r.short])))
+        // Commits to push (↗, green) and to pull (↙, blue); a click shows just those commits.
+        .when(!!r.ahead && !busy[r.short], el => el.child(this.trackCount(C, `ahead-${r.key}`, `↗${r.ahead}`, theme().done,
+          `${r.ahead} commit${r.ahead === 1 ? "" : "s"} to push`, `${r.upstream}..${r.ref}`)))
+        .when(!!r.behind && !busy[r.short], el => el.child(this.trackCount(C, `behind-${r.key}`, `↙${r.behind}`, C.accent,
+          `${r.behind} commit${r.behind === 1 ? "" : "s"} to pull`, `${r.ref}..${r.upstream}`)))
+        .when(!!r.upstream, el => el.child(div().flex_shrink(1).min_w(0).truncate().text_size(11).text_color(C.dim).child(r.upstream)))
+        .when(r.kind === "ref" && (r.local || r.remote), el => el.on_mouse_down("right", (_e, cx) => {
+          cx.stop_propagation();
+          const g = gitState();
+          // Items and separators as branchMenu builds them: 31 and 7 px each.
+          const [items, seps] = r.local ? (r.head ? [6, 3] : [8, 3]) : [5, 2];
+          openOverlay({ mod: MOD, kind: "popup", at: "pointer", width: 320, height: items * 31 + seps * 7 + 12,
+            props: { role: "branchmenu", name: r.short, ref: r.ref, repo: repoKey(g), current: !!r.head, local: !!r.local, upstream: r.upstream ?? "",
+              root: g.root } });
+        }));
     };
     const tree = this.panel(C).size_full().p(6).gap(2)
       .child(searchField(C, this.refSearch))
       .child(v_flex().id("refs").flex_1().min_h(0).overflow_y_scrollbar().gap(1).children(this.refRows().map(refRow)));
+    const toggle = (id, label, on, tip, change) => div().id(id).flex_none().px(4).rounded(4).font_family("Geist Mono").text_size(11)
+      .cursor_pointer().tooltip(tip).text_color(on ? C.accent : C.muted).bg(on ? wash(C.accent, C) : C.card)
+      .hover(s => s.text_color(C.ink)).on_click(() => setLogFilter(change)).child(label);
+    const chipFor = (field, label, value, clear) => h_flex().id(`log-filter-${field}`).flex_none().h(26).px(8).gap(4).items_center()
+      .rounded(5).cursor_pointer().text_size(12).hover(s => s.bg(C.bar))
+      .on_click(() => openOverlay({ mod: MOD, kind: "popup", at: "pointer", width: 320, height: field === "date" ? 210 : 380,
+        props: { role: "logfilter", field } }))
+      .child(div().text_color(C.muted).child(value ? `${label}:` : label))
+      .when(!!value, el => el.child(div().max_w(180).truncate().text_color(C.ink).child(value))
+        .child(xButton(C, `log-filter-clear-${field}`, `Clear the ${label.toLowerCase()} filter`, () => setLogFilter(clear), 18)))
+      .when(!value, el => el.child(div().text_size(10).text_color(C.muted).child("▾")));
+    const toolbar = h_flex().flex_none().h(36).px(4).gap(4).items_center()
+      .child(h_flex().w(280).flex_none().h(28).px(8).gap(6).items_center().rounded(6).bg(C.card).border(1).border_color(C.input)
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .child(svg(`mods/${MOD}/icons/search.svg`).size(13).text_color(C.muted).flex_none())
+        .child(div().flex_1().min_w(0).text_size(12).when(!!this.logSearch, el => el.child(Input.new(this.logSearch))))
+        .child(toggle("log-regex", ".*", f.regex, "Regular expression", { regex: !f.regex }))
+        .child(toggle("log-case", "Cc", f.cs, "Match case", { cs: !f.cs })))
+      .child(chipFor("branch", "Branch", f.ref ? shortRef(f.ref) : null, { ref: null }))
+      .child(chipFor("user", "User", f.users.length === 1 ? f.users[0] : f.users.length ? `${f.users.length} users` : null, { users: [] }))
+      .child(chipFor("date", "Date", SINCE.find(([v]) => v === f.since)?.[1] ?? null, { since: null }))
+      .child(chipFor("paths", "Paths", f.paths.length === 1 ? f.paths[0] : f.paths.length ? `${f.paths.length} paths` : null, { paths: [] }))
+      .child(div().flex_1())
+      .child(iconButton(C, "git-fetch", this.fetching ? "Fetching…" : "Fetch all remotes", "fetch", (_e, cx) => {
+        if (this.fetching) return;
+        this.fetching = true;
+        cx.notify();
+        cx.spawn(async (cx) => { await gitRun(g.root, ["fetch", "--all", "--prune"], "Fetched"); this.fetching = false; cx.notify(); });
+      }));
     const commits = this.panel(C).size_full().p(4)
+      .child(toolbar)
       .child(!log?.commits
         ? this.empty(C, "Loading…")
         : shown.length === 0
-          ? this.empty(C, q ? "No commit matches." : "No commits yet.")
-          : uniform_list("log", shown.length, (k) => all[shown[k]].hash, (range) => shown.slice(range.start, range.end).map(row))
-            .flex_1().on_item_click((hash, cx) => { this.treeFocus?.focus(); this.selectCommit(hash, cx); cx.notify(); }))
-      .when(all.length >= LOG_MAX, el => el.child(div().flex_none().px(8).py(4).text_size(11).text_color(C.muted)
-        .child(`Showing the latest ${LOG_MAX} commits.`)));
+          ? this.empty(C, text || f.users.length || f.paths.length || f.ref || f.since ? "No commit matches." : "No commits yet.")
+          // A press in the graph of a row with an arrow follows the arrow to the commit at its other end. The press is
+          // caught on a wrapper: Herdr wires pointer handlers on plain elements, not on the list itself.
+          : v_flex().flex_1().min_h(0).on_mouse_down("left", (e) => { this.logPressX = e.local_position?.x ?? 999; })
+            .child(v_virtual_list("log", shown.length, LOG_ROW, (k) => all[shown[k]].hash, (range) => {
+            return shown.slice(range.start, range.end).map(i => row(i, lanesWide));
+          })
+            .flex_1().when(!!this.logScroll, el => el.track_scroll(this.logScroll))
+            .on_item_click((hash, cx) => {
+              this.treeFocus?.focus();
+              const i = all.findIndex(c => c.hash === hash);
+              const a = lanesWide ? log.rows[i]?.arrow : null;
+              const target = a && Math.abs((this.logPressX ?? 999) - (9 + a.lane * LANE_W)) <= 8 ? a.to : null;
+              if (target && all.some(c => c.hash === target)) this.jumpToHash(target, cx);
+              else this.selectCommit(hash, cx);
+              cx.notify();
+            })))
+      .when(all.length >= LOG_MAX || !log?.full, el => el.child(div().flex_none().px(8).py(4).text_size(11).text_color(C.muted)
+        .child(log?.full ? `Showing the latest ${LOG_MAX} commits.` : `Loading the whole history… ${all.length} commits so far.`)));
     const key = targetAgent()?.address ?? "none";
     const saved = (shared(WIDTHS_KEY) ?? {})[key]?.log ?? {};
     // A file picked in the details opens its diff in a fourth panel; the group gets its own id, so both layouts keep their sizes.
@@ -1095,13 +1587,49 @@ export default class Board extends View {
           .child(panel(null, 0, 0, commits, "x"))
           .child(panel(saved.right ?? 380, 240, 900, details, "l")));
   }
-  // Row two of the header on Log: the worktree, a search over subjects, hashes and authors, the repository path.
+  // Row two of the header on Log: the worktree and the repository path. The filters sit over the commit list.
   logBar(C) {
     const g = gitState();
     return h_flex().h(28).gap(10).items_center()
       .child(this.worktreePicker(C))
-      .when(!!this.logSearch, el => el.child(div().w(300).flex_none().child(searchField(C, this.logSearch).h(28).mx(0).mb(0))))
       .child(div().font_family("Geist Mono").text_size(11).text_color(C.dim).truncate().child(tilde(g.root ?? viewFolder() ?? "")));
+  }
+  // The popups of the Log filters: one ref, any authors, a start date, any top-level paths.
+  logFilterPopup(C) {
+    const { field, overlay } = props();
+    const f = logFilter();
+    const meta = shared(LOG_META_KEY) ?? { refs: [], authors: [] };
+    const q = (this.filterSearch?.value() ?? "").trim().toLowerCase();
+    const sel = theme().selection ?? C.selected;
+    const box = (checked) => div().size(16).flex().flex_none().items_center().justify_center().rounded(4)
+      .border(1).border_color(checked ? C.accent : C.input).bg(checked ? C.accent : C.card)
+      .text_size(11).text_color(C.card).child(checked ? "✓" : "");
+    const row = (id, onClick, selected) => h_flex().id(id).flex_none().h(30).px(10).gap(8).items_center().rounded(5).cursor_pointer()
+      .text_size(12).bg(selected ? sel : C.bg).hover(s => s.bg(selected ? sel : C.selected)).on_click(onClick);
+    const toggleIn = (list, v) => list.includes(v) ? list.filter(x => x !== v) : [...list, v];
+    let items = [];
+    if (field === "branch") {
+      items = meta.refs.filter(r => matches(q, shortRef(r))).slice(0, 300).map(r => row(`f-${r}`, () => { setLogFilter({ ref: r }); closeOverlay(overlay); }, f.ref === r)
+        .child(svg(`mods/${MOD}/icons/${r.startsWith("refs/tags/") ? "tag" : "branch"}.svg`).size(12).text_color(C.muted).flex_none())
+        .child(div().flex_1().min_w(0).truncate().child(shortRef(r))));
+    } else if (field === "user") {
+      items = meta.authors.filter(a => matches(q, a)).map(a => row(`f-${a}`, () => setLogFilter({ users: toggleIn(f.users, a) }), false)
+        .child(box(f.users.includes(a))).child(div().flex_1().min_w(0).truncate().child(a)));
+    } else if (field === "date") {
+      items = [[null, "Any time"], ...SINCE].map(([v, label]) => row(`f-${label}`, () => { setLogFilter({ since: v }); closeOverlay(overlay); }, f.since === v)
+        .child(div().flex_1().child(label)));
+    } else {
+      items = (this.pathEntries ?? []).filter(e => matches(q, e.name)).map(e => row(`f-${e.name}`, () => setLogFilter({ paths: toggleIn(f.paths, e.name) }), false)
+        .child(box(f.paths.includes(e.name)))
+        .child(svg(`mods/${MOD}/icons/${e.dir ? "folder" : "file"}.svg`).size(12).text_color(e.dir ? C.accent : C.muted).flex_none())
+        .child(div().flex_1().min_w(0).truncate().child(e.name)));
+    }
+    return v_flex().size_full().p(6).gap(2).bg(C.bg).text_color(C.ink)
+      .when(!!this.filterSearch, el => el.child(searchField(C, this.filterSearch).mt(4)))
+      .child(v_flex().id("filter-items").flex_1().min_h(0).overflow_y_scrollbar().gap(1)
+        .when(!items.length, el => el.child(div().px(10).py(10).text_size(12).text_color(C.muted)
+          .child(field === "paths" && !this.pathEntries ? "Loading…" : "Nothing matches.")))
+        .children(items));
   }
   // Branch of the shown folder; with more than one worktree it opens a list of them.
   worktreePicker(C) {
@@ -1270,7 +1798,7 @@ export default class Board extends View {
               .child(div().text_color(C.ink).truncate().child(l.place))
               .child(div().flex_none().child(`· space ${a.space_name}`))))
           .when(!!l.info, el => el.child(div().font_family("Geist Mono").text_size(11)
-            .text_color(pctColor(C, l.info.ctx)).child(`${l.info.ctx}%`)))
+            .text_color(ctxColor(C, l.info.ctx)).child(`${l.info.ctx}%`)))
           .when(selected, el => el.child(div().text_size(13).text_color(C.accent).child("✓")));
         return i ? [line, row] : [row];
       }))
@@ -1467,7 +1995,7 @@ export default class Board extends View {
             })
             .child(info.sid.slice(0, 8)))
           .child(div().text_color(C.dim).child("·")))
-        .child(div().text_color(pctColor(C, info.ctx)).child(`${info.ctx}% (${kTokens(info.tokens)})`))
+        .child(div().text_color(ctxColor(C, info.ctx)).child(`${info.ctx}% (${kTokens(info.tokens)})`))
         .child(iconButton(C, `compact-${p.pane}`, "Compact the context (/compact)", "compact",
           (_e, cx) => { this.compacting = true; cx.notify(); }))
         .child(vbar(C))
@@ -1637,7 +2165,7 @@ export default class Board extends View {
     const fileRow = (f, depth) => {
       const current = sel?.path === f.path;
       const parts = f.path.split("/");
-      return h_flex().id(`change-${f.path}`).h(asTree ? 26 : 40).flex_none().pl(8 + depth * 16).pr(8).gap(8).items_center()
+      return h_flex().id(`change-${f.path}`).h(asTree ? 26 : 40).flex_none().pl(asTree ? 8 + depth * TREE_STEP + TREE_FILE : 8).pr(8).gap(8).items_center()
         .rounded(5).cursor_pointer()
         .bg(current ? theme().selection ?? C.selected : C.card).hover(s => s.bg(current ? theme().selection ?? C.selected : C.bar))
         .on_click(pick(f.path))
@@ -1651,7 +2179,7 @@ export default class Board extends View {
         .child(num(`+${f.add}`, theme().done))
         .when(f.del > 0, el => el.child(num(`−${f.del}`, C.danger)));
     };
-    const dirRow = (r) => h_flex().id(`change-dir-${r.path}`).h(26).flex_none().pl(8 + r.depth * 16).pr(8).gap(6).items_center()
+    const dirRow = (r) => h_flex().id(`change-dir-${r.path}`).h(26).flex_none().pl(8 + r.depth * TREE_STEP).pr(8).gap(6).items_center()
       .rounded(5).cursor_pointer().hover(s => s.bg(C.bar)).text_size(12)
       .on_click((_e, cx) => {
         this.changeCollapsed.has(r.path) ? this.changeCollapsed.delete(r.path) : this.changeCollapsed.add(r.path);
@@ -1721,6 +2249,9 @@ export default class Board extends View {
     if (role === "projectfilter") return this.projectFilterPopup(C);
     if (role === "statusfilter") return this.statusFilterPopup(C);
     if (role === "pathmenu") return this.pathMenu(C);
+    if (role === "branchmenu") return this.branchMenu(C);
+    if (role === "gitdialog") return this.gitDialog(C);
+    if (role === "logfilter") return this.logFilterPopup(C);
     if (view() === "files") return this.filesView(C);
     if (view() === "changes") return this.changesView(C);
     if (view() === "log") return this.logView(C);
