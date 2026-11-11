@@ -47,6 +47,11 @@ const states = () => {
     { key: "idle", label: "Idle", color: t.idle },
   ];
 };
+// A framed search field with a magnifier, for the popup lists.
+const searchField = (C, state) => h_flex().flex_none().h(32).mx(4).mb(4).px(10).gap(8).items_center().rounded(6)
+  .bg(C.card).border_1().border_color(C.input).text_size(12)
+  .child(svg(`mods/${MOD}/icons/search.svg`).size(14).text_color(C.muted).flex_none())
+  .child(div().flex_1().min_w(0).child(Input.new(state)));
 const pctColor = (C, pct) => pct >= 80 ? C.danger : pct >= 60 ? theme().blocked : C.accent;
 const tilde = (path) => {
   const h = home();
@@ -88,17 +93,30 @@ const visibleAgents = (active) => {
   const f = filter();
   return agents().filter(a => (f.scope === "all" || a.space === active?.id) && (f.agents === "all" || ATTENTION.includes(a.status)));
 };
-// Agents working in a project folder, also ones started by hand in a space of another folder.
-const projectAgents = (p, all) => all.filter(a => {
-  const f = agentFolder(a);
-  return f && (f === p.folder || f.startsWith(p.folder + "/"));
-});
-const closedProjects = () => projects().filter(p => !spaces().some(s => s.folder === p.folder && !s.machine));
-// Popups get an explicit height: without one the scroll list (flex_1) collapses to nothing.
-const spacesPopupHeight = () => {
-  const closed = closedProjects().length;
-  return Math.min(POPUP_MAX, 84 + spaces().length * 54 + (closed ? 26 + closed * 54 : 0) + 64);
+// One row per folder: saved projects, then folders of agents outside them.
+// Each agent counts once, in the deepest folder that holds it. Rows with agents go first, then open ones.
+const projectRows = (all) => {
+  const open = spaces().filter(s => s.folder && !s.machine);
+  const rows = projects().map(p => ({ ...p, saved: true, agents: [] }));
+  for (const a of all) {
+    const f = agentFolder(a) ?? spaces().find(s => s.id === a.space)?.folder;
+    if (!f) continue;
+    let best = null;
+    for (const r of rows) {
+      if ((f === r.folder || f.startsWith(r.folder + "/")) && (!best || r.folder.length > best.folder.length)) best = r;
+    }
+    if (!best) rows.push(best = { name: baseName(f), folder: f, saved: false, agents: [] });
+    best.agents.push(a);
+  }
+  for (const r of rows) {
+    r.space = open.find(s => s.folder === r.folder) ?? null;
+    r.agents.sort((x, y) => ATTENTION.includes(y.status) - ATTENTION.includes(x.status));
+  }
+  const rank = (r) => r.agents.length ? 0 : r.space ? 1 : 2;
+  return rows.sort((x, y) => rank(x) - rank(y));
 };
+// Popups get an explicit height: without one the scroll list (flex_1) collapses to nothing.
+const projectsPopupHeight = () => Math.min(POPUP_MAX, 124 + projectRows(agents()).length * 54);
 const worktreesPopupHeight = () => Math.min(WT_POPUP_MAX, 92 + gitState().worktrees.length * 50);
 const matches = (q, ...texts) => !q || texts.some(t => (t ?? "").toLowerCase().includes(q));
 // macOS: a native dialog that takes several folders at once. Elsewhere, or if it can't run, Herdr's single picker.
@@ -211,11 +229,13 @@ const limitPill = (C, items, title, titleColor, border) => h_flex().h(34).px(12)
     .when(!!l.reset, el => el.child(div().text_size(11).text_color(C.muted).child(`resets ${l.reset}`)))));
 
 export default class Board extends View {
-  init(p, cx) {
+  init(_props, cx) {
+    // The props argument comes in empty; props() has the role.
+    const p = props();
     this.observed = {};
     this.confirming = null;
     if (p?.role === "spaces") {
-      this.spaceSearch = InputState.new({ placeholder: "Filter spaces and projects" });
+      this.spaceSearch = InputState.new({ placeholder: "Filter projects" });
       this.spaceSearch.on("change", (_e, cx) => cx.notify());
       this.spaceSearch.focus();
     }
@@ -248,6 +268,10 @@ export default class Board extends View {
     }
   }
   sync(cx) {
+    // A space opened in a new folder makes that folder a project.
+    const known = new Set(projects().map(p => p.folder));
+    const fresh = [...new Set(spaces().filter(s => s.folder && !s.machine && !known.has(s.folder)).map(s => s.folder))];
+    if (fresh.length) setShared(PROJECTS_KEY, [...projects(), ...fresh.map(folder => ({ name: baseName(folder), folder }))]);
     const folder = viewFolder();
     if (folder !== this.folder) {
       this.folder = folder;
@@ -564,7 +588,7 @@ export default class Board extends View {
         .when(v === "board", el => el.child(h_flex().id("space-picker").h(34).pl(12).pr(10).gap(8).items_center().rounded(7).flex_none()
           .bg(C.bg).border(1).border_color(C.line).cursor_pointer().hover(s => s.border_color(C.input))
           .on_click(() => openOverlay({ mod: MOD, props: { role: "spaces" }, kind: "popup", width: 460,
-            height: spacesPopupHeight(), at: { x: 52, y: 52 } }))
+            height: projectsPopupHeight(), at: { x: 52, y: 52 } }))
           .child(dot(C.accent, 8))
           .child(div().text_size(16).font_semibold().text_color(C.ink).child(active?.name ?? "No space"))
           .child(div().text_size(11).text_color(C.muted).child("▾"))))
@@ -582,7 +606,14 @@ export default class Board extends View {
           () => setFilter({ agents: f.agents === "all" ? "attention" : "all" })))
         .child(div().flex_1())
         .child(h_flex().gap(6).items_center().flex_none().text_size(11).text_color(C.muted)
-          .child(dot(theme().done, 6)).child(`${list.length} agents across ${spaces().length} spaces`))))
+          .child(dot(theme().done, 6)).child(`${list.length} agents across ${spaces().length} spaces`))
+        .child(h_flex().id("new-agent").h(28).px(12).gap(6).items_center().rounded(6).flex_none().bg(C.accent).cursor_pointer()
+          .text_size(12).font_semibold().text_color(C.card).hover(s => s.opacity(0.82))
+          .tooltip("Start Claude in a new tab of this space")
+          .on_click(() => run("tab.new", active
+            ? { space: active.id, folder: active.folder, name: "claude", argv: ["claude"] }
+            : { name: "claude", argv: ["claude"] }))
+          .child("+ Agent"))))
       .when(v === "files", el => el.child(this.filesBar(C)))
       .when(v === "changes", el => el.child(this.changesBar(C)));
   }
@@ -635,7 +666,7 @@ export default class Board extends View {
     return v_flex().w_full().h(worktreesPopupHeight()).p(6).gap(2).bg(C.bg).text_color(C.ink)
       .child(h_flex().flex_none().px(10).pt(6).pb(2).items_center().text_size(10).text_color(C.muted)
         .child(div().flex_1().child("WORKTREES")).child(q ? `${shown.length} of ${g.worktrees.length}` : String(g.worktrees.length)))
-      .when(!!this.wtSearch, el => el.child(div().flex_none().px(4).pb(4).text_size(12).child(Input.new(this.wtSearch))))
+      .when(!!this.wtSearch, el => el.child(searchField(C, this.wtSearch)))
       .child(v_flex().id("worktree-list").flex_1().min_h(0).overflow_y_scrollbar().gap(2)
       .when(shown.length === 0, el => el.child(div().px(10).py(12).text_size(12).text_color(C.muted).child("No worktree matches.")))
       .children(shown.map(w => {
@@ -730,58 +761,45 @@ export default class Board extends View {
       .child(div().px(10).pb(4).text_size(11).text_color(C.muted)
         .child("Picking an agent also focuses its terminal below."));
   }
-  // One list for both: open spaces first, then saved projects that have no open space.
+  // One list of projects. A row goes to its agent, else to its open space, else opens a space with Claude.
   spacesPopup(C) {
     const overlay = props().overlay;
-    const all = agents();
-    const saved = new Set(projects().map(p => p.folder));
-    const section = (label) => div().px(10).pt(6).pb(2).text_size(10).text_color(C.muted).child(label);
+    const active = spaces().find(s => s.active);
     const row = (id, onClick) => h_flex().id(id).flex_none().gap(10).items_center().px(10).py(8).rounded(6).cursor_pointer()
       .hover(st => st.bg(C.selected)).on_click(onClick);
     const details = (name, folder) => v_flex().flex_1().min_w(0).gap(2)
       .child(div().text_size(13).font_semibold().truncate().child(name))
       .child(div().font_family("Geist Mono").text_size(11).text_color(C.muted).truncate().child(tilde(folder) || "~"));
     const q = (this.spaceSearch?.value() ?? "").trim().toLowerCase();
-    const open = spaces().filter(s => matches(q, s.name, s.folder, tilde(s.folder)));
-    const closed = closedProjects().filter(p => matches(q, p.name, p.folder, tilde(p.folder)));
-    return v_flex().w_full().h(spacesPopupHeight()).p(6).gap(2).bg(C.bg).text_color(C.ink)
-      .when(!!this.spaceSearch, el => el.child(div().flex_none().px(4).pt(4).pb(4).text_size(12).child(Input.new(this.spaceSearch))))
-      .child(v_flex().id("space-list").flex_1().min_h(0).overflow_y_scrollbar().gap(2)
-        .when(open.length > 0, el => el.child(section("SPACES")))
-        .children(open.map(s => {
-          const n = all.filter(a => a.space === s.id).length;
-          const isSaved = saved.has(s.folder);
-          return row(`space-${s.id}`, () => { run("space.select", { id: s.id }); closeOverlay(overlay); })
-            .when(s.active, el => el.bg(C.selected))
-            .child(dot(states().find(x => x.key === s.status)?.color ?? C.dim, 8))
-            .child(details(s.name, s.folder))
-            .child(div().text_size(11).text_color(C.muted).flex_none().child(n ? `${n} agent${n > 1 ? "s" : ""}` : "no agents"))
-            .when(isSaved, el => el.child(div().text_size(10).text_color(C.accent).flex_none().tooltip("Saved project").child("PROJECT")))
-            .when(!isSaved && !!s.folder && !s.machine, el => el.child(chip(C, `save-${s.id}`, "Save", false, (_e, cx) => {
+    const rows = projectRows(agents()).filter(r => matches(q, r.name, r.folder, tilde(r.folder), r.space?.name));
+    return v_flex().w_full().h(projectsPopupHeight()).p(6).gap(2).bg(C.bg).text_color(C.ink)
+      .when(!!this.spaceSearch, el => el.child(searchField(C, this.spaceSearch).mt(4)))
+      .child(v_flex().id("project-list").flex_1().min_h(0).overflow_y_scrollbar().gap(2)
+        .child(div().px(10).pt(6).pb(2).text_size(10).text_color(C.muted).child("PROJECTS"))
+        .children(rows.map(r => {
+          const n = r.agents.length;
+          return row(`project-${r.folder}`, () => {
+            if (n) run("agent.focus", { terminal: r.agents[0].address });
+            else if (r.space) run("space.select", { id: r.space.id });
+            else openProject(r);
+            closeOverlay(overlay);
+          })
+            .when(!!active && r.space?.id === active.id, el => el.bg(C.selected))
+            .tooltip(n ? "Go to its agent" : r.space ? "Go to its space" : "Open a space here and start Claude")
+            .child(n
+              ? dot(states().find(x => x.key === r.agents[0].status)?.color ?? C.dim, 8)
+              : r.space ? dot(C.dim, 8) : div().size(8).rounded(2).bg(C.accent).flex_none())
+            .child(details(r.name, r.folder))
+            .child(div().text_size(11).text_color(C.muted).flex_none()
+              .child(n ? `${n} agent${n > 1 ? "s" : ""}` : r.space ? "open" : "not open"))
+            .when(r.saved && !n && !r.space,
+              el => el.child(xButton(C, `remove-${r.folder}`, "Remove project", () => removeProject(r.folder), 20)))
+            .when(!r.saved, el => el.child(chip(C, `save-${r.folder}`, "Save", false, (_e, cx) => {
               cx.stop_propagation();
-              setShared(PROJECTS_KEY, [...projects(), { name: baseName(s.folder), folder: s.folder }]);
+              setShared(PROJECTS_KEY, [...projects(), { name: r.name, folder: r.folder }]);
             })));
         }))
-        .when(closed.length > 0, el => el.child(section("PROJECTS"))
-          .children(closed.map(p => {
-            const here = projectAgents(p, all);
-            // A project with an agent in it goes to that agent; otherwise it opens a space.
-            return row(`open-${p.folder}`, () => {
-              if (here.length) run("agent.focus", { terminal: here[0].address });
-              else openProject(p);
-              closeOverlay(overlay);
-            })
-            .tooltip(here.length ? "Go to its agent" : "Open a space here and start Claude")
-            .child(here.length
-              ? dot(states().find(x => x.key === here[0].status)?.color ?? C.dim, 8)
-              : div().size(8).rounded(2).bg(C.accent).flex_none())
-            .child(details(p.name, p.folder))
-            .child(div().text_size(11).text_color(C.muted).flex_none()
-              .child(here.length ? `${here.length} agent${here.length > 1 ? "s" : ""}` : "not open"))
-            .child(xButton(C, `remove-${p.folder}`, "Remove project", () => removeProject(p.folder), 20));
-          })))
-        .when(!open.length && !closed.length, el => el.child(div().px(10).py(12).text_size(12).text_color(C.muted)
-          .child("Nothing matches."))))
+        .when(!rows.length, el => el.child(div().px(10).py(12).text_size(12).text_color(C.muted).child("Nothing matches."))))
       .child(div().h(1).mx(4).my(6).bg(C.line))
       .child(row("project-add", (_e, cx) => cx.spawn(async () => {
         const folders = await pickFolders();
@@ -793,7 +811,7 @@ export default class Board extends View {
         // One folder opens at once; several are only saved, to open from this list.
         if (folders.length === 1) openProject({ name: baseName(folders[0]), folder: folders[0] });
         else notify({ title: `Added ${added.length} project${added.length === 1 ? "" : "s"}`,
-          body: "Open them from the space list.", level: "info", timeout: 3000 });
+          body: "Open them from the project list.", level: "info", timeout: 3000 });
       }))
         .text_size(12).text_color(C.muted).hover(st => st.text_color(C.ink))
         .child("+").child("Add projects… (one opens a space with Claude)"));
