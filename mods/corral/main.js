@@ -73,10 +73,7 @@ const PICKER_X = 310;
 const copyKeys = () => (appWindow()?.platform ?? "macos") === "macos"
   ? { relative: "cmd-shift-c", absolute: "alt-shift-c", relLabel: "⌘⇧C", absLabel: "⌥⇧C" }
   : { relative: "ctrl-shift-c", absolute: "alt-shift-c", relLabel: "Ctrl+Shift+C", absLabel: "Alt+Shift+C" };
-const copyText = (cx, text) => {
-  cx.write_to_clipboard(text);
-  notify({ title: "Path copied", body: text, level: "info", timeout: 2000 });
-};
+const copyText = (cx, text) => cx.write_to_clipboard(text);
 const pctColor = (C, pct) => pct >= 80 ? C.danger : pct >= 60 ? theme().blocked : C.accent;
 const tilde = (path) => {
   const h = home();
@@ -249,8 +246,8 @@ const chip = (C, id, label, selected, onClick) => h_flex().id(id).h(28).px(11).g
   .bg(selected ? C.selected : C.card).border(1).border_color(selected ? C.input : C.line)
   .text_size(11).text_color(selected ? C.accent : C.muted).cursor_pointer().hover(s => s.border_color(C.input))
   .on_click(onClick).child(label);
-const xButton = (C, id, tip, onClick, size = 22) => div().id(id).size(size).flex().flex_none().items_center().justify_center()
-  .rounded(5).text_size(13).text_color(C.dim).cursor_pointer().hover(s => s.bg(C.selected).text_color(C.ink))
+const xButton = (C, id, tip, onClick, size = 22, glyph = 13) => div().id(id).size(size).flex().flex_none().items_center().justify_center()
+  .rounded(5).text_size(glyph).text_color(C.dim).cursor_pointer().hover(s => s.bg(C.selected).text_color(C.ink))
   .tooltip(tip).on_click((e, cx) => { cx.stop_propagation(); onClick(e, cx); }).child("×");
 const limitPill = (C, items, title, titleColor, border) => h_flex().h(34).px(12).gap(10).items_center().rounded(7).flex_none()
   .bg(C.bg).border(1).border_color(border)
@@ -273,6 +270,7 @@ export default class Board extends View {
       this.spaceSearch.focus();
     }
     if (p?.role === "terminals") this.railFocus = cx.focus_handle();
+    if (!p?.role || p.role === "header") this.selfFocus = cx.focus_handle();
     if (p?.role === "worktrees") {
       this.wtSearch = InputState.new({ placeholder: "Search branch or path" });
       this.wtSearch.on("change", (_e, cx) => cx.notify());
@@ -847,7 +845,7 @@ export default class Board extends View {
     return h_flex().id("agent-picker").h(34).pl(12).pr(10).gap(8).items_center().rounded(7).flex_none()
       .bg(C.bg).border(1).border_color(C.line).cursor_pointer().hover(s => s.border_color(C.input)).tooltip("Pick an agent")
       .on_click(() => openOverlay({ mod: MOD, props: { role: "agents" }, kind: "popup", width: 520,
-        height: 40 + Math.max(1, n) * 70 + 46, at: { x: PICKER_X, y: 52 } }))
+        height: 40 + Math.max(1, n) * 73 + 46, at: { x: PICKER_X, y: 52 } }))
       .child(dot(a ? states().find(s => s.key === a.status)?.color ?? C.dim : C.dim, 8))
       .when(!!a, el => el
         .child(div().text_size(15).font_semibold().text_color(C.ink).child(l.model))
@@ -862,11 +860,13 @@ export default class Board extends View {
     const current = targetAgent();
     return v_flex().size_full().p(6).gap(2).bg(C.bg).text_color(C.ink)
       .child(div().px(10).pt(6).pb(2).text_size(10).text_color(C.muted).child("ACTIVE AGENTS"))
-      .children(agents().map(a => {
+      // A thin line between agents, so the rows don't run together.
+      .children(agents().flatMap((a, i) => {
         const l = this.agentLabel(a);
         const st = states().find(s => s.key === a.status);
         const selected = current?.address === a.address;
-        return h_flex().id(`pick-${a.address}`).h(66).px(10).gap(10).items_center().rounded(6).cursor_pointer()
+        const line = div().flex_none().h(1).mx(10).bg(C.line);
+        const row = h_flex().id(`pick-${a.address}`).flex_none().h(66).px(10).gap(10).items_center().rounded(6).cursor_pointer()
           .bg(selected ? C.selected : C.bg).hover(s => s.bg(C.selected))
           .on_click(() => {
             setShared(TARGET_KEY, { address: a.address, focus: a.address });
@@ -887,6 +887,7 @@ export default class Board extends View {
           .when(!!l.info, el => el.child(div().font_family("Geist Mono").text_size(11)
             .text_color(pctColor(C, l.info.ctx)).child(`${l.info.ctx}%`)))
           .when(selected, el => el.child(div().text_size(13).text_color(C.accent).child("✓")));
+        return i ? [line, row] : [row];
       }))
       .child(div().h(1).mx(4).my(4).bg(C.line))
       .child(div().px(10).pb(4).text_size(11).text_color(C.muted)
@@ -1036,7 +1037,7 @@ export default class Board extends View {
           () => run("pane.split", { pane: p.pane, direction: "right" })))
         .child(iconButton(C, `split-down-${p.pane}`, "Split down: a new terminal below", "split-down",
           () => run("pane.split", { pane: p.pane, direction: "down" })))
-        .child(xButton(C, `pane-close-${p.pane}`, "Close pane", () => run("pane.close", { pane: p.pane }))));
+        .child(xButton(C, `pane-close-${p.pane}`, "Close pane", () => run("pane.close", { pane: p.pane }), 22, 17)));
   }
   panel(C) {
     return v_flex().min_w(0).min_h(0).rounded(8).overflow_hidden().bg(C.card).border(1).border_color(C.line);
@@ -1059,7 +1060,6 @@ export default class Board extends View {
   copyPath(path) {
     return (_e, cx) => {
       cx.write_to_clipboard(path);
-      notify({ title: "Path copied", body: tilde(path), level: "info", timeout: 2000 });
     };
   }
   empty(C, text) {
@@ -1127,7 +1127,7 @@ export default class Board extends View {
           () => exec("open", [file.path]).catch(() => {}))));
       const lines = file.lines;
       body.push(lines && this.editor
-        ? div().flex_1().min_h(0).py(4).child(Editor.new(this.editor).size_full())
+        ? div().flex_1().min_h(0).py(4).on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Editor.new(this.editor).size_full())
         : this.empty(C, file.note));
     }
     return this.pathKeys(v_flex().size_full().px(24).pt(14).pb(16).bg(C.bg), () => this.treeSel ?? file?.path)
@@ -1249,7 +1249,13 @@ export default class Board extends View {
     return this.pathKeys(v_flex().size_full().px(24).pt(14).pb(16).bg(C.bg), () => sel && `${g.root}/${sel.path}`)
       .child(this.split("changes", list, this.panel(C).size_full().children(body)));
   }
+  // The header and the main area keep the keyboard themselves: a press on them must not hand focus to a terminal.
   render() {
+    const el = this.renderView();
+    if (!this.selfFocus) return el;
+    return el.track_focus(this.selfFocus).on_mouse_down("left", (_e, cx) => { this.selfFocus.focus(); cx.stop_propagation(); });
+  }
+  renderView() {
     const C = palette();
     const STATES = states();
     const role = props()?.role;
