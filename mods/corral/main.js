@@ -80,7 +80,7 @@ const searchField = (C, state) => h_flex().flex_none().h(32).mx(4).mb(4).px(10).
   .child(svg(`mods/${MOD}/icons/search.svg`).size(14).text_color(C.muted).flex_none())
   .child(div().flex_1().min_w(0).child(Input.new(state)));
 // The picker sits after the view switch and the slash; its popups open under it.
-const PICKER_X = 377;
+const PICKER_X = 370;
 // Copy-path chords: Cmd on macOS, Ctrl elsewhere (GPUI's "cmd" is the Windows/Super key there).
 // The window is not there while the module loads, so this is asked on use.
 const copyKeys = () => (appWindow()?.platform ?? "macos") === "macos"
@@ -321,14 +321,16 @@ const chip = (C, id, label, selected, onClick) => h_flex().id(id).h(28).px(11).g
 const xButton = (C, id, tip, onClick, size = 22, glyph = 13) => div().id(id).size(size).flex().flex_none().items_center().justify_center()
   .rounded(5).text_size(glyph).text_color(C.dim).cursor_pointer().hover(s => s.bg(C.selected).text_color(C.ink))
   .tooltip(tip).on_click((e, cx) => { cx.stop_propagation(); onClick(e, cx); }).child("×");
+// A thin vertical line between groups of controls.
+const vbar = (C, height = 16) => div().w(1).h(height).flex_none().bg(C.line);
 const limitPill = (C, items, title, titleColor, border) => h_flex().h(34).px(12).gap(10).items_center().rounded(7).flex_none()
   .bg(C.bg).border(1).border_color(border)
   .when(!!title, el => el.child(div().text_size(12).font_semibold().text_color(titleColor).child(title)))
-  .children(items.map(l => h_flex().gap(8).items_center()
+  .children(items.flatMap((l, i) => [i ? vbar(C) : null, h_flex().gap(8).items_center()
     .child(div().text_size(12).font_semibold().text_color(C.ink).child(l.label))
     .child(meter(C, title ? 60 : 80, l.pct, title ? C.fable : pctColor(C, l.pct)))
     .child(div().font_family("Geist Mono").text_size(12).text_color(title ? C.fable : pctColor(C, l.pct)).child(`${l.pct}%`))
-    .when(!!l.reset, el => el.child(div().text_size(11).text_color(C.muted).child(`resets ${l.reset}`)))));
+    .when(!!l.reset, el => el.child(div().text_size(11).text_color(C.muted).child(`resets ${l.reset}`)))]).filter(Boolean));
 
 export default class Board extends View {
   init(_props, cx) {
@@ -702,7 +704,7 @@ export default class Board extends View {
     return v_flex().size_full().bg(C.bar).px(24).pt(19).gap(12)
       .child(h_flex().items_center().gap(12)
         .child(this.viewSwitch(C))
-        .child(div().text_size(18).text_color(C.dim).child("/"))
+        .child(vbar(C, 22))
         .when(v !== "board", el => el.child(this.agentPicker(C)))
         .when(v === "board", el => el.child(h_flex().id("space-picker").h(34).pl(12).pr(10).gap(8).items_center().rounded(7).flex_none()
           .bg(C.bg).border(1).border_color(C.line).cursor_pointer().hover(s => s.border_color(C.input))
@@ -1162,8 +1164,8 @@ export default class Board extends View {
     return h_flex().p(3).gap(2).items_center().rounded(8).bg(C.bg).border(1).border_color(C.line).flex_none()
       .child(tab("board", "Board", "view-board"))
       .child(tab("files", "Files", "folder"))
-      .child(tab("changes", "Changes", "branch"))
-      .child(tab("log", "Log", "commit"));
+      .child(tab("log", "Log", "commit"))
+      .child(tab("changes", "Changes", "branch"));
   }
   projectFilterLabel() {
     const picked = filter().projects;
@@ -1437,7 +1439,7 @@ export default class Board extends View {
       .child(dot(states().find(s => s.key === p?.status)?.color ?? C.dim, 7))
       .child(icon(C, p?.program, 14))
       .child(div().text_size(12).font_semibold().text_color(C.ink).child(info?.model || p?.program?.name || "Terminal"))
-      .child(div().font_family("Geist Mono").text_size(11).text_color(C.muted).child(info?.sid ? info.sid.slice(0, 8) : p?.terminal ?? ""))
+      .when(!info?.sid, el => el.child(div().font_family("Geist Mono").text_size(11).text_color(C.muted).child(p?.terminal ?? "")))
       .child(div().flex_1())
       // Compacting asks first: it sends /compact to the agent, which then summarizes and drops its context.
       .when(!!p && this.compacting, el => el
@@ -1454,16 +1456,29 @@ export default class Board extends View {
             cx.notify();
           }).child("Compact")))
       .when(!!info && !this.compacting, el => el.child(h_flex().gap(6).items_center().font_family("Geist Mono").text_size(11).mr(4)
+        // The session id, as on the card: a click copies the whole id.
+        .when(!!info.sid, el => el
+          .child(div().id(`pane-sid-${p.pane}`).px(4).py(1).rounded(4).text_color(C.muted).cursor_pointer()
+            .hover(s => s.bg(C.selected).text_color(C.ink)).tooltip(`Copy ${info.sid}`)
+            .on_click((_e, cx) => {
+              cx.stop_propagation();
+              cx.write_to_clipboard(info.sid);
+              notify({ title: "Session id copied", body: info.sid, level: "info", timeout: 2000 });
+            })
+            .child(info.sid.slice(0, 8)))
+          .child(div().text_color(C.dim).child("·")))
         .child(div().text_color(pctColor(C, info.ctx)).child(`${info.ctx}% (${kTokens(info.tokens)})`))
         .child(iconButton(C, `compact-${p.pane}`, "Compact the context (/compact)", "compact",
           (_e, cx) => { this.compacting = true; cx.notify(); }))
-        .child(div().text_color(C.dim).child("·"))
-        .child(div().text_color(C.muted).child(`$${info.cost.toFixed(2)}`))))
+        .child(vbar(C))
+        .child(div().text_color(C.muted).child(`$${info.cost.toFixed(2)}`))
+        .child(vbar(C))))
       .when(!!p && !this.compacting, el => el
         .child(iconButton(C, `split-right-${p.pane}`, "Split right: a new terminal beside", "split-right",
           () => run("pane.split", { pane: p.pane, direction: "right" })))
         .child(iconButton(C, `split-down-${p.pane}`, "Split down: a new terminal below", "split-down",
           () => run("pane.split", { pane: p.pane, direction: "down" })))
+        .child(vbar(C))
         .child(xButton(C, `pane-close-${p.pane}`, "Close pane", () => run("pane.close", { pane: p.pane }), 22, 17)));
   }
   panel(C) {
