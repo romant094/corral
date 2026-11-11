@@ -2,7 +2,7 @@ import { View, div, svg, image, uniform_list, PathBuilder } from "gpui-kit";
 import { h_flex, v_flex, Input, InputState, Editor, EditorState, h_resizable, resizable_panel } from "gpui-base";
 import {
   agents, spaces, panes, props, run, setAgentOrder, theme, shared, setShared, pickFolder,
-  home, hc, exec, readTextFile, openOverlay, closeOverlay, notify, window as appWindow,
+  home, hc, exec, readTextFile, openOverlay, closeOverlay, notify, window as appWindow, layout,
 } from "herdr";
 import * as fs from "fs/promises";
 
@@ -47,6 +47,10 @@ const LOG_ROW = 26;
 const LANE_W = 14;
 const LOG_MS = 10000;
 const LOG_QUERY_KEY = "corral.logQuery";
+// The terminal area under the bar: collapsed or not, and its height to come back to.
+const DOCK_KEY = "corral.dock";
+const DOCK_BAR = 40;
+const DOCK_MS = 200;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const WT_POPUP_MAX = 460;
 const POPUP_MAX = 560;
@@ -1327,6 +1331,31 @@ export default class Board extends View {
         .text_size(12).text_color(C.muted).hover(st => st.text_color(C.ink))
         .child("+").child("Add projects… (one opens a space with Claude)"));
   }
+  // Folds the terminals under the bar like an accordion, or opens them again, sliding the divider over DOCK_MS.
+  toggleDock(cx) {
+    if (this.docking) return;
+    const state = shared(DOCK_KEY) ?? {};
+    const find = (n) => n?.id === "workspace" ? n : (n?.children ?? []).map(find).find(Boolean);
+    const now = find(layout())?.size?.px;
+    const open = state.collapsed;
+    const height = open ? Math.max(state.height ?? 460, 160) : Math.max(now ?? 460, 160);
+    const from = open ? DOCK_BAR : height;
+    const to = open ? height : DOCK_BAR;
+    this.docking = true;
+    if (open) run("layout.show", { id: "live-terminals" });
+    setShared(DOCK_KEY, { collapsed: !open, height });
+    cx.spawn(async (cx) => {
+      const steps = 12;
+      for (let i = 1; i <= steps; i++) {
+        const t = 1 - Math.pow(1 - i / steps, 3);
+        run("layout.resize", { id: "workspace", px: Math.round(from + (to - from) * t) });
+        await cx.sleep(DOCK_MS / steps);
+      }
+      if (!open) run("layout.hide", { id: "live-terminals" });
+      this.docking = false;
+      cx.notify();
+    });
+  }
   // Inline tab rename in a terminal chip: Enter or leaving the field saves, an empty name keeps the old one.
   startRename(tab, old, cx) {
     this.finishRename(false, cx);
@@ -1353,7 +1382,8 @@ export default class Board extends View {
     const tabName = (id) => active?.tabs.find(t => t.id === id)?.name ?? "";
     const dragging = this.drag?.moved;
     // The bar keeps the keyboard itself: a press on it must not hand focus to a terminal.
-    return h_flex().id("rail-root").size_full().pl(14).pr(6).gap(10).items_center().bg(C.bar).rounded(7)
+    const collapsed = !!shared(DOCK_KEY)?.collapsed;
+    return h_flex().id("rail-root").size_full().pl(24).pr(16).gap(10).items_center().bg(C.bar)
       .when(!!this.railFocus, el => el.track_focus(this.railFocus))
       .on_mouse_down("left", (_e, cx) => { this.railFocus?.focus(); cx.stop_propagation(); })
       .on_mouse_move((e, cx) => this.moveDrag(e, cx))
@@ -1396,7 +1426,9 @@ export default class Board extends View {
         .text_size(12).font_semibold().text_color(C.card).hover(s => s.opacity(0.82))
         .tooltip("Open a shell in a new tab of this space")
         .on_click(() => run("tab.new", active ? { space: active.id } : {}))
-        .child("+ Terminal"));
+        .child("+ Terminal"))
+      .child(iconButton(C, "dock-toggle", collapsed ? "Expand terminals" : "Collapse terminals",
+        collapsed ? "chevron-up" : "chevron-down", (_e, cx) => this.toggleDock(cx)));
   }
   paneHeader(C) {
     const p = panes().find(p => p.pane === props().pane);

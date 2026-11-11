@@ -1,19 +1,117 @@
 {
-  "id": "root", "type": "column", "titlebar": "none", "theme": { "light": "one-light", "dark": "one-dark" }, "preview": "mods/corral/preview.svg",
-  "ui_font": "Geist", "font_size": 13,
-  "terminal_padding": [12, 10], "gap": 0, "resizable": false,
+  "id": "root",
+  "type": "column",
+  "titlebar": "none",
+  "theme": {
+    "light": "one-light",
+    "dark": "one-dark"
+  },
+  "preview": "mods/corral/preview.svg",
+  "ui_font": "Geist",
+  "font_size": 13,
+  "terminal_padding": [
+    12,
+    10
+  ],
+  "gap": 0,
+  "resizable": false,
   "children": [
-    { "id": "board-header", "type": "block", "size": { "px": 112 }, "window_drag": true, "content": { "mod": "corral", "props": { "role": "header" } } },
-    { "id": "board-body", "type": "column", "gap": 0, "resizable": true, "divider": { "width": 1, "color": "border" }, "children": [
-      { "id": "board-cards", "type": "block", "size": { "px": 355 }, "min": 150, "content": { "mod": "corral" } },
-      { "id": "workspace", "type": "column", "min": 220, "padding": [14, 24], "gap": 10, "resizable": false, "children": [
-        { "id": "workspace-title", "type": "block", "size": { "px": 40 }, "background": "chrome", "radius": 7, "content": { "mod": "corral", "props": { "role": "terminals" } } },
-        { "id": "live-terminals", "type": "block", "background": "canvas", "content": { "tab": "active", "pane": {
-          "gap": 12, "radius": 7, "background": "background", "lone": true,
-          "border": { "width": 1, "color": "border" }, "focus": { "width": 1, "color": "accent" },
-          "header": { "content": { "mod": "corral", "props": { "role": "pane" } }, "height": 30, "position": "top", "reveal": "always" }
-        } } }
-      ] }
-    ] }
+    {
+      "id": "board-header",
+      "type": "block",
+      "size": {
+        "px": 112
+      },
+      "window_drag": true,
+      "content": {
+        "mod": "corral",
+        "props": {
+          "role": "header"
+        }
+      }
+    },
+    {
+      "id": "board-body",
+      "type": "column",
+      "gap": 0,
+      "resizable": true,
+      "divider": {
+        "width": 1,
+        "color": "border"
+      },
+      "children": [
+        {
+          "id": "board-cards",
+          "type": "block",
+          "min": 150,
+          "content": {
+            "mod": "corral"
+          }
+        },
+        {
+          "id": "workspace",
+          "type": "column",
+          "min": 40,
+          "padding": [
+            0,
+            0
+          ],
+          "gap": 0,
+          "resizable": false,
+          "children": [
+            {
+              "id": "workspace-title",
+              "type": "block",
+              "size": {
+                "px": 40
+              },
+              "background": "chrome",
+              "content": {
+                "mod": "corral",
+                "props": {
+                  "role": "terminals"
+                }
+              }
+            },
+            {
+              "id": "live-terminals",
+              "type": "block",
+              "background": "canvas",
+              "content": {
+                "tab": "active",
+                "pane": {
+                  "gap": 1,
+                  "radius": 0,
+                  "background": "background",
+                  "lone": true,
+                  "border": {
+                    "width": 1,
+                    "color": "border"
+                  },
+                  "focus": {
+                    "width": 1,
+                    "color": "accent"
+                  },
+                  "header": {
+                    "content": {
+                      "mod": "corral",
+                      "props": {
+                        "role": "pane"
+                      }
+                    },
+                    "height": 30,
+                    "position": "top",
+                    "reveal": "always"
+                  }
+                }
+              }
+            }
+          ],
+          "size": {
+            "px": 460
+          }
+        }
+      ]
+    }
   ]
 }
