@@ -165,9 +165,9 @@ const SYNTAX_DARK = {
   operator: "#6eb4bf", punctuation: "#acb2be",
 };
 const SYNTAX_LIGHT = {
-  keyword: "#a626a4", string: "#50a14f", "string.escape": "#0184bc", comment: "#a0a1a7", function: "#4078f2",
-  type: "#c18401", number: "#986801", boolean: "#986801", constant: "#986801", variable: "#383a41",
-  operator: "#0184bc", punctuation: "#383a41",
+  keyword: "#9a2fc2", string: "#2f8a2a", "string.escape": "#0b7aa3", comment: "#808187", function: "#2f55d0",
+  type: "#a86e00", number: "#a2510a", boolean: "#a2510a", constant: "#a2510a", variable: "#24262c",
+  operator: "#0b7aa3", punctuation: "#3a3c42",
 };
 // Light or dark by the theme's background, so code colors read on either.
 const isLight = () => {

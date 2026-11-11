@@ -20,7 +20,7 @@ MAX_PARENT_HOPS = 8
 STALE_SECONDS = 7 * 86400
 
 RESET = "\x1b[0m"
-DIM = "\x1b[2;37m"
+DIM = "\x1b[90m"
 GREEN = "\x1b[32m"
 YELLOW = "\x1b[33m"
 RED = "\x1b[31m"
