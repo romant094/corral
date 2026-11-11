@@ -24,6 +24,15 @@ const WORKTREE_KEY = "corral.worktree";
 // Side panel widths in Files and Changes, per agent: { [address]: { files, changes } }.
 const WIDTHS_KEY = "corral.widths";
 const SIDE_WIDTH = { files: 280, changes: 320 };
+// Saves a panel width only when it changed, and drops the widths of agents that are gone:
+// every write is persisted and redraws every copy.
+const saveWidth = (key, kind, value) => {
+  const all = shared(WIDTHS_KEY) ?? {};
+  if (JSON.stringify(all[key]?.[kind]) === JSON.stringify(value)) return;
+  const live = new Set(agents().map(a => a.address));
+  const kept = Object.fromEntries(Object.entries(all).filter(([k]) => live.has(k) || k === key));
+  setShared(WIDTHS_KEY, { ...kept, [key]: { ...all[key], [kind]: value } });
+};
 // Changes as a folder tree (the default) or a flat list, per repository: { [root]: boolean }.
 const CHANGE_TREE_KEY = "corral.changeTree";
 const changeTree = () => {
@@ -53,7 +62,13 @@ const LANE_W = 14;
 const LOG_MS = 10000;
 // Log filters, set from the toolbar and its popups: a ref, authors, a start date, paths, and how the text search matches.
 const LOG_FILTER_KEY = "corral.logFilter";
-const logFilter = () => ({ ref: null, users: [], since: null, paths: [], regex: false, cs: false, ...(shared(LOG_FILTER_KEY) ?? {}) });
+// refs, users and paths take any number of values; since is one start date.
+const logFilter = () => {
+  const f = { refs: [], users: [], since: null, paths: [], regex: false, cs: false, ...(shared(LOG_FILTER_KEY) ?? {}) };
+  if (f.ref) f.refs = [f.ref];
+  delete f.ref;
+  return f;
+};
 const setLogFilter = (change) => setShared(LOG_FILTER_KEY, { ...logFilter(), ...change });
 // What the filter popups list: the repo's refs and the authors of the loaded commits.
 const LOG_META_KEY = "corral.logMeta";
@@ -97,7 +112,7 @@ const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 const palette = () => {
   const t = theme();
-  return { ink: t.foreground, muted: t.muted, dim: t.dim, line: t.border, bg: t.canvas, card: t.background,
+  return { ink: t.foreground, muted: t.muted, dim: t.dim, line: t.border, bg: t.canvas, card: t.background, sel: t.selection ?? t.selected,
     bar: t.chrome, accent: t.accent, selected: t.selected, input: t.input, danger: t.ansi9, fable: t.ansi13 };
 };
 const wash = (color, C, alpha = "26") => /^#[0-9a-f]{6}$/i.test(color) ? color + alpha : C?.selected ?? theme().selected;
@@ -432,6 +447,12 @@ const chip = (C, id, label, selected, onClick) => h_flex().id(id).h(28).px(11).g
 const xButton = (C, id, tip, onClick, size = 22, glyph = 13) => div().id(id).size(size).flex().flex_none().items_center().justify_center()
   .rounded(5).text_size(glyph).text_color(C.dim).cursor_pointer().hover(s => s.bg(C.selected).text_color(C.ink))
   .tooltip(tip).on_click((e, cx) => { cx.stop_propagation(); onClick(e, cx); }).child("×");
+// A checkbox drawn by hand: base checkboxes come unstyled.
+const checkBox = (C, checked) => div().size(16).flex().flex_none().items_center().justify_center().rounded(4)
+  .border(1).border_color(checked ? C.accent : C.input).bg(checked ? C.accent : C.card)
+  .text_size(11).text_color(C.card).child(checked ? "✓" : "");
+// A small monospaced figure, as in "+12 −3".
+const monoNum = (text, color) => div().font_family("Geist Mono").text_size(11).text_color(color).flex_none().child(text);
 // A thin vertical line between groups of controls.
 const vbar = (C, height = 16) => div().w(1).h(height).flex_none().bg(C.line);
 const limitPill = (C, items, title, titleColor, border) => h_flex().h(34).px(12).gap(10).items_center().rounded(7).flex_none()
@@ -456,7 +477,7 @@ export default class Board extends View {
     }
     if (p?.role === "terminals") this.railFocus = cx.focus_handle();
     if (p?.role === "gitdialog" && p.kind !== "delete") {
-      const start = p.kind === "rename" ? p.name : p.kind === "worktree" ? "" : "";
+      const start = p.kind === "rename" ? p.name : "";
       this.nameInput = InputState.new({ placeholder: "feat/my-change", value: start });
       this.nameInput.focus();
       if (p.kind === "worktree") {
@@ -492,7 +513,8 @@ export default class Board extends View {
       this.wtSearch.on("change", (_e, cx) => cx.notify());
       this.wtSearch.focus();
     }
-    cx.timer.every(30000, (cx) => cx.notify());
+    // Elapsed times on cards and limit reset times need a redraw now and then; nothing else does.
+    if (!p?.role || p.role === "header") cx.timer.every(30000, (cx) => cx.notify());
     // Only the board copy reads the session files; the header and pane copies read its shared summary.
     if (!p?.role) {
       // A restart forgets running commands: drop their busy marks and queue.
@@ -568,9 +590,11 @@ export default class Board extends View {
       if (folder) this.loadDir(folder, cx);
       cx.notify();
     }
-    if (Date.now() - this.gitAt >= GIT_MS) {
+    // One git read at a time: a slow repository skips ticks instead of stacking them.
+    if (Date.now() - this.gitAt >= GIT_MS && !this.gitBusy) {
       this.gitAt = Date.now();
-      cx.spawn(async () => this.refreshGit(folder));
+      this.gitBusy = true;
+      cx.spawn(async () => { try { await this.refreshGit(folder); } finally { this.gitBusy = false; } });
     }
     if (view() === "changes") this.loadDiff(cx);
     if (view() === "log") this.loadLog(cx);
@@ -607,12 +631,21 @@ export default class Board extends View {
             const untracked = xy === "??";
             const mark = untracked || xy.includes("A") ? "A" : xy.includes("D") ? "D" : "M";
             let n = counts[path] ?? { add: 0, del: 0 };
-            if (untracked) n = { add: ((await readTextFile(`${next.root}/${path}`)) ?? "").split("\n").length, del: 0 };
+            // A new file's line count is read once and kept, not on every 4-second refresh.
+            if (untracked) {
+              const at = `${next.root}/${path}`;
+              this.newLines ??= new Map();
+              if (!this.newLines.has(at)) this.newLines.set(at, ((await readTextFile(at)) ?? "").split("\n").length);
+              n = { add: this.newLines.get(at), del: 0 };
+            }
             next.files.push({ path, mark, untracked, ...n });
           }
         }
       } catch { /* git missing or the folder is gone */ }
     }
+    // A late answer for a folder no longer shown must not replace the current one.
+    if (folder !== viewFolder()) return;
+    if (this.newLines?.size > 2000) this.newLines.clear();
     if (JSON.stringify(next) !== JSON.stringify(gitState())) setShared(GIT_KEY, next);
   }
   loadDir(path, cx) {
@@ -711,14 +744,20 @@ export default class Board extends View {
       }
       // A session file is keyed by the claude pid; hc knows each agent terminal's foreground pid.
       const now = Date.now();
+      // Looked up again every PID_RETRY_MS even when found: a claude restarted in the same terminal has a new pid,
+      // while the old session file stays until it goes stale.
       for (const a of agents()) {
-        if (byPid[this.pids[a.address]]) continue;
         if (now - (this.lookedUp[a.address] ?? 0) < PID_RETRY_MS) continue;
         this.lookedUp[a.address] = now;
         try {
           const r = await hc(["get", a.address, "--json"]);
           this.pids[a.address] = JSON.parse(r.stdout).foreground?.pid;
         } catch { /* terminal gone */ }
+      }
+      // Terminals that are gone take their entries with them.
+      const live = new Set(agents().map(a => a.address));
+      for (const map of [this.pids, this.lookedUp, this.observed]) {
+        for (const k of Object.keys(map)) if (!live.has(k)) delete map[k];
       }
       const sessions = {};
       for (const a of agents()) {
@@ -861,6 +900,9 @@ export default class Board extends View {
   }
   header(C, active, list) {
     const f = filter();
+    // The projects with agents, worked out once for the chips and the count below.
+    const withAgents = agentProjects();
+    const projectLabel = this.projectFilterLabel(withAgents);
     const limits = live().limits;
     const plan = limits.filter(l => !l.group);
     const groups = [...new Set(limits.filter(l => l.group).map(l => l.group))];
@@ -883,15 +925,15 @@ export default class Board extends View {
         .children(groups.map(g => limitPill(C, limits.filter(l => l.group === g),
           g[0].toUpperCase() + g.slice(1), C.fable, wash(C.fable, C)))))
       .when(v === "board", el => el.child(h_flex().gap(8).items_center()
-        .child(chip(C, "chip-projects", this.projectFilterLabel() + "  ▾", !!f.projects,
+        .child(chip(C, "chip-projects", projectLabel + "  ▾", !!f.projects,
           () => openOverlay({ mod: MOD, props: { role: "projectfilter" }, kind: "popup", width: 380,
-            height: checkListHeight(agentProjects().length), at: { x: 24, y: 96 } })))
+            height: checkListHeight(withAgents.length), at: { x: 24, y: 96 } })))
         .child(chip(C, "chip-statuses", this.statusFilterLabel() + "  ▾", !!f.statuses,
           () => openOverlay({ mod: MOD, props: { role: "statusfilter" }, kind: "popup", width: 300,
-            height: checkListHeight(states().length), at: { x: Math.round(59 + this.projectFilterLabel().length * 5.5), y: 96 } })))
+            height: checkListHeight(states().length), at: { x: Math.round(59 + projectLabel.length * 5.5), y: 96 } })))
         .child(div().flex_1())
         .child(h_flex().gap(6).items_center().flex_none().text_size(11).text_color(C.muted)
-          .child(dot(theme().done, 6)).child(`${list.length} agents across ${agentProjects().length} projects`))
+          .child(dot(theme().done, 6)).child(`${list.length} agents across ${withAgents.length} projects`))
         .child(h_flex().id("new-agent").h(28).px(12).gap(6).items_center().rounded(6).flex_none().bg(C.accent).cursor_pointer()
           .text_size(12).font_semibold().text_color(C.card).hover(s => s.opacity(0.82))
           .tooltip("Start Claude in a new tab of this space")
@@ -919,7 +961,7 @@ export default class Board extends View {
     const g = gitState();
     const add = g.files.reduce((n, f) => n + f.add, 0);
     const del = g.files.reduce((n, f) => n + f.del, 0);
-    const num = (text, color) => div().font_family("Geist Mono").text_size(11).text_color(color).flex_none().child(text);
+    const num = monoNum;
     return h_flex().h(28).gap(10).items_center()
       .child(this.worktreePicker(C))
       .child(div().font_family("Geist Mono").text_size(11).text_color(C.dim).truncate().child(tilde(g.root ?? viewFolder() ?? "")))
@@ -967,7 +1009,7 @@ export default class Board extends View {
     const root = gitState().root;
     if (!root) { this.log = null; return; }
     const f = logFilter();
-    const key = `${root}|${f.ref ?? ""}|${f.since ?? ""}|${f.paths.join(",")}`;
+    const key = `${root}|${f.refs.join(",")}|${f.since ?? ""}|${f.paths.join(",")}`;
     const bump = shared(GIT_BUMP_KEY) ?? 0;
     if (this.log?.key === key && Date.now() - this.log.at < LOG_MS && this.log.bump === bump) return;
     if (this.logLoading === key) return;
@@ -988,6 +1030,7 @@ export default class Board extends View {
       this.log.refs = (refsOut?.stdout ?? "").split("\n").filter(Boolean)
         .map(l => { const [name, head, upstream, track] = l.split("\x1f"); return { name, head: head === "*", upstream, ...trackCounts(track) }; })
         .filter(r => !r.name.endsWith("/HEAD"));
+      this.log.remotes = new Set(this.log.refs.filter(r => r.name.startsWith("refs/remotes/")).map(r => shortRef(r.name)));
       // The folders on the way to HEAD's branch, and origin, start open.
       if (!this.refOpen) {
         this.refOpen = new Set(["Remote/origin"]);
@@ -999,7 +1042,7 @@ export default class Board extends View {
       if (fp !== this.log.fp || !this.log.full) {
         const args = (n) => ["log", "--date-order", `-n${n}`, "--format=%H%x1f%P%x1f%an%x1f%at%x1f%D%x1f%s",
           ...(f.since ? [`--since=${f.since}`] : []),
-          ...(f.ref ? [f.ref] : ["--branches", "--remotes", "--tags", "HEAD"]), "--", ...f.paths];
+          ...(f.refs.length ? f.refs : ["--branches", "--remotes", "--tags", "HEAD"]), "--", ...f.paths];
         // A first look: the newest commits only, then the whole history in place of them.
         if (!this.log.commits) {
           const first = await git(args(LOG_FIRST));
@@ -1036,7 +1079,12 @@ export default class Board extends View {
       onHead.add(h);
       stack.push(...byHash.get(h).parents);
     }
-    Object.assign(this.log, { text, commits, rows: layoutGraph(commits), head, onHead });
+    const rows = layoutGraph(commits);
+    let maxWidth = 1;
+    for (const r of rows) if (r.width > maxWidth) maxWidth = r.width;
+    // index: hash → position, so a click or a jump finds its commit without scanning the history.
+    const index = new Map(commits.map((c, i) => [c.hash, i]));
+    Object.assign(this.log, { text, commits, rows, head, onHead, maxWidth, index });
     if (!this.logSel && commits[0]) this.selectCommit(commits[0].hash, cx);
   }
   // A click on a ref in the tree selects its newest commit and scrolls to it; the list stays as it is.
@@ -1050,12 +1098,21 @@ export default class Board extends View {
       notify({ title: "Not in the history shown", body: `${short ?? "HEAD"} has no commit in the list.`, level: "info", timeout: 3000 });
       return;
     }
-    const k = this.logShown?.indexOf(commits.findIndex(c => c.hash === hash)) ?? -1;
+    const k = this.shownAt(hash);
     this.selectCommit(hash, cx);
     if (k >= 0) this.logScroll?.scroll_to_item(k, "center");
   }
+  // Where a commit sits in the list as filtered now, or -1.
+  shownAt(hash) {
+    const i = this.log?.index?.get(hash);
+    return i == null ? -1 : this.logShownPos?.get(i) ?? -1;
+  }
+  commitAt(hash) {
+    const i = this.log?.index?.get(hash);
+    return i == null ? null : this.log.commits[i];
+  }
   jumpToHash(hash, cx) {
-    const k = this.logShown?.indexOf((this.log?.commits ?? []).findIndex(c => c.hash === hash)) ?? -1;
+    const k = this.shownAt(hash);
     this.selectCommit(hash, cx);
     if (k >= 0) this.logScroll?.scroll_to_item(k, "center");
   }
@@ -1063,7 +1120,7 @@ export default class Board extends View {
   selectCommit(hash, cx) {
     this.logSel = hash;
     const root = gitState().root;
-    const c = this.log?.commits?.find(x => x.hash === hash);
+    const c = this.commitAt(hash);
     if (!c || !root) return;
     if (this.commit?.hash === hash) return;
     this.commit = { hash, files: null };
@@ -1091,7 +1148,7 @@ export default class Board extends View {
   }
   // The diff of one file in the selected commit, for the panel right of the details.
   openCommitFile(f, cx) {
-    const c = this.log?.commits?.find(x => x.hash === this.logSel);
+    const c = this.commitAt(this.logSel);
     const root = gitState().root;
     if (!c || !root) return;
     this.commitFile = { hash: c.hash, path: f.path, mark: f.mark, add: f.add, del: f.del, lines: null };
@@ -1146,7 +1203,7 @@ export default class Board extends View {
   }
   // Ref kinds as IntelliJ colors them: HEAD yellow, local branches green, remote ones purple, tags teal.
   refKinds(refs) {
-    const remotes = new Set((this.log?.refs ?? []).filter(r => r.name.startsWith("refs/remotes/")).map(r => shortRef(r.name)));
+    const remotes = this.log?.remotes ?? new Set();
     const out = [];
     // A remote's HEAD only says which branch it points at: left out, as IntelliJ does.
     for (const ref of refs.filter(r => !/^[^/\s]+\/HEAD$/.test(r))) {
@@ -1215,7 +1272,7 @@ export default class Board extends View {
   trackCount(C, id, text, color, tip, range) {
     return div().id(id).flex_none().px(3).rounded(4).font_family("Geist Mono").text_size(11).text_color(color).cursor_pointer()
       .hover(s => s.bg(wash(color, C))).tooltip(tip)
-      .on_click((_e, cx) => { cx.stop_propagation(); setLogFilter({ ref: range }); })
+      .on_click((_e, cx) => { cx.stop_propagation(); setLogFilter({ refs: [range] }); })
       .child(text);
   }
   // Right-click menu of a branch in the Log tree. Remote branches only branch off.
@@ -1226,7 +1283,7 @@ export default class Board extends View {
     const dialog = (kind, height) => () => {
       closeOverlay(overlay);
       openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 460, height,
-        props: { role: "gitdialog", kind, name, current, local, root, upstream, path: props().path } });
+        props: { role: "gitdialog", kind, name, current, local, root, upstream } });
     };
     // Push, update and checkout show as busy beside the branch until git returns.
     const act = (args, done, label) => () => {
@@ -1263,7 +1320,7 @@ export default class Board extends View {
         : h_flex().id(`branch-item-${i}`).flex_none().h(30).px(10).items_center().rounded(5).text_size(13)
           .text_color(it.disabled ? C.dim : it.danger ? C.danger : C.ink)
           .when(!!it.tip, el => el.tooltip(it.tip))
-          .when(!it.disabled, el => el.cursor_pointer().hover(s => s.bg(theme().selection ?? C.selected)).on_click(it.run))
+          .when(!it.disabled, el => el.cursor_pointer().hover(s => s.bg(C.sel)).on_click(it.run))
           .child(div().truncate().child(it.label))));
   }
   // Name prompts and the delete confirmation for the branch menu. Errors stay in the dialog.
@@ -1367,15 +1424,15 @@ export default class Board extends View {
     return rows;
   }
   commitPanel(C) {
-    const c = this.log?.commits?.find(x => x.hash === this.logSel);
+    const c = this.commitAt(this.logSel);
     if (!c) return this.empty(C, "Select a commit to see its changes.");
     const d = this.commit?.hash === c.hash ? this.commit : null;
     const g = gitState();
     this.commitCollapsed ??= new Set();
-    const num = (text, color) => div().font_family("Geist Mono").text_size(11).text_color(color).flex_none().child(text);
+    const num = monoNum;
     const more = d?.body ? d.body.split("\n").slice(1).join("\n").trim() : "";
     const open = this.commitFile?.hash === c.hash ? this.commitFile.path : null;
-    const sel = theme().selection ?? C.selected;
+    const sel = C.sel;
     const fileRow = (f, depth) => h_flex().id(`commit-file-${f.path}`).h(26).flex_none().pl(8 + depth * TREE_STEP + TREE_FILE).pr(8).gap(8)
       .items_center().rounded(5).cursor_pointer().bg(open === f.path ? sel : C.card).hover(s => s.bg(open === f.path ? sel : C.bar))
       .on_click((_e, cx) => { this.openCommitFile(f, cx); cx.notify(); })
@@ -1426,13 +1483,22 @@ export default class Board extends View {
     let test = null;
     if (text && f.regex) { try { const re = new RegExp(text, f.cs ? "" : "i"); test = (s) => re.test(s); } catch { test = () => false; } }
     else if (text) { const t = f.cs ? text : text.toLowerCase(); test = (s) => (f.cs ? s : s.toLowerCase()).includes(t); }
-    const shown = all.flatMap((c, i) =>
-      (!test || test(c.subject) || c.hash.startsWith(text.toLowerCase())) && (!f.users.length || f.users.includes(c.author)) ? [i] : []);
-    this.logShown = shown;
+    // The filtered list is kept until the history or a filter changes, not rebuilt on every render.
+    const memo = `${text}|${f.regex}|${f.cs}|${f.users.join(",")}`;
+    if (this.logShownFor !== all || this.logShownKey !== memo) {
+      const hash = text.toLowerCase();
+      const users = new Set(f.users);
+      this.logShown = all.flatMap((c, i) =>
+        (!test || test(c.subject) || c.hash.startsWith(hash)) && (!users.size || users.has(c.author)) ? [i] : []);
+      this.logShownPos = new Map(this.logShown.map((i, k) => [i, k]));
+      this.logShownFor = all;
+      this.logShownKey = memo;
+    }
+    const shown = this.logShown;
     const graph = !text && !f.users.length && !f.paths.length;
     // One width for the whole list, so the subjects don't move while scrolling.
-    const lanesWide = graph ? Math.min(10, Math.max(1, ...(log?.rows ?? []).map(r => r.width))) : 0;
-    const sel = theme().selection ?? C.selected;
+    const lanesWide = graph ? Math.min(10, log?.maxWidth ?? 1) : 0;
+    const sel = C.sel;
     const onHead = wash(C.accent, C, "12");
     const row = (i, lanes) => {
       const c = all[i];
@@ -1468,7 +1534,7 @@ export default class Board extends View {
           cx.notify();
         })
         // A double click filters the log to that ref, as the Branch filter does.
-        .when(r.kind === "ref" && r.key !== "HEAD", el => el.on_mouse_down("left", (e) => { if (e.click_count === 2) setLogFilter({ ref: r.ref }); }))
+        .when(r.kind === "ref" && r.key !== "HEAD", el => el.on_mouse_down("left", (e) => { if (e.click_count === 2) setLogFilter({ refs: [r.ref] }); }))
         .child(r.kind === "group"
           ? svg(`mods/${MOD}/icons/${open ? "chevron-down" : "chevron-right"}.svg`).size(11).text_color(C.dim).flex_none()
           : div().size(11).flex_none())
@@ -1504,8 +1570,10 @@ export default class Board extends View {
       .hover(s => s.text_color(C.ink)).on_click(() => setLogFilter(change)).child(label);
     const chipFor = (field, label, value, clear) => h_flex().id(`log-filter-${field}`).flex_none().h(26).px(8).gap(4).items_center()
       .rounded(5).cursor_pointer().text_size(12).hover(s => s.bg(C.bar))
-      .on_click(() => openOverlay({ mod: MOD, kind: "popup", at: "pointer", width: 320, height: field === "date" ? 210 : 380,
-        props: { role: "logfilter", field } }))
+      .on_click(() => {
+        const height = field === "date" ? 210 : 380;
+        openOverlay({ mod: MOD, kind: "popup", at: "pointer", width: 320, height, props: { role: "logfilter", field, height } });
+      })
       .child(div().text_color(C.muted).child(value ? `${label}:` : label))
       .when(!!value, el => el.child(div().max_w(180).truncate().text_color(C.ink).child(value))
         .child(xButton(C, `log-filter-clear-${field}`, `Clear the ${label.toLowerCase()} filter`, () => setLogFilter(clear), 18)))
@@ -1517,7 +1585,7 @@ export default class Board extends View {
         .child(div().flex_1().min_w(0).text_size(12).when(!!this.logSearch, el => el.child(Input.new(this.logSearch))))
         .child(toggle("log-regex", ".*", f.regex, "Regular expression", { regex: !f.regex }))
         .child(toggle("log-case", "Cc", f.cs, "Match case", { cs: !f.cs })))
-      .child(chipFor("branch", "Branch", f.ref ? shortRef(f.ref) : null, { ref: null }))
+      .child(chipFor("branch", "Branch", f.refs.length === 1 ? shortRef(f.refs[0]) : f.refs.length ? `${f.refs.length} branches` : null, { refs: [] }))
       .child(chipFor("user", "User", f.users.length === 1 ? f.users[0] : f.users.length ? `${f.users.length} users` : null, { users: [] }))
       .child(chipFor("date", "Date", SINCE.find(([v]) => v === f.since)?.[1] ?? null, { since: null }))
       .child(chipFor("paths", "Paths", f.paths.length === 1 ? f.paths[0] : f.paths.length ? `${f.paths.length} paths` : null, { paths: [] }))
@@ -1533,7 +1601,7 @@ export default class Board extends View {
       .child(!log?.commits
         ? this.empty(C, "Loading…")
         : shown.length === 0
-          ? this.empty(C, text || f.users.length || f.paths.length || f.ref || f.since ? "No commit matches." : "No commits yet.")
+          ? this.empty(C, text || f.users.length || f.paths.length || f.refs.length || f.since ? "No commit matches." : "No commits yet.")
           // A press in the graph of a row with an arrow follows the arrow to the commit at its other end. The press is
           // caught on a wrapper: Herdr wires pointer handlers on plain elements, not on the list itself.
           : v_flex().flex_1().min_h(0).on_mouse_down("left", (e) => { this.logPressX = e.local_position?.x ?? 999; })
@@ -1543,10 +1611,10 @@ export default class Board extends View {
             .flex_1().when(!!this.logScroll, el => el.track_scroll(this.logScroll))
             .on_item_click((hash, cx) => {
               this.treeFocus?.focus();
-              const i = all.findIndex(c => c.hash === hash);
+              const i = log.index.get(hash);
               const a = lanesWide ? log.rows[i]?.arrow : null;
               const target = a && Math.abs((this.logPressX ?? 999) - (9 + a.lane * LANE_W)) <= 8 ? a.to : null;
-              if (target && all.some(c => c.hash === target)) this.jumpToHash(target, cx);
+              if (target && log.index.has(target)) this.jumpToHash(target, cx);
               else this.selectCommit(hash, cx);
               cx.notify();
             })))
@@ -1567,13 +1635,9 @@ export default class Board extends View {
       const p = size == null ? resizable_panel() : resizable_panel().size(size).size_range(min, max);
       return p.child(div().size_full().when(pad === "r", el => el.pr(6)).when(pad === "x", el => el.px(6)).when(pad === "l", el => el.pl(6)).child(child));
     };
-    const keep = (name) => (sizes) => {
-      const widths = shared(WIDTHS_KEY) ?? {};
-      const sizesOut = name === "log"
-        ? { left: Math.round(sizes[0]), right: Math.round(sizes[2]) }
-        : { left: Math.round(sizes[0]), right: Math.round(sizes[2]), diff: Math.round(sizes[3]) };
-      setShared(WIDTHS_KEY, { ...widths, [key]: { ...widths[key], [name]: sizesOut } });
-    };
+    const keep = (name) => (sizes) => saveWidth(key, name, name === "log"
+      ? { left: Math.round(sizes[0]), right: Math.round(sizes[2]) }
+      : { left: Math.round(sizes[0]), right: Math.round(sizes[2]), diff: Math.round(sizes[3]) });
     const saved4 = (shared(WIDTHS_KEY) ?? {})[key]?.logDiff ?? {};
     return v_flex().size_full().px(24).pt(14).pb(16).bg(C.bg)
       .child(file
@@ -1594,22 +1658,21 @@ export default class Board extends View {
       .child(this.worktreePicker(C))
       .child(div().font_family("Geist Mono").text_size(11).text_color(C.dim).truncate().child(tilde(g.root ?? viewFolder() ?? "")));
   }
-  // The popups of the Log filters: one ref, any authors, a start date, any top-level paths.
+  // The popups of the Log filters: any refs, any authors, one start date, any top-level paths.
   logFilterPopup(C) {
-    const { field, overlay } = props();
+    const { field, overlay, height } = props();
     const f = logFilter();
     const meta = shared(LOG_META_KEY) ?? { refs: [], authors: [] };
     const q = (this.filterSearch?.value() ?? "").trim().toLowerCase();
-    const sel = theme().selection ?? C.selected;
-    const box = (checked) => div().size(16).flex().flex_none().items_center().justify_center().rounded(4)
-      .border(1).border_color(checked ? C.accent : C.input).bg(checked ? C.accent : C.card)
-      .text_size(11).text_color(C.card).child(checked ? "✓" : "");
+    const sel = C.sel;
+    const box = (checked) => checkBox(C, checked);
     const row = (id, onClick, selected) => h_flex().id(id).flex_none().h(30).px(10).gap(8).items_center().rounded(5).cursor_pointer()
       .text_size(12).bg(selected ? sel : C.bg).hover(s => s.bg(selected ? sel : C.selected)).on_click(onClick);
     const toggleIn = (list, v) => list.includes(v) ? list.filter(x => x !== v) : [...list, v];
     let items = [];
     if (field === "branch") {
-      items = meta.refs.filter(r => matches(q, shortRef(r))).slice(0, 300).map(r => row(`f-${r}`, () => { setLogFilter({ ref: r }); closeOverlay(overlay); }, f.ref === r)
+      items = meta.refs.filter(r => matches(q, shortRef(r))).slice(0, 300).map(r => row(`f-${r}`, () => setLogFilter({ refs: toggleIn(f.refs, r) }), false)
+        .child(box(f.refs.includes(r)))
         .child(svg(`mods/${MOD}/icons/${r.startsWith("refs/tags/") ? "tag" : "branch"}.svg`).size(12).text_color(C.muted).flex_none())
         .child(div().flex_1().min_w(0).truncate().child(shortRef(r))));
     } else if (field === "user") {
@@ -1624,7 +1687,8 @@ export default class Board extends View {
         .child(svg(`mods/${MOD}/icons/${e.dir ? "folder" : "file"}.svg`).size(12).text_color(e.dir ? C.accent : C.muted).flex_none())
         .child(div().flex_1().min_w(0).truncate().child(e.name)));
     }
-    return v_flex().size_full().p(6).gap(2).bg(C.bg).text_color(C.ink)
+    // An explicit height: without one the scroll list (flex_1) collapses to nothing.
+    return v_flex().w_full().h(height ?? 380).p(6).gap(2).bg(C.bg).text_color(C.ink)
       .when(!!this.filterSearch, el => el.child(searchField(C, this.filterSearch).mt(4)))
       .child(v_flex().id("filter-items").flex_1().min_h(0).overflow_y_scrollbar().gap(1)
         .when(!items.length, el => el.child(div().px(10).py(10).text_size(12).text_color(C.muted)
@@ -1695,10 +1759,10 @@ export default class Board extends View {
       .child(tab("log", "Log", "commit"))
       .child(tab("changes", "Changes", "branch"));
   }
-  projectFilterLabel() {
+  projectFilterLabel(withAgents = agentProjects()) {
     const picked = filter().projects;
     if (!picked) return "All projects";
-    const names = agentProjects().filter(r => picked.includes(r.folder)).map(r => r.name);
+    const names = withAgents.filter(r => picked.includes(r.folder)).map(r => r.name);
     return names.length === 0 ? "No projects" : names.length === 1 ? names[0] : `${names.length} projects`;
   }
   statusFilterLabel() {
@@ -1721,9 +1785,7 @@ export default class Board extends View {
     const picked = filter()[field];
     const on = (key) => !picked || picked.includes(key);
     const allOn = list.every(i => on(i.key));
-    const box = (checked) => div().size(16).flex().flex_none().items_center().justify_center().rounded(4)
-      .border(1).border_color(checked ? C.accent : C.input).bg(checked ? C.accent : C.card)
-      .text_size(11).text_color(C.card).child(checked ? "✓" : "");
+    const box = (checked) => checkBox(C, checked);
     const row = (id, onClick) => h_flex().id(id).flex_none().h(44).px(10).gap(10).items_center().rounded(6).cursor_pointer()
       .hover(st => st.bg(C.selected)).on_click(onClick);
     const toggle = (key) => {
@@ -2043,9 +2105,10 @@ export default class Board extends View {
   }
   treeRows() {
     const rows = [];
+    const hidden = showHidden();
     const walk = (dir, depth) => {
       for (const e of this.dirs[dir] ?? []) {
-        if (e.name === ".git" || (!showHidden() && e.name.startsWith("."))) continue;
+        if (e.name === ".git" || (!hidden && e.name.startsWith("."))) continue;
         const path = `${dir}/${e.name}`;
         rows.push({ path, name: e.name, dir: e.dir, depth });
         if (e.dir && this.expanded.has(path)) walk(path, depth + 1);
@@ -2068,7 +2131,7 @@ export default class Board extends View {
         const selected = (this.treeSel ?? file?.path) === r.path;
         const mark = marks[r.path];
         return h_flex().id(`row-${r.path}`).h(24).flex_none().pl(8 + r.depth * 16).pr(8).gap(6).items_center().rounded(5)
-          .bg(selected ? theme().selection ?? C.selected : C.card).hover(s => s.bg(selected ? theme().selection ?? C.selected : C.bar))
+          .bg(selected ? C.sel : C.card).hover(s => s.bg(selected ? C.sel : C.bar))
           .cursor_pointer().text_size(12).text_color(mark === "D" ? C.dim : C.ink)
           .on_click((_e, cx) => {
             this.treeSel = r.path;
@@ -2114,10 +2177,7 @@ export default class Board extends View {
     const key = targetAgent()?.address ?? "none";
     const saved = (shared(WIDTHS_KEY) ?? {})[key]?.[kind];
     return h_resizable(`${kind}-${key}`).flex_1().min_h(0)
-      .on_resize((sizes) => {
-        const all = shared(WIDTHS_KEY) ?? {};
-        setShared(WIDTHS_KEY, { ...all, [key]: { ...all[key], [kind]: Math.round(sizes[0]) } });
-      })
+      .on_resize((sizes) => saveWidth(key, kind, Math.round(sizes[0])))
       .child(resizable_panel().size(saved ?? SIDE_WIDTH[kind]).size_range(180, 900).child(div().size_full().pr(6).child(side)))
       .child(resizable_panel().child(div().size_full().pl(6).child(main)));
   }
@@ -2155,7 +2215,7 @@ export default class Board extends View {
     if (g.folder !== this.folder) return this.loading(C);
     if (!g.root) return this.empty(C, `${tilde(this.folder)} is not a git repository.`);
     const sel = g.files.find(f => f.path === this.changeSel) ?? g.files[0];
-    const num = (text, color) => div().font_family("Geist Mono").text_size(11).text_color(color).flex_none().child(text);
+    const num = monoNum;
     const asTree = changeTree();
     const pick = (path) => (_e, cx) => { this.changeSel = path; this.treeFocus?.focus(); this.loadDiff(cx); cx.notify(); };
     const menu = (path, abs) => (e, cx) => {
@@ -2167,7 +2227,7 @@ export default class Board extends View {
       const parts = f.path.split("/");
       return h_flex().id(`change-${f.path}`).h(asTree ? 26 : 40).flex_none().pl(asTree ? 8 + depth * TREE_STEP + TREE_FILE : 8).pr(8).gap(8).items_center()
         .rounded(5).cursor_pointer()
-        .bg(current ? theme().selection ?? C.selected : C.card).hover(s => s.bg(current ? theme().selection ?? C.selected : C.bar))
+        .bg(current ? C.sel : C.card).hover(s => s.bg(current ? C.sel : C.bar))
         .on_click(pick(f.path))
         .on_mouse_down("right", menu(f.path, `${g.root}/${f.path}`))
         .child(div().w(18).flex_none().text_center().font_family("Geist Mono").text_size(11).font_semibold()
