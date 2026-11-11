@@ -88,11 +88,18 @@ const visibleAgents = (active) => {
   const f = filter();
   return agents().filter(a => (f.scope === "all" || a.space === active?.id) && (f.agents === "all" || ATTENTION.includes(a.status)));
 };
+// Agents working in a project folder, also ones started by hand in a space of another folder.
+const projectAgents = (p, all) => all.filter(a => {
+  const f = agentFolder(a);
+  return f && (f === p.folder || f.startsWith(p.folder + "/"));
+});
 const closedProjects = () => projects().filter(p => !spaces().some(s => s.folder === p.folder && !s.machine));
+// Popups get an explicit height: without one the scroll list (flex_1) collapses to nothing.
 const spacesPopupHeight = () => {
   const closed = closedProjects().length;
   return Math.min(POPUP_MAX, 84 + spaces().length * 54 + (closed ? 26 + closed * 54 : 0) + 64);
 };
+const worktreesPopupHeight = () => Math.min(WT_POPUP_MAX, 92 + gitState().worktrees.length * 50);
 const matches = (q, ...texts) => !q || texts.some(t => (t ?? "").toLowerCase().includes(q));
 // macOS: a native dialog that takes several folders at once. Elsewhere, or if it can't run, Herdr's single picker.
 const pickFolders = async () => {
@@ -613,7 +620,7 @@ export default class Board extends View {
       .bg(C.card).border(1).border_color(C.line).font_family("Geist Mono").text_size(11).text_color(C.ink)
       .when(many, el => el.cursor_pointer().hover(s => s.border_color(C.input)).tooltip("Switch worktree")
         .on_click(() => openOverlay({ mod: MOD, props: { role: "worktrees" }, kind: "popup", width: 520,
-          height: Math.min(WT_POPUP_MAX, 92 + g.worktrees.length * 50), at: { x: 24, y: 96 } })))
+          height: worktreesPopupHeight(), at: { x: 24, y: 96 } })))
       .child(svg(`mods/${MOD}/icons/branch.svg`).size(12).text_color(C.muted))
       .child(g.branch || "detached")
       .when(many, el => el.child(div().font_family("Geist").text_color(C.muted).child(`${g.worktrees.length} worktrees ▾`)));
@@ -625,10 +632,10 @@ export default class Board extends View {
     const own = agentFolder(a);
     const q = (this.wtSearch?.value() ?? "").trim().toLowerCase();
     const shown = g.worktrees.filter(w => !q || w.branch.toLowerCase().includes(q) || w.path.toLowerCase().includes(q));
-    return v_flex().size_full().p(6).gap(2).bg(C.bg).text_color(C.ink)
-      .child(h_flex().px(10).pt(6).pb(2).items_center().text_size(10).text_color(C.muted)
+    return v_flex().w_full().h(worktreesPopupHeight()).p(6).gap(2).bg(C.bg).text_color(C.ink)
+      .child(h_flex().flex_none().px(10).pt(6).pb(2).items_center().text_size(10).text_color(C.muted)
         .child(div().flex_1().child("WORKTREES")).child(q ? `${shown.length} of ${g.worktrees.length}` : String(g.worktrees.length)))
-      .when(!!this.wtSearch, el => el.child(div().px(4).pb(4).text_size(12).child(Input.new(this.wtSearch))))
+      .when(!!this.wtSearch, el => el.child(div().flex_none().px(4).pb(4).text_size(12).child(Input.new(this.wtSearch))))
       .child(v_flex().id("worktree-list").flex_1().min_h(0).overflow_y_scrollbar().gap(2)
       .when(shown.length === 0, el => el.child(div().px(10).py(12).text_size(12).text_color(C.muted).child("No worktree matches.")))
       .children(shown.map(w => {
@@ -737,8 +744,8 @@ export default class Board extends View {
     const q = (this.spaceSearch?.value() ?? "").trim().toLowerCase();
     const open = spaces().filter(s => matches(q, s.name, s.folder, tilde(s.folder)));
     const closed = closedProjects().filter(p => matches(q, p.name, p.folder, tilde(p.folder)));
-    return v_flex().size_full().p(6).gap(2).bg(C.bg).text_color(C.ink)
-      .when(!!this.spaceSearch, el => el.child(div().px(4).pt(4).pb(4).text_size(12).child(Input.new(this.spaceSearch))))
+    return v_flex().w_full().h(spacesPopupHeight()).p(6).gap(2).bg(C.bg).text_color(C.ink)
+      .when(!!this.spaceSearch, el => el.child(div().flex_none().px(4).pt(4).pb(4).text_size(12).child(Input.new(this.spaceSearch))))
       .child(v_flex().id("space-list").flex_1().min_h(0).overflow_y_scrollbar().gap(2)
         .when(open.length > 0, el => el.child(section("SPACES")))
         .children(open.map(s => {
@@ -756,12 +763,23 @@ export default class Board extends View {
             })));
         }))
         .when(closed.length > 0, el => el.child(section("PROJECTS"))
-          .children(closed.map(p => row(`open-${p.folder}`, () => { openProject(p); closeOverlay(overlay); })
-            .tooltip("Open a space here and start Claude")
-            .child(div().size(8).rounded(2).bg(C.accent).flex_none())
+          .children(closed.map(p => {
+            const here = projectAgents(p, all);
+            // A project with an agent in it goes to that agent; otherwise it opens a space.
+            return row(`open-${p.folder}`, () => {
+              if (here.length) run("agent.focus", { terminal: here[0].address });
+              else openProject(p);
+              closeOverlay(overlay);
+            })
+            .tooltip(here.length ? "Go to its agent" : "Open a space here and start Claude")
+            .child(here.length
+              ? dot(states().find(x => x.key === here[0].status)?.color ?? C.dim, 8)
+              : div().size(8).rounded(2).bg(C.accent).flex_none())
             .child(details(p.name, p.folder))
-            .child(div().text_size(11).text_color(C.muted).flex_none().child("not open"))
-            .child(xButton(C, `remove-${p.folder}`, "Remove project", () => removeProject(p.folder), 20)))))
+            .child(div().text_size(11).text_color(C.muted).flex_none()
+              .child(here.length ? `${here.length} agent${here.length > 1 ? "s" : ""}` : "not open"))
+            .child(xButton(C, `remove-${p.folder}`, "Remove project", () => removeProject(p.folder), 20));
+          })))
         .when(!open.length && !closed.length, el => el.child(div().px(10).py(12).text_size(12).text_color(C.muted)
           .child("Nothing matches."))))
       .child(div().h(1).mx(4).my(6).bg(C.line))
