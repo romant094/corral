@@ -10,7 +10,7 @@ This file is the brief: enough to build Corral from an empty folder. The files n
 
 Three bands, top to bottom, no title bar, theme `one-dark`:
 
-1. **The header**, 112px, chrome color. Row one: a three-bar mark, a picker, "/", the view switch Board | Files | Changes, and the plan limit pills on the right. The picker selects the space on Board and the agent on Files and Changes. Row two depends on the view: filter chips on Board; worktree picker, folder path, hidden-files chip and change count on Files; worktree picker, repository path and +/− totals on Changes. Rows are fixed from the top, so a view change does not move them.
+1. **The header**, 112px, chrome color. Row one: the view switch Board | Files | Changes (the change count floats on the corner of Changes), "/", a picker, and the plan limit pills on the right. The picker selects the project on Board and the agent on Files and Changes. Row two depends on the view: on Board, project and status filter dropdowns with checkboxes, the agent count and "+ Agent"; worktree picker, folder path, hidden-files chip and change count on Files; worktree picker, repository path and +/− totals on Changes. Rows are fixed from the top, so a view change does not move them.
 2. **The top area**, 355px by default, resizable against the workspace. Board: four columns of cards. Files: a 280px tree and a read-only code view. Changes: a 320px list of changed files and a diff with old and new line numbers.
 3. **The workspace**, the remaining height. A 40px rail with "Live workspace", the plain terminals of the active space as chips, their count and "+ Terminal". Below, the active tab's panes with a 30px header each: status dot, model, session id, colored context use, cost, split right, split down, close.
 

@@ -52,6 +52,8 @@ const searchField = (C, state) => h_flex().flex_none().h(32).mx(4).mb(4).px(10).
   .bg(C.card).border_1().border_color(C.input).text_size(12)
   .child(svg(`mods/${MOD}/icons/search.svg`).size(14).text_color(C.muted).flex_none())
   .child(div().flex_1().min_w(0).child(Input.new(state)));
+// The picker sits after the view switch and the slash; its popups open under it.
+const PICKER_X = 310;
 const pctColor = (C, pct) => pct >= 80 ? C.danger : pct >= 60 ? theme().blocked : C.accent;
 const tilde = (path) => {
   const h = home();
@@ -67,7 +69,8 @@ const resetText = (resetsAt) => {
   return resetsAt * 1000 - Date.now() < 86400000 ? clock : `${DAYS[d.getDay()]} ${clock}`;
 };
 
-const filter = () => ({ scope: "all", agents: "all", ...(shared(FILTER_KEY) ?? {}) });
+// projects / statuses: null shows all; a list shows only those project folders / status keys.
+const filter = () => ({ projects: null, statuses: null, ...(shared(FILTER_KEY) ?? {}) });
 const setFilter = (change) => setShared(FILTER_KEY, { ...filter(), ...change });
 const projects = () => shared(PROJECTS_KEY) ?? [];
 const live = () => shared(LIVE_KEY) ?? { sessions: {}, limits: [] };
@@ -89,9 +92,15 @@ const viewFolder = () => {
   const wt = shared(WORKTREE_KEY);
   return a && wt?.address === a.address ? wt.path : agentFolder(a);
 };
+const agentProjects = () => projectRows(agents()).filter(r => r.agents.length);
+const checkListHeight = (n) => Math.min(POPUP_MAX, 60 + (n + 1) * 46);
+// The board shows the columns of the picked statuses only.
+const shownStates = () => states().filter(s => !filter().statuses || filter().statuses.includes(s.key));
 const visibleAgents = (active) => {
   const f = filter();
-  return agents().filter(a => (f.scope === "all" || a.space === active?.id) && (f.agents === "all" || ATTENTION.includes(a.status)));
+  const all = agents();
+  const shown = f.projects && new Set(projectRows(all).filter(r => f.projects.includes(r.folder)).flatMap(r => r.agents.map(a => a.address)));
+  return all.filter(a => (!shown || shown.has(a.address)) && (!f.statuses || f.statuses.includes(a.status)));
 };
 // One row per folder: saved projects, then folders of agents outside them.
 // Each agent counts once, in the deepest folder that holds it. Rows with agents go first, then open ones.
@@ -442,7 +451,9 @@ export default class Board extends View {
         const d = byPid[this.pids[a.address]];
         if (d) sessions[a.address] = summarize(d);
       }
-      const latest = Object.values(byPid).sort((x, y) => (y.herdr_written_at ?? 0) - (x.herdr_written_at ?? 0))[0];
+      // A new session has no rate limits until its first reply; take the newest one that has them.
+      const latest = Object.values(byPid).filter(d => d.rate_limits)
+        .sort((x, y) => (y.herdr_written_at ?? 0) - (x.herdr_written_at ?? 0))[0];
       const next = { sessions, limits: latest ? limitsOf(latest.rate_limits) : [] };
       const text = JSON.stringify(next);
       if (text !== this.liveText) {
@@ -583,30 +594,30 @@ export default class Board extends View {
     // Fixed rows from the top: switching views must not move the header.
     return v_flex().size_full().bg(C.bar).px(24).pt(19).gap(12)
       .child(h_flex().items_center().gap(12)
-        .child(h_flex().gap(3).items_center().children([17, 12, 20].map(h => div().w(5).h(h).rounded(2).bg(C.accent))))
+        .child(this.viewSwitch(C))
+        .child(div().text_size(18).text_color(C.dim).child("/"))
         .when(v !== "board", el => el.child(this.agentPicker(C)))
         .when(v === "board", el => el.child(h_flex().id("space-picker").h(34).pl(12).pr(10).gap(8).items_center().rounded(7).flex_none()
           .bg(C.bg).border(1).border_color(C.line).cursor_pointer().hover(s => s.border_color(C.input))
           .on_click(() => openOverlay({ mod: MOD, props: { role: "spaces" }, kind: "popup", width: 460,
-            height: projectsPopupHeight(), at: { x: 52, y: 52 } }))
+            height: projectsPopupHeight(), at: { x: PICKER_X, y: 52 } }))
           .child(dot(C.accent, 8))
           .child(div().text_size(16).font_semibold().text_color(C.ink).child(active?.name ?? "No space"))
           .child(div().text_size(11).text_color(C.muted).child("▾"))))
-        .child(div().text_size(18).text_color(C.dim).child("/"))
-        .child(this.viewSwitch(C))
         .child(div().flex_1())
         .when(plan.length > 0, el => el.child(limitPill(C, plan, "", C.ink, C.line)))
         .children(groups.map(g => limitPill(C, limits.filter(l => l.group === g),
           g[0].toUpperCase() + g.slice(1), C.fable, wash(C.fable, C)))))
       .when(v === "board", el => el.child(h_flex().gap(8).items_center()
-        .child(chip(C, "chip-board", "Board", f.scope === "all" && f.agents === "all", () => setFilter({ scope: "all", agents: "all" })))
-        .child(chip(C, "chip-scope", f.scope === "all" ? "All spaces" : "This space", f.scope !== "all",
-          () => setFilter({ scope: f.scope === "all" ? "space" : "all" })))
-        .child(chip(C, "chip-agents", f.agents === "all" ? "All agents" : "Needs attention", f.agents !== "all",
-          () => setFilter({ agents: f.agents === "all" ? "attention" : "all" })))
+        .child(chip(C, "chip-projects", this.projectFilterLabel() + "  ▾", !!f.projects,
+          () => openOverlay({ mod: MOD, props: { role: "projectfilter" }, kind: "popup", width: 380,
+            height: checkListHeight(agentProjects().length), at: { x: 24, y: 96 } })))
+        .child(chip(C, "chip-statuses", this.statusFilterLabel() + "  ▾", !!f.statuses,
+          () => openOverlay({ mod: MOD, props: { role: "statusfilter" }, kind: "popup", width: 300,
+            height: checkListHeight(states().length), at: { x: Math.round(59 + this.projectFilterLabel().length * 5.5), y: 96 } })))
         .child(div().flex_1())
         .child(h_flex().gap(6).items_center().flex_none().text_size(11).text_color(C.muted)
-          .child(dot(theme().done, 6)).child(`${list.length} agents across ${spaces().length} spaces`))
+          .child(dot(theme().done, 6)).child(`${list.length} agents across ${agentProjects().length} projects`))
         .child(h_flex().id("new-agent").h(28).px(12).gap(6).items_center().rounded(6).flex_none().bg(C.accent).cursor_pointer()
           .text_size(12).font_semibold().text_color(C.card).hover(s => s.opacity(0.82))
           .tooltip("Start Claude in a new tab of this space")
@@ -690,17 +701,69 @@ export default class Board extends View {
   viewSwitch(C) {
     const v = view();
     const changed = gitState().files.length;
-    const tab = (key, label, file) => h_flex().id(`view-${key}`).h(28).px(12).gap(6).items_center().rounded(5)
+    // The count sits on the corner of Changes, partly over the word, so the switch never changes width.
+    const tab = (key, label, file) => h_flex().id(`view-${key}`).relative().h(28).pl(12).pr(key === "changes" ? 16 : 12)
+      .gap(6).items_center().rounded(5)
       .bg(v === key ? C.selected : C.bg).text_size(12).font_medium().text_color(v === key ? C.accent : C.muted)
       .cursor_pointer().hover(s => s.text_color(v === key ? C.accent : C.ink))
       .on_click(() => setShared(VIEW_KEY, key))
       .child(svg(`mods/${MOD}/icons/${file}.svg`).size(13)).child(label)
-      .when(key === "changes" && changed > 0, el => el.child(div().px(5).rounded(4).bg(wash(theme().blocked, C))
-        .font_family("Geist Mono").text_size(10).text_color(theme().blocked).child(String(changed))));
+      .when(key === "changes" && changed > 0, el => el.child(div().absolute().top(1).right(2).h(13).px(3).rounded(7)
+        .flex().items_center().bg(wash(theme().blocked, C, "40")).font_family("Geist Mono").text_size(9).font_semibold()
+        .text_color(theme().blocked).child(changed > 99 ? "99+" : String(changed))));
     return h_flex().p(3).gap(2).items_center().rounded(8).bg(C.bg).border(1).border_color(C.line).flex_none()
       .child(tab("board", "Board", "view-board"))
       .child(tab("files", "Files", "folder"))
       .child(tab("changes", "Changes", "branch"));
+  }
+  projectFilterLabel() {
+    const picked = filter().projects;
+    if (!picked) return "All projects";
+    const names = agentProjects().filter(r => picked.includes(r.folder)).map(r => r.name);
+    return names.length === 0 ? "No projects" : names.length === 1 ? names[0] : `${names.length} projects`;
+  }
+  statusFilterLabel() {
+    const picked = filter().statuses;
+    if (!picked) return "All statuses";
+    const names = states().filter(s => picked.includes(s.key)).map(s => s.label);
+    return names.length === 0 ? "No statuses" : names.length === 1 ? names[0] : `${names.length} statuses`;
+  }
+  projectFilterPopup(C) {
+    return this.checkList(C, "PROJECTS WITH AGENTS", "projects",
+      agentProjects().map(r => ({ key: r.folder, name: r.name, sub: tilde(r.folder) || "~", count: r.agents.length })));
+  }
+  statusFilterPopup(C) {
+    const all = agents();
+    return this.checkList(C, "STATUSES", "statuses", states().map(s => ({ key: s.key, name: s.label, color: s.color,
+      count: all.filter(a => a.status === s.key).length })));
+  }
+  // A filter list with a checkbox per item. Checking every item goes back to "all", so new items show too.
+  checkList(C, title, field, list) {
+    const picked = filter()[field];
+    const on = (key) => !picked || picked.includes(key);
+    const allOn = list.every(i => on(i.key));
+    const box = (checked) => div().size(16).flex().flex_none().items_center().justify_center().rounded(4)
+      .border(1).border_color(checked ? C.accent : C.input).bg(checked ? C.accent : C.card)
+      .text_size(11).text_color(C.card).child(checked ? "✓" : "");
+    const row = (id, onClick) => h_flex().id(id).flex_none().h(44).px(10).gap(10).items_center().rounded(6).cursor_pointer()
+      .hover(st => st.bg(C.selected)).on_click(onClick);
+    const toggle = (key) => {
+      const next = list.map(i => i.key).filter(x => x === key ? !on(x) : on(x));
+      setFilter({ [field]: next.length === list.length ? null : next });
+    };
+    return v_flex().w_full().h(checkListHeight(list.length)).p(6).gap(2).bg(C.bg).text_color(C.ink)
+      .child(div().flex_none().px(10).pt(6).pb(4).text_size(10).text_color(C.muted).child(title))
+      .child(row(`${field}-all`, () => setFilter({ [field]: allOn ? [] : null }))
+        .child(box(allOn)).child(div().flex_1().text_size(13).font_semibold().child("Select all")))
+      .child(div().flex_none().h(1).mx(4).my(2).bg(C.line))
+      .child(v_flex().id(`${field}-list`).flex_1().min_h(0).overflow_y_scrollbar().gap(2)
+        .children(list.map(i => row(`${field}-${i.key}`, () => toggle(i.key))
+          .child(box(on(i.key)))
+          .when(!!i.color, el => el.child(dot(i.color, 8)))
+          .child(v_flex().flex_1().min_w(0)
+            .child(div().text_size(13).font_semibold().truncate().child(i.name))
+            .when(!!i.sub, el => el.child(div().font_family("Geist Mono").text_size(11).text_color(C.muted).truncate().child(i.sub))))
+          .child(div().flex_none().text_size(11).text_color(C.muted).child(`${i.count} agent${i.count === 1 ? "" : "s"}`)))));
   }
   agentLabel(a) {
     const info = live().sessions[a.address];
@@ -716,7 +779,7 @@ export default class Board extends View {
     return h_flex().id("agent-picker").h(34).pl(12).pr(10).gap(8).items_center().rounded(7).flex_none()
       .bg(C.bg).border(1).border_color(C.line).cursor_pointer().hover(s => s.border_color(C.input)).tooltip("Pick an agent")
       .on_click(() => openOverlay({ mod: MOD, props: { role: "agents" }, kind: "popup", width: 520,
-        height: 40 + Math.max(1, n) * 70 + 46, at: { x: 52, y: 52 } }))
+        height: 40 + Math.max(1, n) * 70 + 46, at: { x: PICKER_X, y: 52 } }))
       .child(dot(a ? states().find(s => s.key === a.status)?.color ?? C.dim : C.dim, 8))
       .when(!!a, el => el
         .child(div().text_size(15).font_semibold().text_color(C.ink).child(l.model))
@@ -1053,12 +1116,14 @@ export default class Board extends View {
     if (role === "pane") return this.paneHeader(C);
     if (role === "agents") return this.agentsPopup(C);
     if (role === "worktrees") return this.worktreesPopup(C);
+    if (role === "projectfilter") return this.projectFilterPopup(C);
+    if (role === "statusfilter") return this.statusFilterPopup(C);
     if (view() === "files") return this.filesView(C);
     if (view() === "changes") return this.changesView(C);
     const list = visibleAgents(active);
     const sessions = live().sessions;
     setAgentOrder(STATES.flatMap(s => list.filter(a => a.status === s.key).map(a => a.address)));
-    return h_flex().size_full().px(24).py(16).gap(16).bg(C.bg).children(STATES.map(state => {
+    return h_flex().size_full().px(24).py(16).gap(16).bg(C.bg).children(shownStates().map(state => {
       const cards = list.filter(a => a.status === state.key);
       return v_flex().flex_1().min_w(0).h_full().gap(10)
         .child(h_flex().h(26).flex_none().items_center().gap(8).px(2)

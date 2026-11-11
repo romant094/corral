@@ -9,6 +9,7 @@ An agent board layout for [Herdr](https://herdr.dev). Every Claude Code session 
 - **Board.** Cards in four columns: Needs you, Working, Done, Idle. A card shows the model, the session id (click to copy), the task, context use with tokens, cost, and the project or folder. The focused agent's card is highlighted. A session that has done work asks before it closes.
 - **Limits.** 5-hour and 7-day plan usage with reset times. A per-model window (for example Fable) gets its own pill when Claude Code reports one.
 - **Projects.** One dropdown lists project folders, with a filter. A row shows its agents, or whether a space is open there. A click goes to the agent, else to the space, else opens a space and starts Claude. A folder where you open a space becomes a project. Add several folders at once (macOS).
+- **Filters.** Pick which projects and which statuses the board shows; a status you leave out hides its column.
 - **New agent.** "+ Agent" starts Claude in a new tab of the active space.
 - **Live workspace.** Plain terminals of the active space as chips: drag to reorder, drop on Right or Below to show one beside the active pane, double-click to rename. Split buttons and context use in each pane header.
 - **Files.** The agent's folder as a tree, with git marks (M, A, D). A read-only code view with selection, copy and syntax colors.
