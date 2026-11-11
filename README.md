@@ -31,6 +31,8 @@ herdr-app do layout.switch --name corral
 
 `install.sh` copies `layouts/corral.json`, `mods/corral/` and `themes/one-dark.json` into `~/.config/herdr-app` (or `$HERDR_APP_HOME`). Leave out `--statusline` if you only want the layout.
 
+For development, `./install.sh --link` symlinks `main.js` and the layout to the checkout, so edits apply at once. Icons stay copies, because Herdr does not load SVGs through a symlinked folder; run the script again after adding one.
+
 ### Session data
 
 Cards read the Claude Code statusline JSON. `statusline/corral-statusline.py` prints one line (`model | context | cost | [folder]`) and saves the JSON to `~/.cache/corral/sessions/<claude pid>.json`. The mod matches each file to its terminal through the terminal's foreground pid.

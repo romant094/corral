@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Installs Corral into Herdr: the layout, the mod and the one-dark theme.
 # With --statusline it also installs the Claude Code statusline hook that feeds the cards.
+# With --link the code and the layout are symlinks to this checkout, so edits apply at once.
+# Icons stay copies: Herdr does not load SVGs through a symlinked folder.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,12 +10,15 @@ HERDR_HOME="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
 STATUSLINE_DIR="$HOME/.claude/scripts"
 
 with_statusline=false
+link=false
 for arg in "$@"; do
   case "$arg" in
     --statusline) with_statusline=true ;;
+    --link) link=true ;;
     -h|--help)
-      echo "Usage: ./install.sh [--statusline]"
+      echo "Usage: ./install.sh [--link] [--statusline]"
       echo "  Copies layouts/, mods/corral/ and themes/ into $HERDR_HOME."
+      echo "  --link        symlinks main.js and the layout to this checkout instead of copying them."
       echo "  --statusline  also copies statusline/corral-statusline.py into $STATUSLINE_DIR."
       exit 0 ;;
     *) echo "Unknown option: $arg" >&2; exit 1 ;;
@@ -25,12 +30,21 @@ if [ ! -d "$HERDR_HOME" ]; then
   exit 1
 fi
 
+# A folder-level symlink from an earlier setup would hide the icons; replace it with a real folder.
+[ -L "$HERDR_HOME/mods/corral" ] && rm "$HERDR_HOME/mods/corral"
 mkdir -p "$HERDR_HOME/layouts" "$HERDR_HOME/mods/corral/icons" "$HERDR_HOME/themes"
-cp "$SRC/layouts/corral.json" "$HERDR_HOME/layouts/corral.json"
-cp "$SRC/mods/corral/main.js" "$SRC/mods/corral/mod.json" "$SRC/mods/corral/preview.svg" "$HERDR_HOME/mods/corral/"
+rm -f "$HERDR_HOME/layouts/corral.json" "$HERDR_HOME/mods/corral/main.js"
+if $link; then
+  ln -s "$SRC/layouts/corral.json" "$HERDR_HOME/layouts/corral.json"
+  ln -s "$SRC/mods/corral/main.js" "$HERDR_HOME/mods/corral/main.js"
+else
+  cp "$SRC/layouts/corral.json" "$HERDR_HOME/layouts/corral.json"
+  cp "$SRC/mods/corral/main.js" "$HERDR_HOME/mods/corral/main.js"
+fi
+cp "$SRC/mods/corral/mod.json" "$SRC/mods/corral/preview.svg" "$HERDR_HOME/mods/corral/"
 cp "$SRC"/mods/corral/icons/*.svg "$HERDR_HOME/mods/corral/icons/"
 cp "$SRC/themes/one-dark.json" "$HERDR_HOME/themes/one-dark.json"
-echo "Installed the corral layout into $HERDR_HOME."
+echo "Installed the corral layout into $HERDR_HOME$($link && echo " (main.js and the layout linked to $SRC)")."
 
 if command -v herdr-app >/dev/null 2>&1; then
   herdr-app check "$HERDR_HOME/mods/corral"
