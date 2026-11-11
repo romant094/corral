@@ -56,7 +56,8 @@ const pad2 = (n) => String(n).padStart(2, "0");
 const resetText = (resetsAt) => {
   if (!resetsAt) return "";
   const d = new Date(resetsAt * 1000);
-  const clock = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const h = d.getHours();
+  const clock = `${h % 12 || 12}:${pad2(d.getMinutes())} ${h < 12 ? "AM" : "PM"}`;
   return resetsAt * 1000 - Date.now() < 86400000 ? clock : `${DAYS[d.getDay()]} ${clock}`;
 };
 
