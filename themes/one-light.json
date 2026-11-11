@@ -10,10 +10,10 @@
   "colors": {
     "canvas": "#f2f2f4",
     "chrome": "#e6e6e9",
-    "surface": "#f2f2f4",
+    "surface": "#ffffff",
     "popover": "#ffffff",
     "raised": "#ffffff",
-    "hover": "#e9e9ec",
+    "hover": "#7699e6",
     "selected": "#dcdce1",
     "border": "#c8c8cd",
     "input": "#9a9ba1",

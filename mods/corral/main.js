@@ -233,7 +233,8 @@ const isLight = () => {
 };
 const languageOf = (path) => LANGUAGES[path.split("/").pop().split(".").pop().toLowerCase()];
 const newEditor = (path) => {
-  const options = { readonly: true, line_numbers: true, folding: false, soft_wrap: false, font_family: "Geist Mono", font_size: 12, syntax: isLight() ? SYNTAX_LIGHT : SYNTAX_DARK };
+  // Folding adds a column of fold marks, which also keeps the code off the line numbers.
+  const options = { readonly: true, line_numbers: true, folding: true, soft_wrap: false, font_family: "Geist Mono", font_size: 12, syntax: isLight() ? SYNTAX_LIGHT : SYNTAX_DARK };
   const language = languageOf(path);
   try { return EditorState.new(language ? { ...options, language } : options); } catch { return EditorState.new(options); }
 };
@@ -271,6 +272,7 @@ export default class Board extends View {
       this.spaceSearch.on("change", (_e, cx) => cx.notify());
       this.spaceSearch.focus();
     }
+    if (p?.role === "terminals") this.railFocus = cx.focus_handle();
     if (p?.role === "worktrees") {
       this.wtSearch = InputState.new({ placeholder: "Search branch or path" });
       this.wtSearch.on("change", (_e, cx) => cx.notify());
@@ -970,7 +972,10 @@ export default class Board extends View {
     const focusedPane = panes().find(p => p.focused)?.pane;
     const tabName = (id) => active?.tabs.find(t => t.id === id)?.name ?? "";
     const dragging = this.drag?.moved;
-    return h_flex().id("rail-root").size_full().pl(14).pr(6).gap(10).items_center().bg(C.bar)
+    // The bar keeps the keyboard itself: a press on it must not hand focus to a terminal.
+    return h_flex().id("rail-root").size_full().pl(14).pr(6).gap(10).items_center().bg(C.bar).rounded(7)
+      .when(!!this.railFocus, el => el.track_focus(this.railFocus))
+      .on_mouse_down("left", (_e, cx) => { this.railFocus?.focus(); cx.stop_propagation(); })
       .on_mouse_move((e, cx) => this.moveDrag(e, cx))
       .on_mouse_up("left", (_e, cx) => this.endDrag(cx, active))
       .on_hover((hovered, cx) => { if (!hovered) this.cancelDrag(cx); })
@@ -1009,6 +1014,7 @@ export default class Board extends View {
         .child(div().flex_none().text_size(11).text_color(C.muted).child(`${shells.length} terminal${shells.length === 1 ? "" : "s"}`)))
       .child(h_flex().id("new-terminal").h(28).px(12).gap(6).items_center().rounded(6).flex_none().bg(C.accent).cursor_pointer()
         .text_size(12).font_semibold().text_color(C.card).hover(s => s.opacity(0.82))
+        .tooltip("Open a shell in a new tab of this space")
         .on_click(() => run("tab.new", active ? { space: active.id } : {}))
         .child("+ Terminal"));
   }
