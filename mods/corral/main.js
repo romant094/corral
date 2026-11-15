@@ -76,6 +76,7 @@ const SINCE = [["24 hours ago", "Last 24 hours"], ["7 days ago", "Last 7 days"],
 const shortRef = (ref) => ref.replace(/^refs\/(heads|remotes|tags)\//, "");
 // The terminal area under the bar: collapsed or not, and its height to come back to.
 const DOCK_KEY = "corral.dock";
+const POPUP_CLOSED_KEY = "corral.popupClosed";
 // Bumped after a git command changes refs, so the Log reloads at once.
 const GIT_BUMP_KEY = "corral.gitBump";
 // Branches with a push, update or checkout running: { [branch]: "Pushing…" }.
@@ -101,6 +102,16 @@ const gitBusy = async (name, label, work) => {
     const { [name]: _done, ...rest } = shared(GIT_BUSY_KEY) ?? {};
     setShared(GIT_BUSY_KEY, rest);
   }
+};
+// Dropdowns open from a button. A press on that button while its dropdown is open closes the dropdown
+// as a press outside it, and the click that follows would open it again: within this time it doesn't.
+const POPUP_REOPEN_MS = 400;
+const DROPDOWNS = new Set(["spaces", "projectfilter", "statusfilter", "worktrees", "agents", "logfilter"]);
+const dropdownKey = (p) => `${p?.role}:${p?.field ?? ""}`;
+const openDropdown = (spec) => {
+  const closed = shared(POPUP_CLOSED_KEY);
+  if (closed?.key === dropdownKey(spec.props) && Date.now() - closed.at < POPUP_REOPEN_MS) return;
+  openOverlay(spec);
 };
 const DOCK_BAR = 40;
 const DOCK_MS = 200;
@@ -966,7 +977,7 @@ export default class Board extends View {
         .when(v !== "board", el => el.child(this.agentPicker(C)))
         .when(v === "board", el => el.child(h_flex().id("space-picker").h(34).pl(12).pr(10).gap(8).items_center().rounded(7).flex_none()
           .bg(C.bg).border(1).border_color(C.line).cursor_pointer().hover(s => s.border_color(C.input))
-          .on_click(() => openOverlay({ mod: MOD, props: { role: "spaces" }, kind: "popup", width: 460,
+          .on_click(() => openDropdown({ mod: MOD, props: { role: "spaces" }, kind: "popup", width: 460,
             height: projectsPopupHeight(), at: { x: PICKER_X, y: 52 } }))
           .child(dot(C.accent, 8))
           .child(div().text_size(16).font_semibold().text_color(C.ink).child(active?.name ?? "No space"))
@@ -977,10 +988,10 @@ export default class Board extends View {
           g[0].toUpperCase() + g.slice(1), C.fable, wash(C.fable, C)))))
       .when(v === "board", el => el.child(h_flex().gap(8).items_center()
         .child(chip(C, "chip-projects", projectLabel + "  ▾", !!f.projects,
-          () => openOverlay({ mod: MOD, props: { role: "projectfilter" }, kind: "popup", width: 380,
+          () => openDropdown({ mod: MOD, props: { role: "projectfilter" }, kind: "popup", width: 380,
             height: checkListHeight(withAgents.length), at: { x: 24, y: 96 } })))
         .child(chip(C, "chip-statuses", this.statusFilterLabel() + "  ▾", !!f.statuses,
-          () => openOverlay({ mod: MOD, props: { role: "statusfilter" }, kind: "popup", width: 300,
+          () => openDropdown({ mod: MOD, props: { role: "statusfilter" }, kind: "popup", width: 300,
             height: checkListHeight(states().length), at: { x: Math.round(59 + projectLabel.length * 5.5), y: 96 } })))
         .child(div().flex_1())
         .child(h_flex().gap(6).items_center().flex_none().text_size(11).text_color(C.muted)
@@ -1623,7 +1634,7 @@ export default class Board extends View {
       .rounded(5).cursor_pointer().text_size(12).hover(s => s.bg(C.bar))
       .on_click(() => {
         const height = field === "date" ? 210 : 380;
-        openOverlay({ mod: MOD, kind: "popup", at: "pointer", width: 320, height, props: { role: "logfilter", field, height } });
+        openDropdown({ mod: MOD, kind: "popup", at: "pointer", width: 320, height, props: { role: "logfilter", field, height } });
       })
       .child(div().text_color(C.muted).child(value ? `${label}:` : label))
       .when(!!value, el => el.child(div().max_w(180).truncate().text_color(C.ink).child(value))
@@ -1754,7 +1765,7 @@ export default class Board extends View {
     return h_flex().id("worktree-picker").h(28).px(10).gap(6).items_center().rounded(6).flex_none()
       .bg(C.card).border(1).border_color(C.line).font_family("Geist Mono").text_size(11).text_color(C.ink)
       .when(many, el => el.cursor_pointer().hover(s => s.border_color(C.input)).tooltip("Switch worktree")
-        .on_click(() => openOverlay({ mod: MOD, props: { role: "worktrees" }, kind: "popup", width: 520,
+        .on_click(() => openDropdown({ mod: MOD, props: { role: "worktrees" }, kind: "popup", width: 520,
           height: worktreesPopupHeight(), at: { x: 24, y: 96 } })))
       .child(svg(`mods/${MOD}/icons/branch.svg`).size(12).text_color(C.muted))
       .child(g.branch || "detached")
@@ -1870,7 +1881,7 @@ export default class Board extends View {
     const n = agents().length;
     return h_flex().id("agent-picker").h(34).pl(12).pr(10).gap(8).items_center().rounded(7).flex_none()
       .bg(C.bg).border(1).border_color(C.line).cursor_pointer().hover(s => s.border_color(C.input)).tooltip("Pick an agent")
-      .on_click(() => openOverlay({ mod: MOD, props: { role: "agents" }, kind: "popup", width: 520,
+      .on_click(() => openDropdown({ mod: MOD, props: { role: "agents" }, kind: "popup", width: 520,
         height: 40 + Math.max(1, n) * 73 + 46, at: { x: PICKER_X, y: 52 } }))
       .child(dot(a ? states().find(s => s.key === a.status)?.color ?? C.dim : C.dim, 8))
       .when(!!a, el => el
@@ -2343,6 +2354,11 @@ export default class Board extends View {
         .child(div().w(16).flex_none().text_center().text_color(k.color).child(k.sign))
         .child(div().flex_1().min_w(0).pr(14).whitespace_nowrap().overflow_hidden().text_color(k.color).child(d.text || " "));
     })).flex_1().py(6);
+  }
+  // A dropdown notes when it closed, for openDropdown.
+  async close() {
+    const p = props();
+    if (DROPDOWNS.has(p?.role)) setShared(POPUP_CLOSED_KEY, { key: dropdownKey(p), at: Date.now() });
   }
   // The header and the main area keep the keyboard themselves: a press on them must not hand focus to a terminal.
   render() {
