@@ -2,7 +2,7 @@ import { View, div, svg, image, uniform_list, PathBuilder } from "gpui-kit";
 import { h_flex, v_flex, Input, InputState, Editor, EditorState, h_resizable, resizable_panel, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import {
   agents, spaces, panes, props, run, setAgentOrder, theme, shared, setShared, pickFolder,
-  home, hc, exec, readTextFile, openOverlay, closeOverlay, notify, window as appWindow, layout,
+  home, hc, exec, readTextFile, openOverlay, closeOverlay, notify, window as appWindow, layout, nextCommand,
 } from "herdr";
 import * as fs from "fs/promises";
 
@@ -104,6 +104,15 @@ const gitBusy = async (name, label, work) => {
 };
 const DOCK_BAR = 40;
 const DOCK_MS = 200;
+// The height the terminals open to after they were folded by dragging the divider to the bottom.
+const DOCK_OPEN = 160;
+// How often the bar checks the height Herdr's divider stored.
+const DOCK_CHECK_MS = 30;
+// How far from the divider a press over the board or the bar goes to the divider.
+const DIVIDER_GRAB = 8;
+// The rows above the workspace: the header, the board's min height and the divider (layouts/corral.json).
+const DOCK_ABOVE = 112 + 150 + 1;
+const findWorkspace = (n) => n?.id === "workspace" ? n : (n?.children ?? []).map(findWorkspace).find(Boolean);
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const WT_POPUP_MAX = 460;
 const POPUP_MAX = 560;
@@ -475,7 +484,20 @@ export default class Board extends View {
       this.spaceSearch.on("change", (_e, cx) => cx.notify());
       this.spaceSearch.focus();
     }
-    if (p?.role === "terminals") this.railFocus = cx.focus_handle();
+    if (p?.role === "terminals") {
+      this.railFocus = cx.focus_handle();
+      // Folded terminals keep their node at zero height, so the divider can still pull them up;
+      // an older build hid the node instead.
+      run("layout.show", { id: "live-terminals" });
+      cx.timer.every(DOCK_CHECK_MS, () => this.clampDock());
+      // `herdr-app do corral.dock` (or a key bound to it) folds and opens the terminals as the chevron does.
+      cx.spawn(async (cx) => {
+        for (;;) {
+          if (await nextCommand() === "dock") this.toggleDock(cx);
+          cx.notify();
+        }
+      });
+    }
     if (p?.role === "gitdialog" && p.kind !== "delete") {
       const start = p.kind === "rename" ? p.name : "";
       this.nameInput = InputState.new({ placeholder: "feat/my-change", value: start });
@@ -598,6 +620,35 @@ export default class Board extends View {
     }
     if (view() === "changes") this.loadDiff(cx);
     if (view() === "log") this.loadLog(cx);
+  }
+  // Herdr's divider keeps adding to the stored height past the top and the bottom, and a drag back
+  // then waits until it is in range again: keep it in range. At the bottom the terminals fold as the
+  // chevron folds them, and they open to DOCK_OPEN; a drag up from there opens them too.
+  clampDock() {
+    const max = this.dockMax();
+    const px = findWorkspace(layout())?.size?.px;
+    if (!max || px == null || this.docking) return;
+    const state = shared(DOCK_KEY) ?? {};
+    if (state.collapsed) {
+      if (px < DOCK_BAR) run("layout.resize", { id: "workspace", px: DOCK_BAR });
+      else if (px > DOCK_BAR) {
+        setShared(DOCK_KEY, { collapsed: false, height: state.height });
+        if (px > max) run("layout.resize", { id: "workspace", px: max });
+      }
+    } else if (px <= DOCK_BAR) {
+      run("layout.resize", { id: "workspace", px: DOCK_BAR });
+      setShared(DOCK_KEY, { collapsed: true, height: DOCK_OPEN });
+    } else if (px > max) run("layout.resize", { id: "workspace", px: max });
+  }
+  // Herdr shows the resize cursor a few pixels to each side of the board/workspace divider, over the
+  // board and the bar. A press there must reach the divider: the board and the bar let it through.
+  nearDivider(e) {
+    const px = findWorkspace(layout())?.size?.px;
+    if (px == null || !this.viewHeight) return false;
+    return Math.abs(e.position.y - (this.viewHeight - px - 1)) <= DIVIDER_GRAB;
+  }
+  dockMax() {
+    return this.viewHeight ? Math.max(Math.floor(this.viewHeight - DOCK_ABOVE), DOCK_BAR) : null;
   }
   async refreshGit(folder) {
     const next = { folder, root: null, branch: "", files: [], worktrees: [] };
@@ -1927,14 +1978,12 @@ export default class Board extends View {
   toggleDock(cx) {
     if (this.docking) return;
     const state = shared(DOCK_KEY) ?? {};
-    const find = (n) => n?.id === "workspace" ? n : (n?.children ?? []).map(find).find(Boolean);
-    const now = find(layout())?.size?.px;
+    const now = findWorkspace(layout())?.size?.px;
     const open = state.collapsed;
-    const height = open ? Math.max(state.height ?? 460, 160) : Math.max(now ?? 460, 160);
+    const height = Math.min(open ? Math.max(state.height ?? 460, DOCK_OPEN) : Math.max(now ?? 460, DOCK_OPEN), this.dockMax() ?? Infinity);
     const from = open ? DOCK_BAR : height;
     const to = open ? height : DOCK_BAR;
     this.docking = true;
-    if (open) run("layout.show", { id: "live-terminals" });
     setShared(DOCK_KEY, { collapsed: !open, height });
     cx.spawn(async (cx) => {
       const steps = 12;
@@ -1943,7 +1992,9 @@ export default class Board extends View {
         run("layout.resize", { id: "workspace", px: Math.round(from + (to - from) * t) });
         await cx.sleep(DOCK_MS / steps);
       }
-      if (!open) run("layout.hide", { id: "live-terminals" });
+      // A resize lands a moment later: until the last one shows in layout(), the height check
+      // would read a step of the slide and take it for a drag.
+      for (let i = 0; i < 20 && findWorkspace(layout())?.size?.px !== to; i++) await cx.sleep(DOCK_CHECK_MS);
       this.docking = false;
       cx.notify();
     });
@@ -1977,7 +2028,11 @@ export default class Board extends View {
     const collapsed = !!shared(DOCK_KEY)?.collapsed;
     return h_flex().id("rail-root").size_full().pl(24).pr(16).gap(10).items_center().bg(C.bar)
       .when(!!this.railFocus, el => el.track_focus(this.railFocus))
-      .on_mouse_down("left", (_e, cx) => { this.railFocus?.focus(); cx.stop_propagation(); })
+      .on_mouse_down("left", (e, cx) => {
+        if (this.nearDivider(e)) return;
+        this.railFocus?.focus();
+        cx.stop_propagation();
+      })
       .on_mouse_move((e, cx) => this.moveDrag(e, cx))
       .on_mouse_up("left", (_e, cx) => this.endDrag(cx, active))
       .on_hover((hovered, cx) => { if (!hovered) this.cancelDrag(cx); })
@@ -2291,9 +2346,14 @@ export default class Board extends View {
   }
   // The header and the main area keep the keyboard themselves: a press on them must not hand focus to a terminal.
   render() {
+    this.viewHeight = window.viewport_size().height;
     const el = this.renderView();
     if (!this.selfFocus) return el;
-    return el.track_focus(this.selfFocus).on_mouse_down("left", (_e, cx) => { this.selfFocus.focus(); cx.stop_propagation(); });
+    return el.track_focus(this.selfFocus).on_mouse_down("left", (e, cx) => {
+      if (!props()?.role && this.nearDivider(e)) return;
+      this.selfFocus.focus();
+      cx.stop_propagation();
+    });
   }
   renderView() {
     const C = palette();
