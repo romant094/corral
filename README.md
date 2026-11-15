@@ -65,6 +65,10 @@ It does not use the network itself. `git fetch`, `pull` and `push` reach your gi
 
 The picker lists project folders: saved ones, folders of open spaces (saved when you open them) and folders where an agent runs. Each agent counts once, in the deepest folder that holds it. Rows with agents come first. A click goes to the agent, else to the open space, else opens a space there and starts Claude. "Add projects…" takes several folders at once on macOS.
 
+Right-click a project for Start Claude here, Open a terminal here and Copy path. The menu opens over the list.
+
+**One space per project.** A new agent that starts in a saved project's folder but in another space moves to a tab of that project's space, with a toast; without a space for the project, Corral opens one. A new agent in your home folder or outside your saved projects goes to the "No project" space. Agents that ran before Corral started stay where they are; `herdr-app do corral.sort` moves them the same way.
+
 ![Board filters](docs/images/filters.png)
 
 ### Live workspace
@@ -73,7 +77,7 @@ The bar under the board holds the plain terminals of the active space as chips: 
 
 ![Terminals folded](docs/images/board-collapsed.png)
 
-Each pane header shows the status, the model, the session id (click to copy), the context use, a compact button that sends `/compact` after you confirm, the cost, split right, split down and close.
+Each pane header shows the status, the model, the session id (click to copy), the context use, a compact button that sends `/compact` after you confirm, the cost, split right, split down, move to its own tab (in its project's space when one is open) and close. When the space has several tabs, the merge button beside "+ Agent" puts every terminal of the space side by side in the shown tab; the split button next to it does the reverse, a tab for each terminal of the shown tab. `herdr-app do corral.detach`, `corral.merge` and `corral.split` do the same from a command or a key.
 
 ## Files
 

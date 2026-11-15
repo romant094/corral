@@ -77,6 +77,8 @@ const shortRef = (ref) => ref.replace(/^refs\/(heads|remotes|tags)\//, "");
 // The terminal area under the bar: collapsed or not, and its height to come back to.
 const DOCK_KEY = "corral.dock";
 const POPUP_CLOSED_KEY = "corral.popupClosed";
+const PANE_JOBS_KEY = "corral.paneJobs";
+const PROJECT_MENU_H = 3 * 32 + 2 * 2 + 5 + 12 + 2;
 // Bumped after a git command changes refs, so the Log reloads at once.
 const GIT_BUMP_KEY = "corral.gitBump";
 // Branches with a push, update or checkout running: { [branch]: "Pushing…" }.
@@ -154,6 +156,8 @@ const searchField = (C, state) => h_flex().flex_none().h(32).mx(4).mb(4).px(10).
   .child(div().flex_1().min_w(0).child(Input.new(state)));
 // The picker sits after the view switch and the slash; its popups open under it.
 const PICKER_X = 370;
+// Where the projects list opens, under the picker.
+const SPACES_Y = 52;
 // Copy-path chords: Cmd on macOS, Ctrl elsewhere (GPUI's "cmd" is the Windows/Super key there).
 // The window is not there while the module loads, so this is asked on use.
 const copyKeys = () => (appWindow()?.platform ?? "macos") === "macos"
@@ -254,15 +258,40 @@ const pickFolders = async () => {
   const folder = await pickFolder({ prompt: "Add project" });
   return folder ? [folder] : [];
 };
+// Moving terminals between tabs parks a terminal (it keeps running, its pane goes) and keeps it again
+// where it goes. The pane header that asks for it goes with the pane, so the bar copy does the work:
+// pane headers queue jobs here.
+const queuePaneJob = (job) => setShared(PANE_JOBS_KEY, [...(shared(PANE_JOBS_KEY) ?? []), { id: `${Date.now()}-${Math.random()}`, ...job }]);
+// Agents of no saved project (or of the home folder) share one space, found by its name.
+const LOOSE_SPACE = "No project";
+const homeJob = (a, row) => {
+  if (row.saved && row.folder !== home()) {
+    return row.space?.id === a.space ? null : { kind: "home", terminal: a.address, name: row.name, folder: row.folder };
+  }
+  const loose = spaces().find(s => s.name === LOOSE_SPACE && !s.machine);
+  return loose?.id === a.space ? null : { kind: "home", terminal: a.address, name: LOOSE_SPACE, folder: home(), loose: true };
+};
+const sortAgents = () => {
+  for (const row of projectRows(agents())) {
+    for (const a of row.agents) {
+      const job = homeJob(a, row);
+      if (job) queuePaneJob(job);
+    }
+  }
+};
+const paneOf = (terminal) => panes().find(p => p.terminal === terminal);
+const spaceOfTab = (tab) => spaces().find(s => s.tabs.some(t => t.id === tab));
 const removeProject = (folder) => setShared(PROJECTS_KEY, projects().filter(p => p.folder !== folder));
 // Reuse the project's space when one is open there; otherwise start a space for it.
-const openProject = (p) => {
+// With claude false it opens a plain terminal there instead.
+const openProject = (p, claude = true) => {
   const space = spaces().find(s => s.folder === p.folder && !s.machine);
+  const agent = claude ? { argv: ["claude"] } : {};
   if (space) {
     run("space.select", { id: space.id });
-    run("tab.new", { space: space.id, folder: p.folder, name: "claude", argv: ["claude"] });
+    run("tab.new", { space: space.id, folder: p.folder, ...(claude ? { name: "claude" } : {}), ...agent });
   } else {
-    run("space.new", { name: p.name, folder: p.folder, tab: "claude", argv: ["claude"] });
+    run("space.new", { name: p.name, folder: p.folder, ...(claude ? { tab: "claude" } : {}), ...agent });
   }
 };
 
@@ -500,11 +529,23 @@ export default class Board extends View {
       // Folded terminals keep their node at zero height, so the divider can still pull them up;
       // an older build hid the node instead.
       run("layout.show", { id: "live-terminals" });
-      cx.timer.every(DOCK_CHECK_MS, () => this.clampDock());
-      // `herdr-app do corral.dock` (or a key bound to it) folds and opens the terminals as the chevron does.
+      setShared(PANE_JOBS_KEY, []);
+      cx.timer.every(DOCK_CHECK_MS, (cx) => { this.clampDock(); this.runPaneJobs(cx); });
+      // `herdr-app do corral.dock` (or a key bound to it) folds and opens the terminals as the chevron does;
+      // corral.merge, corral.split and corral.detach do what the bar's and the pane header's buttons do;
+      // corral.sort moves every running agent to its project's space, as a new agent is moved.
       cx.spawn(async (cx) => {
         for (;;) {
-          if (await nextCommand() === "dock") this.toggleDock(cx);
+          const command = await nextCommand();
+          if (command === "dock") this.toggleDock(cx);
+          // The shown space's tabs into one row, and the focused terminal into a tab of its own.
+          const space = spaces().find(s => s.active);
+          if (command === "merge" && space) queuePaneJob({ kind: "merge", space: space.id });
+          const tab = space?.tabs.find(t => t.active);
+          if (command === "split" && tab) queuePaneJob({ kind: "split", tab: tab.id });
+          if (command === "sort") sortAgents();
+          const focused = panes().find(p => p.focused && p.terminal);
+          if (command === "detach" && focused) queuePaneJob({ kind: "detach", terminal: focused.terminal });
           cx.notify();
         }
       });
@@ -631,6 +672,27 @@ export default class Board extends View {
     }
     if (view() === "changes") this.loadDiff(cx);
     if (view() === "log") this.loadLog(cx);
+    this.findNewAgents();
+  }
+  // A new agent whose folder is in a saved project (not the home folder) but runs in another space
+  // gets moved to that project's space; any other new agent goes to the LOOSE_SPACE space.
+  // Agents running when Corral starts stay where they are.
+  findNewAgents() {
+    const all = agents();
+    if (!this.seenAgents) {
+      this.seenAgents = new Set(all.map(a => a.address));
+      return;
+    }
+    let rows = null;
+    for (const a of all) {
+      if (this.seenAgents.has(a.address)) continue;
+      const folder = agentFolder(a);
+      if (!folder) continue;
+      this.seenAgents.add(a.address);
+      const row = (rows ??= projectRows(all)).find(r => r.agents.some(x => x.address === a.address));
+      const job = row && homeJob(a, row);
+      if (job) queuePaneJob(job);
+    }
   }
   // Herdr's divider keeps adding to the stored height past the top and the bottom, and a drag back
   // then waits until it is in range again: keep it in range. At the bottom the terminals fold as the
@@ -657,6 +719,113 @@ export default class Board extends View {
     const px = findWorkspace(layout())?.size?.px;
     if (px == null || !this.viewHeight) return false;
     return Math.abs(e.position.y - (this.viewHeight - px - 1)) <= DIVIDER_GRAB;
+  }
+  runPaneJobs(cx) {
+    const job = (shared(PANE_JOBS_KEY) ?? [])[0];
+    if (!job || this.paneJobBusy) return;
+    this.paneJobBusy = true;
+    cx.spawn(async (cx) => {
+      try {
+        if (job.kind === "detach") await this.detachTerminal(cx, job.terminal);
+        if (job.kind === "merge") await this.mergeTabs(cx, job.space);
+        if (job.kind === "split") await this.splitTab(cx, job.tab);
+        if (job.kind === "home") await this.homeAgent(cx, job);
+      } finally {
+        setShared(PANE_JOBS_KEY, (shared(PANE_JOBS_KEY) ?? []).filter(j => j.id !== job.id));
+        this.paneJobBusy = false;
+      }
+    });
+  }
+  // Waits up to 2s for Herdr to show what a command did.
+  async settle(cx, done) {
+    for (let i = 0; i < 40 && !done(); i++) await cx.sleep(50);
+    return done();
+  }
+  // Parks a terminal, then keeps it again: in a new tab, or right of the focused pane.
+  async moveTerminal(cx, terminal, place, before) {
+    run("terminal.park", { terminal });
+    await this.settle(cx, () => !paneOf(terminal));
+    before?.();
+    // Selecting a space or a tab and focusing a pane land a moment later; keep goes where they point.
+    if (before) await cx.sleep(150);
+    run("terminal.keep", { terminal, place });
+    if (await this.settle(cx, () => !!paneOf(terminal))) return true;
+    notify({ title: "Couldn't move the terminal", body: `${terminal} runs without a pane. Run: herdr-app do terminal.keep '{"terminal":"${terminal}"}'`,
+      level: "info", timeout: 15000 });
+    return false;
+  }
+  // A terminal out of a shared tab into a tab of its own: in its project's space when one is open,
+  // else in the space it was in. The shown tab stays shown. Herdr can't move a pane between spaces; a kept terminal goes to the shown one.
+  async detachTerminal(cx, terminal) {
+    const from = paneOf(terminal);
+    if (!from) return;
+    const row = projectRows(agents()).find(r => r.agents.some(a => a.address === terminal));
+    const space = row?.space ?? spaceOfTab(from.tab);
+    const back = this.shownPlace(terminal);
+    if (await this.moveTerminal(cx, terminal, "tab", () => { if (space) run("space.select", { id: space.id }); })) back();
+  }
+  // Keep shows the new tab: this goes back to the tab and the pane that were shown.
+  shownPlace(moving) {
+    const shown = spaces().find(s => s.active);
+    const tab = shown?.tabs.find(t => t.active);
+    // A pane id goes with a moved terminal: note the terminal, and focus it again only where it still is.
+    const focused = panes().find(p => p.focused && p.terminal && p.terminal !== moving)?.terminal;
+    return () => {
+      if (shown) run("space.select", { id: shown.id });
+      if (tab) run("tab.select", { id: tab.id });
+      const pane = focused && paneOf(focused);
+      if (pane && pane.tab === tab?.id) run("pane.focus", { pane: pane.pane });
+    };
+  }
+  // A new agent started outside its project's space goes to a tab there (or in LOOSE_SPACE). Without
+  // that space it starts one: Herdr starts a space with a shell, which goes once the agent is in.
+  async homeAgent(cx, { terminal, name, folder, loose }) {
+    if (!paneOf(terminal)) return;
+    const back = this.shownPlace(terminal);
+    const find = () => spaces().find(s => (loose ? s.name === name : s.folder === folder) && !s.machine);
+    let space = find();
+    let shell = null;
+    if (!space) {
+      run("space.new", { name, folder });
+      await this.settle(cx, () => !!find() && panes().some(p => find().tabs.some(t => t.id === p.tab)));
+      space = find();
+      if (!space) return back();
+      shell = panes().find(p => space.tabs.some(t => t.id === p.tab))?.pane;
+    }
+    const ok = await this.moveTerminal(cx, terminal, "tab", () => run("space.select", { id: space.id }));
+    if (ok && shell) run("pane.close", { pane: shell });
+    back();
+    if (ok) notify({ title: `Agent moved to ${name}`,
+      body: `${loose ? "Its folder is in no saved project." : "It started outside its project's space."} Click to go to it.`,
+      level: "info", timeout: 6000, action: { name: "agent.focus", args: { terminal } } });
+  }
+  // Every terminal of the space's other tabs, side by side to the right in its shown tab.
+  async mergeTabs(cx, spaceId) {
+    const space = spaces().find(s => s.id === spaceId);
+    const target = space?.tabs.find(t => t.active) ?? space?.tabs[0];
+    if (!target) return;
+    const others = new Set(space.tabs.filter(t => t.id !== target.id).map(t => t.id));
+    const moving = panes().filter(p => p.terminal && others.has(p.tab)).map(p => p.terminal);
+    for (const terminal of moving) {
+      const ok = await this.moveTerminal(cx, terminal, "right", () => {
+        run("space.select", { id: space.id });
+        run("tab.select", { id: target.id });
+        const last = panes().filter(p => p.tab === target.id).at(-1);
+        if (last) run("pane.focus", { pane: last.pane });
+      });
+      if (!ok) return;
+    }
+  }
+  // Merge in reverse: every terminal of the tab but the first into a tab of its own in the same space.
+  async splitTab(cx, tabId) {
+    const space = spaceOfTab(tabId);
+    if (!space) return;
+    const back = this.shownPlace(null);
+    const moving = panes().filter(p => p.tab === tabId && p.terminal).slice(1).map(p => p.terminal);
+    for (const terminal of moving) {
+      if (!await this.moveTerminal(cx, terminal, "tab", () => run("space.select", { id: space.id }))) break;
+    }
+    back();
   }
   dockMax() {
     return this.viewHeight ? Math.max(Math.floor(this.viewHeight - DOCK_ABOVE), DOCK_BAR) : null;
@@ -978,7 +1147,7 @@ export default class Board extends View {
         .when(v === "board", el => el.child(h_flex().id("space-picker").h(34).pl(12).pr(10).gap(8).items_center().rounded(7).flex_none()
           .bg(C.bg).border(1).border_color(C.line).cursor_pointer().hover(s => s.border_color(C.input))
           .on_click(() => openDropdown({ mod: MOD, props: { role: "spaces" }, kind: "popup", width: 460,
-            height: projectsPopupHeight(), at: { x: PICKER_X, y: 52 } }))
+            height: projectsPopupHeight(), at: { x: PICKER_X, y: SPACES_Y } }))
           .child(dot(C.accent, 8))
           .child(div().text_size(16).font_semibold().text_color(C.ink).child(active?.name ?? "No space"))
           .child(div().text_size(11).text_color(C.muted).child("▾"))))
@@ -996,6 +1165,7 @@ export default class Board extends View {
         .child(div().flex_1())
         .child(h_flex().gap(6).items_center().flex_none().text_size(11).text_color(C.muted)
           .child(dot(theme().done, 6)).child(`${list.length} agents across ${withAgents.length} projects`))
+        .child(this.tabButtons(C, active))
         .child(h_flex().id("new-agent").h(28).px(12).gap(6).items_center().rounded(6).flex_none().bg(C.accent).cursor_pointer()
           .text_size(12).font_semibold().text_color(C.card).hover(s => s.opacity(0.82))
           .tooltip("Start Claude in a new tab of this space")
@@ -1006,6 +1176,22 @@ export default class Board extends View {
       .when(v === "files", el => el.child(this.filesBar(C)))
       .when(v === "changes", el => el.child(this.changesBar(C)))
       .when(v === "log", el => el.child(this.logBar(C)));
+  }
+  // Merge and split the shown space's tabs, beside + Agent.
+  tabButtons(C, active) {
+    const tab = active?.tabs.find(t => t.active);
+    const merge = (active?.tabs.length ?? 0) > 1;
+    const split = !!tab && panes().filter(p => p.terminal && p.tab === tab.id).length > 1;
+    // Both stay in place, dimmed when there is nothing to do, so the row doesn't move.
+    const button = (id, on, tip, off, file, onClick) => on
+      ? iconButton(C, id, tip, file, onClick)
+      : div().id(id).size(22).flex().flex_none().items_center().justify_center().text_color(C.dim).opacity(0.5).tooltip(off)
+        .child(svg(`mods/${MOD}/icons/${file}.svg`).size(14));
+    return h_flex().gap(2).items_center().flex_none()
+      .child(button("merge-tabs", merge, "Merge tabs: every terminal of this space side by side in this tab",
+        "Merge tabs: this space has one tab", "split-right", () => queuePaneJob({ kind: "merge", space: active.id })))
+      .child(button("split-tab", split, "Split tabs: every terminal of this tab but the first into a tab of its own",
+        "Split tabs: this tab has one terminal", "unmerge", () => queuePaneJob({ kind: "split", tab: tab.id })));
   }
   filesBar(C) {
     const g = gitState();
@@ -1953,6 +2139,14 @@ export default class Board extends View {
             else openProject(r);
             closeOverlay(overlay);
           })
+            .on_mouse_down("right", (e) => {
+              // "pointer" is where the window last saw the pointer, not this press: place the menu by the
+              // press. A popup may report it from its own corner; the row's bounds tell which.
+              const local = (e.bounds?.x ?? PICKER_X) < PICKER_X;
+              const at = { x: Math.round(e.position.x + (local ? PICKER_X : 0)), y: Math.round(e.position.y + (local ? SPACES_Y : 0)) };
+              openOverlay({ mod: MOD, kind: "popup", at, width: 240, height: PROJECT_MENU_H,
+                props: { role: "projectmenu", name: r.name, folder: r.folder, list: overlay } });
+            })
             .when(!!active && r.space?.id === active.id, el => el.bg(C.selected))
             .tooltip(n ? "Go to its agent" : r.space ? "Go to its space" : "Open a space here and start Claude")
             .child(n
@@ -2134,6 +2328,8 @@ export default class Board extends View {
           () => run("pane.split", { pane: p.pane, direction: "right" })))
         .child(iconButton(C, `split-down-${p.pane}`, "Split down: a new terminal below", "split-down",
           () => run("pane.split", { pane: p.pane, direction: "down" })))
+        .when(!!p.terminal, el => el.child(iconButton(C, `detach-${p.pane}`, "Move to its own tab, in its project's space when one is open", "external",
+          () => queuePaneJob({ kind: "detach", terminal: p.terminal }))))
         .child(vbar(C))
         .child(xButton(C, `pane-close-${p.pane}`, "Close pane", () => run("pane.close", { pane: p.pane }), 22, 17)));
   }
@@ -2263,6 +2459,19 @@ export default class Board extends View {
   projectRoot() {
     return gitState().root ?? this.folder;
   }
+  // Right-click on a project in the projects list: opens over the list, and a choice closes both.
+  projectMenu(C) {
+    const { name, folder, overlay, list } = props();
+    const item = (id, label, onClick) => h_flex().id(id).h(32).px(10).items_center().rounded(6).cursor_pointer()
+      .text_size(13).hover(st => st.bg(C.selected))
+      .on_click((_e, cx) => { onClick(cx); closeOverlay(overlay); closeOverlay(list); })
+      .child(label);
+    return v_flex().w_full().h(PROJECT_MENU_H).p(6).gap(2).bg(C.bg).text_color(C.ink)
+      .child(item("project-claude", "Start Claude here", () => openProject({ name, folder })))
+      .child(item("project-terminal", "Open a terminal here", () => openProject({ name, folder }, false)))
+      .child(div().h(1).mx(4).my(2).bg(C.line))
+      .child(item("project-copy", "Copy path", (cx) => copyText(cx, folder)));
+  }
   pathMenu(C) {
     const { path, root, overlay } = props();
     const item = (id, label, keys, text) => h_flex().id(id).h(36).px(10).gap(10).items_center().rounded(6).cursor_pointer()
@@ -2385,6 +2594,7 @@ export default class Board extends View {
     if (role === "projectfilter") return this.projectFilterPopup(C);
     if (role === "statusfilter") return this.statusFilterPopup(C);
     if (role === "pathmenu") return this.pathMenu(C);
+    if (role === "projectmenu") return this.projectMenu(C);
     if (role === "branchmenu") return this.branchMenu(C);
     if (role === "gitdialog") return this.gitDialog(C);
     if (role === "logfilter") return this.logFilterPopup(C);
