@@ -123,7 +123,7 @@ async function checkUpdates() {
     const rel = await r.json();
     // Only a plain vX.Y.Z tag is a Corral release; the download URL is built from it, never taken from the answer.
     if (!/^v\d+\.\d+\.\d+$/.test(rel.tag_name ?? "")) throw new Error(`the latest release has an odd tag: ${String(rel.tag_name).slice(0, 40)}`);
-    setUpdates({ checked_at: Date.now(), latest: rel.tag_name.slice(1), notes: rel.body ?? "", error: null });
+    setUpdates({ checked_at: Date.now(), checked_for: VERSION, latest: rel.tag_name.slice(1), notes: rel.body ?? "", error: null });
   } catch (err) {
     setUpdates({ checked_at: Date.now(), error: String(err?.message ?? err) });
   }
@@ -772,7 +772,9 @@ export default class Board extends View {
         }
         const auto = async () => {
           const u = updatesState();
-          if (!u.auto || (u.checked_at && Date.now() - u.checked_at < 3600 * 1000 && !u.error)) return this.announceUpdate();
+          // A different VERSION than at the last check (an update, a reinstall) asks again at once.
+          const fresh = u.checked_at && Date.now() - u.checked_at < 3600 * 1000 && !u.error && u.checked_for === VERSION;
+          if (!u.auto || fresh) return this.announceUpdate();
           await checkUpdates();
           this.announceUpdate();
         };
