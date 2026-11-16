@@ -1583,9 +1583,14 @@ export default class Board extends View {
       await this.saveTelegram({ enabled: true, chat_id: r.chat.id, root_topic_id: undefined,
         owner_ids: owners.map(o => o.id), owners });
       this.tg.unfold = {};
+      // Each step says where it is; the bridge starts first, the full check (rights, hc) follows it.
+      this.tg.busy = `Connected to ${r.chat.title}. Starting the bridge…`;
+      cx.notify();
       await this.loadTelegram();
-      this.tg.check = await bridgeJson(["--check", "--json"]);
       await this.service("start");
+      this.tg.busy = "Checking the group…";
+      cx.notify();
+      this.tg.check = await bridgeJson(["--check", "--json"]);
     });
   }
   cancelPairing(cx) {
