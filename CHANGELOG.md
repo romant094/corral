@@ -2,6 +2,11 @@
 
 Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHub release notes.
 
+## 0.1.5
+
+- Updates: the 6-hour check counts from the last check, not from when Corral loaded, so a reload does not push it back.
+- Updates: `herdr-app do corral.updates-due` moves the last check to 5:59:50 ago, to watch the next check happen.
+
 ## 0.1.4
 
 - Updates: a toast says when a new version is out, whichever check found it (at start, every 6 hours, Check now), once per version.

@@ -9,7 +9,7 @@ import * as fs from "fs/promises";
 // The mod's folder name: icon paths and popups point back at it. install.sh --name rewrites it.
 const MOD = "corral";
 // This build's release; scripts/release.sh sets it. The Updates section compares it with GitHub's latest release.
-const VERSION = "0.1.4";
+const VERSION = "0.1.5";
 const FILTER_KEY = "corral.filter";
 const PROJECTS_KEY = "corral.projects";
 // Session data from the statusline hook (statusline/corral-statusline.py), published by the board copy.
@@ -695,6 +695,8 @@ export default class Board extends View {
           if (command === "split" && tab) queuePaneJob({ kind: "split", tab: tab.id });
           if (command === "sort") sortAgents();
           if (command === "settings") openSettings();
+          // To watch the 6-hour check happen: the last check moves to 5:59:50 ago, so the next one runs in about 10 s.
+          if (command === "updates-due") setUpdates({ checked_at: Date.now() - UPDATE_EVERY_MS + 10000, checked_for: VERSION, error: null });
           // corral.settings-keys and the like open the dialog on that section.
           const section = SECTIONS.find(s => command === `settings-${s.id}`);
           if (section) { setSettings({ section: section.id }); openSettings(); }
@@ -771,8 +773,9 @@ export default class Board extends View {
         { keystroke: keys.relative, action: "corral-copy-relative", context: "CorralPaths" },
         { keystroke: keys.absolute, action: "corral-copy-absolute", context: "CorralPaths" },
       ]);
-      // Updates: at start and every 6 hours, unless the person turned it off. A reload of the mod within
-      // the hour does not ask GitHub again (60 requests an hour without a token).
+      // Updates: at start, and 6 hours after the last check, unless the person turned it off. The time is the last
+      // check's, so it holds across reloads, and `herdr-app do corral.updates-due` can move it to see a check happen.
+      // A reload within the hour does not ask GitHub again (60 requests an hour without a token).
       if (!checking()) {
         // The copy an update just installed says so.
         const done = updatesState().installing;
@@ -780,16 +783,23 @@ export default class Board extends View {
           setUpdates({ installing: null });
           notify({ title: `Corral ${VERSION} is installed`, level: "success" });
         }
-        const auto = async () => {
+        // Due: never checked, another VERSION than at the last check (an update, a reinstall), 6 hours since it,
+        // 10 minutes after a failed one; at start already an hour after it.
+        let checkingNow = false;
+        const due = (start) => {
           const u = updatesState();
-          // A different VERSION than at the last check (an update, a reinstall) asks again at once.
-          const fresh = u.checked_at && Date.now() - u.checked_at < 3600 * 1000 && !u.error && u.checked_for === VERSION;
-          if (!u.auto || fresh) return announceUpdate();
-          await checkUpdates();
-          announceUpdate();
+          if (!u.auto || checkingNow) return false;
+          const since = Date.now() - (u.checked_at ?? 0);
+          return !u.checked_at || u.checked_for !== VERSION || since >= (u.error ? 600000 : start ? 3600000 : UPDATE_EVERY_MS);
         };
-        cx.spawn(auto);
-        cx.timer.every(UPDATE_EVERY_MS, (cx) => { cx.spawn(auto); });
+        const auto = async (start) => {
+          if (!due(start)) return start && announceUpdate();
+          checkingNow = true;
+          try { await checkUpdates(); } finally { checkingNow = false; }
+        };
+        cx.spawn(() => auto(true));
+        // A look every 5 seconds is a clock read; GitHub is asked only when a check is due.
+        cx.timer.every(5000, (cx) => { if (due(false)) cx.spawn(() => auto(false)); });
       }
       // Saved projects from the Board layout this grew out of come along once.
       if (shared(PROJECTS_KEY) == null && shared("board.projects")) setShared(PROJECTS_KEY, shared("board.projects"));
