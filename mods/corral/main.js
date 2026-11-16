@@ -125,12 +125,17 @@ function announceUpdate() {
 async function checkUpdates() {
   if (await linkedTo()) return;
   try {
-    const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`,
-      { headers: { Accept: "application/vnd.github+json", "User-Agent": `corral/${VERSION}` } });
+    // curl, not fetch: fetch has no timeout here, and a request that never ends kept every later check from running.
+    const r = await exec("curl", ["-sSL", "--proto", "=https", "--max-time", "20", "-w", "\n%{http_code}",
+      "-H", "Accept: application/vnd.github+json", "-H", `User-Agent: corral/${VERSION}`,
+      "--", `https://api.github.com/repos/${REPO}/releases/latest`], { timeout: 30000 });
+    if (r.code !== 0) throw new Error(`no answer from GitHub: ${r.stderr.trim() || `curl exited ${r.code}`}`);
+    const at = r.stdout.lastIndexOf("\n");
+    const status = Number(r.stdout.slice(at + 1));
     // No release yet is not an error.
-    if (r.status === 404) return setUpdates({ checked_at: Date.now(), latest: null, error: null });
-    if (!r.ok) throw new Error(`GitHub answered ${r.status}`);
-    const rel = await r.json();
+    if (status === 404) return setUpdates({ checked_at: Date.now(), checked_for: VERSION, latest: null, error: null });
+    if (status !== 200) throw new Error(`GitHub answered ${status}`);
+    const rel = JSON.parse(r.stdout.slice(0, at));
     // Only a plain vX.Y.Z tag is a Corral release; the download URL is built from it, never taken from the answer.
     if (!/^v\d+\.\d+\.\d+$/.test(rel.tag_name ?? "")) throw new Error(`the latest release has an odd tag: ${String(rel.tag_name).slice(0, 40)}`);
     setUpdates({ checked_at: Date.now(), checked_for: VERSION, latest: rel.tag_name.slice(1), notes: rel.body ?? "", error: null });
@@ -141,7 +146,13 @@ async function checkUpdates() {
 }
 // The gear and `herdr-app do corral.settings` open it.
 // A modal dialog: it dims the window, and only Esc or its × closes it, not a click beside it.
-const openSettings = () => openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 720, height: 560, props: { role: "settings" } });
+// One dialog at a time: the toast, the gear and the commands all open it, and a second would stack on the first.
+const SETTINGS_OPEN_KEY = "corral.settingsOpen";
+const openSettings = () => {
+  const open = shared(SETTINGS_OPEN_KEY);
+  if (open) closeOverlay(open);
+  setShared(SETTINGS_OPEN_KEY, openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 720, height: 560, props: { role: "settings" } }));
+};
 // Changes as a folder tree (the default) or a flat list, per repository: { [root]: boolean }.
 const CHANGE_TREE_KEY = "corral.changeTree";
 const changeTree = () => {
@@ -3349,6 +3360,7 @@ export default class Board extends View {
   async close() {
     const p = props();
     if (DROPDOWNS.has(p?.role)) setShared(POPUP_CLOSED_KEY, { key: dropdownKey(p), at: Date.now() });
+    if (p?.role === "settings" && shared(SETTINGS_OPEN_KEY) === p.overlay) setShared(SETTINGS_OPEN_KEY, null);
   }
   // The header and the main area keep the keyboard themselves: a press on them must not hand focus to a terminal.
   render() {
