@@ -1408,17 +1408,20 @@ export default class Board extends View {
     await exec("chmod", ["600", f.settings]).catch(() => {});
     Object.assign(this.tg, { text: next, settings: parseJson(next) });
   }
-  // One wizard action at a time; its error stays under the steps until the next action.
-  async tgAction(cx, label, work) {
+  // One wizard action at a time; its error stays under the steps until the next action. The work runs in a task
+  // of its own: a click's cx does not redraw after an await, and the dialog would show "Turning off…" for good.
+  tgAction(cx, label, work) {
     if (this.tg.busy) return;
     Object.assign(this.tg, { busy: label, error: null });
     cx.notify();
-    try { await work(); } catch (err) {
-      this.tg.error = String(err?.message ?? err);
-      await this.loadTelegram();
-    }
-    this.tg.busy = null;
-    cx.notify();
+    cx.spawn(async (cx) => {
+      try { await work(cx); } catch (err) {
+        this.tg.error = String(err?.message ?? err);
+        await this.loadTelegram();
+      }
+      this.tg.busy = null;
+      cx.notify();
+    });
   }
   checkTelegram(cx) {
     return this.tgAction(cx, "Checking…", async () => {
@@ -1549,7 +1552,7 @@ export default class Board extends View {
     if (!bot) { this.tg.error = "Check the token first."; return cx.notify(); }
     const code = Array.from({ length: 8 }, () => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Math.floor(Math.random() * 32)]).join("");
     const link = `https://t.me/${bot}?startgroup=${code}&admin=manage_topics+delete_messages+pin_messages`;
-    return this.tgAction(cx, "Waiting for the group (5 minutes): pick it in Telegram and confirm…", async () => {
+    return this.tgAction(cx, "Waiting for the group (5 minutes): pick it in Telegram and confirm…", async (cx) => {
       // One bot, one reader: a running bridge pauses while the code is waited for.
       const wasRunning = !!this.tg.service?.running;
       if (wasRunning) await this.service("stop");
