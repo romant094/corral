@@ -13,7 +13,7 @@ Checks: `node --test telegram/test/` for the bridge; `herdr-app check mods/corra
   - Verify: the facts are in `SPEC-settings.md` with the commands that showed them
   - Dependencies: None. Files: `SPEC-settings.md`. Scope: XS
 
-- [ ] **Task 2: Gear button and the settings popup (settings-form)**
+- [x] **Task 2: Gear button and the settings popup (settings-form)**
   - Acceptance:
     - [ ] The gear sits right of the limit pills in all four views; a press opens a dialog with "Telegram", "Keys", "Updates"
     - [ ] The last section opens next time (`corral.settings.section`); Esc closes the dialog

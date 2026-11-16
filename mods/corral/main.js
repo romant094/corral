@@ -34,6 +34,19 @@ const saveWidth = (key, kind, value) => {
   const kept = Object.fromEntries(Object.entries(all).filter(([k]) => live.has(k) || k === key));
   setShared(WIDTHS_KEY, { ...kept, [key]: { ...all[key], [kind]: value } });
 };
+// The settings dialog: the section it shows, and what each section keeps (`updates`: the release check).
+const SETTINGS_KEY = "corral.settings";
+const settingsState = () => ({ section: "telegram", ...(shared(SETTINGS_KEY) ?? {}) });
+const setSettings = (change) => setShared(SETTINGS_KEY, { ...settingsState(), ...change });
+// One entry per section: a new section is one more entry and its render method on Board.
+// `badge`: something there wants the person; the gear shows a dot then.
+const SECTIONS = [
+  { id: "telegram", title: "Telegram", badge: () => false, render: "telegramSection" },
+  { id: "keys", title: "Keys", badge: () => false, render: "keysSection" },
+  { id: "updates", title: "Updates", badge: () => false, render: "updatesSection" },
+];
+// The gear and `herdr-app do corral.settings` open it.
+const openSettings = () => openOverlay({ mod: MOD, kind: "dialog", width: 720, height: 520, props: { role: "settings" } });
 // Changes as a folder tree (the default) or a flat list, per repository: { [root]: boolean }.
 const CHANGE_TREE_KEY = "corral.changeTree";
 const changeTree = () => {
@@ -552,7 +565,8 @@ export default class Board extends View {
       cx.timer.every(DOCK_CHECK_MS, (cx) => { this.fitHeader(); this.clampDock(); this.runPaneJobs(cx); });
       // `herdr-app do corral.dock` (or a key bound to it) folds and opens the terminals as the chevron does;
       // corral.merge, corral.split and corral.detach do what the bar's and the pane header's buttons do;
-      // corral.sort moves every running agent to its project's space, as a new agent is moved.
+      // corral.sort moves every running agent to its project's space, as a new agent is moved;
+      // corral.settings opens the settings dialog.
       // corral.board, corral.files, corral.log and corral.changes switch the top area (mods/corral/keys.json binds them).
       cx.spawn(async (cx) => {
         for (;;) {
@@ -565,6 +579,7 @@ export default class Board extends View {
           const tab = space?.tabs.find(t => t.active);
           if (command === "split" && tab) queuePaneJob({ kind: "split", tab: tab.id });
           if (command === "sort") sortAgents();
+          if (command === "settings") openSettings();
           const focused = panes().find(p => p.focused && p.terminal);
           if (command === "detach" && focused) queuePaneJob({ kind: "detach", terminal: focused.terminal });
           cx.notify();
@@ -1180,7 +1195,8 @@ export default class Board extends View {
         .child(div().flex_1())
         .when(plan.length > 0, el => el.child(limitPill(C, plan, "", C.ink, C.line)))
         .children(groups.map(g => limitPill(C, limits.filter(l => l.group === g),
-          g[0].toUpperCase() + g.slice(1), C.fable, wash(C.fable, C)))))
+          g[0].toUpperCase() + g.slice(1), C.fable, wash(C.fable, C))))
+        .child(this.gearButton(C)))
       .when(v === "board", el => el.child(h_flex().gap(8).items_center()
         .child(chip(C, "chip-projects", projectLabel + "  ▾", !!f.projects,
           () => openDropdown({ mod: MOD, props: { role: "projectfilter" }, kind: "popup", width: 380,
@@ -1201,6 +1217,41 @@ export default class Board extends View {
       .when(v === "changes", el => el.child(this.changesBar(C)))
       .when(v === "log", el => el.child(this.logBar(C)));
   }
+  // The gear right of the limit pills, as tall as they are; a dot when a section wants the person.
+  gearButton(C) {
+    const flagged = SECTIONS.some(s => s.badge());
+    return div().id("settings").size(34).flex().flex_none().items_center().justify_center().relative().rounded(7)
+      .bg(C.bg).border(1).border_color(C.line).text_color(C.muted).cursor_pointer()
+      .hover(s => s.border_color(C.input).text_color(C.ink)).tooltip("Settings")
+      .on_click(() => openSettings())
+      .child(svg(`mods/${MOD}/icons/settings.svg`).size(16))
+      .when(flagged, el => el.child(div().absolute().top(5).right(5).child(dot(C.accent, 7))));
+  }
+  // The settings dialog: sections on the left, the chosen one on the right. Each section saves as it changes.
+  settingsDialog(C) {
+    const { overlay } = props();
+    const current = SECTIONS.find(s => s.id === settingsState().section) ?? SECTIONS[0];
+    return h_flex().size_full().bg(C.bg).text_color(C.ink)
+      .child(v_flex().w(180).h_full().flex_none().p(10).gap(2).bg(C.bar)
+        .child(div().px(10).pt(6).pb(10).text_size(14).font_semibold().child("Settings"))
+        .children(SECTIONS.map(s => h_flex().id(`section-${s.id}`).h(32).px(10).gap(8).items_center().rounded(6)
+          .text_size(13).cursor_pointer().when(s === current, el => el.bg(C.selected))
+          .text_color(s === current ? C.ink : C.muted).hover(st => st.bg(C.selected))
+          .on_click(() => setSettings({ section: s.id }))
+          .child(div().flex_1().child(s.title))
+          .when(s.badge(), el => el.child(dot(C.accent, 7))))))
+      .child(div().w(1).h_full().flex_none().bg(C.line))
+      .child(v_flex().flex_1().min_w(0).h_full()
+        .child(h_flex().h(52).flex_none().px(20).items_center().border_b(1).border_color(C.line)
+          .child(div().flex_1().text_size(15).font_semibold().child(current.title))
+          .child(xButton(C, "settings-close", "Close", () => closeOverlay(overlay))))
+        .child(v_flex().id("settings-body").flex_1().min_h(0).overflow_y_scrollbar().p(20).gap(14)
+          .child(this[current.render](C))));
+  }
+  // Placeholders until each section's task fills it.
+  telegramSection(C) { return div().text_size(12).text_color(C.muted).child("Work with your agents from a Telegram group."); }
+  keysSection(C) { return div().text_size(12).text_color(C.muted).child("The keys that switch Board, Files, Log and Changes."); }
+  updatesSection(C) { return div().text_size(12).text_color(C.muted).child("New versions of Corral."); }
   // + Agent: Claude to the right of the focused terminal of the shown tab, else in a new tab.
   newAgent(active) {
     const tab = active?.tabs.find(t => t.active);
@@ -2688,6 +2739,7 @@ export default class Board extends View {
     if (role === "branchmenu") return this.branchMenu(C);
     if (role === "gitdialog") return this.gitDialog(C);
     if (role === "logfilter") return this.logFilterPopup(C);
+    if (role === "settings") return this.settingsDialog(C);
     if (view() === "files") return this.filesView(C);
     if (view() === "changes") return this.changesView(C);
     if (view() === "log") return this.logView(C);
