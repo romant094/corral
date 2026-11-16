@@ -736,7 +736,11 @@ export default class Board extends View {
       this.tg = { loaded: false, busy: null, error: null, check: null, editToken: false };
       this.tokenInput = InputState.new({ placeholder: "123456789:AAH…" });
       this.ownerInput = InputState.new({ placeholder: "login" });
+      // The field shows the saved limit; Enter or leaving the field saves a new one.
       this.foldInput = InputState.new({ placeholder: "1200" });
+      this.foldInput.on("change", () => { this.foldEdited = this.foldInput.value() !== String(this.tg.settings?.fold_chars ?? 1200); });
+      this.foldInput.on("submit", (_e, cx) => this.saveFold(cx));
+      this.foldInput.on("blur", (_e, cx) => this.saveFold(cx));
       // The bridge writes its state file as it goes; the section follows it.
       cx.spawn(async (cx) => { await this.loadTelegram(); cx.notify(); if (this.tg.settings?.token) this.checkTelegram(cx); });
       cx.timer.every(2000, (cx) => cx.spawn(async (cx) => { if (await this.loadTelegram()) cx.notify(); }));
@@ -1552,21 +1556,30 @@ export default class Board extends View {
         .child(this.tgFoldRow(C, s))));
   }
   // How long a reply may be before the bridge folds it into sections; 0 never folds.
+  saveFold(cx) {
+    if (!this.foldEdited) return;
+    this.foldEdited = false;
+    const current = this.tg.settings?.fold_chars ?? 1200;
+    const text = this.foldInput.value().trim();
+    const n = Number(text);
+    if (text === "" || n === current) { this.foldInput.set_value(String(current)); return cx.notify(); }
+    if (!Number.isInteger(n) || n < 0 || n > 30000) {
+      this.tg.error = "A whole number from 0 (never fold) to 30000.";
+      this.foldInput.set_value(String(current));
+      return cx.notify();
+    }
+    this.tgAction(cx, "Saving…", async () => { await this.saveTelegram({ fold_chars: n }); await this.restartIfRunning(); });
+  }
   tgFoldRow(C, s) {
     const current = s.fold_chars ?? 1200;
-    const save = (_e, cx) => {
-      const n = Number(this.foldInput.value().trim());
-      if (!Number.isInteger(n) || n < 0 || n > 30000) { this.tg.error = "A whole number from 0 (never fold) to 30000."; return cx.notify(); }
-      this.foldInput.set_value("");
-      this.tgAction(cx, "Saving…", async () => { await this.saveTelegram({ fold_chars: n }); await this.restartIfRunning(); });
-    };
+    // The saved value fills the field, unless the person is typing a new one.
+    if (!this.foldEdited && this.foldInput.value() !== String(current)) this.foldInput.set_value(String(current));
     return h_flex().h(30).gap(10).items_center()
       .child(div().w(14).flex_none())
       .child(div().w(110).flex_none().text_size(13).child("Long replies"))
       .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(C.muted)
-        .child(current ? `fold after ${current} characters` : "never fold"))
-      .child(field(C, this.foldInput).w(80))
-      .child(smallButton(C, "tg-fold-save", "Set", save));
+        .child(current ? "fold after this many characters (0: never)" : "never fold"))
+      .child(field(C, this.foldInput).w(80));
   }
   // One line per setting: status, name, value, Change; the editor opens under it.
   tgRow(C, n, { title, body, summary, fixed, action }, done, open) {
