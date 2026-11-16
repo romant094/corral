@@ -712,8 +712,6 @@ export default class Board extends View {
       this.tg = { loaded: false, busy: null, error: null, check: null, editToken: false };
       this.tokenInput = InputState.new({ placeholder: "123456789:AAH…" });
       this.ownerInput = InputState.new({ placeholder: "login" });
-      this.groupSearch = InputState.new({ placeholder: "Filter groups" });
-      this.groupSearch.on("change", (_e, cx) => cx.notify());
       // The bridge writes its state file as it goes; the section follows it.
       cx.spawn(async (cx) => { await this.loadTelegram(); cx.notify(); if (this.tg.settings?.token) this.checkTelegram(cx); });
       cx.timer.every(2000, (cx) => cx.spawn(async (cx) => { if (await this.loadTelegram()) cx.notify(); }));
@@ -1464,21 +1462,6 @@ export default class Board extends View {
       this.tokenInput.set_value("");
     });
   }
-  pickGroup(cx, chat) {
-    return this.tgAction(cx, "Checking the group…", async () => {
-      // Another group's topic and owners do not carry over.
-      await this.saveTelegram({ chat_id: chat.id, root_topic_id: undefined, owner_ids: undefined, owners: undefined });
-      this.tg.unfold = {}; await this.restartIfRunning();
-      this.tg.check = await bridgeJson(["--check", "--json"]);
-    });
-  }
-  discoverTelegram(cx) {
-    return this.tgAction(cx, "Looking for groups…", async () => {
-      const r = await bridgeJson(["--discover", "--json"]);
-      if (!r.ok) throw new Error(r.error);
-      await this.loadTelegram();
-    });
-  }
   telegramSection(C) {
     const t = this.tg;
     if (!t?.loaded) return div().text_size(12).text_color(C.muted).child("Loading…");
@@ -1546,11 +1529,20 @@ export default class Board extends View {
           (_e, cx) => { this.tg.unfold = { ...this.tg.unfold, [n]: false }; cx.notify(); }))))
       .when(editing, el => el.child(div().pl(24).pb(6).child(body)));
   }
+  // Numbered how-to lines; a part is text or [label, url] for a link.
+  guide(C, id, lines) {
+    return v_flex().gap(4).children(lines.map((parts, i) => h_flex().gap(4).items_start()
+      .child(div().w(16).flex_none().text_size(12).text_color(C.dim).child(`${i + 1}.`))
+      .child(h_flex().flex_1().min_w(0).flex_wrap().gap(4).text_size(12).text_color(C.muted)
+        .children(parts.map((p, j) => Array.isArray(p) ? linkText(C, `${id}-${i}-${j}`, p[0], p[1]) : div().child(p))))));
+  }
   tgTokenStep(C, s, bot) {
-    const body = v_flex().gap(6)
-      .child(h_flex().gap(4).items_center().flex_wrap().text_size(12).text_color(C.muted)
-        .child("1. Open").child(linkText(C, "tg-botfather", "@BotFather", "https://t.me/BotFather"))
-        .child(", send /newbot, paste its token here."))
+    const body = v_flex().gap(8)
+      .child(this.guide(C, "tg-guide-bot", [
+        ["Open", ["@BotFather", "https://t.me/BotFather"], "in Telegram."],
+        ["Send /newbot. Give the bot a name, then a username that ends in \"bot\"."],
+        ["BotFather answers with a token like 123456789:AAH…. Copy it, paste it here and press Check."],
+      ]))
       .child(h_flex().gap(8)
         .child(field(C, this.tokenInput).flex_1())
         .child(smallButton(C, "tg-token-check", "Check", (_e, cx) => this.saveToken(cx), C.accent)));
@@ -1598,33 +1590,25 @@ export default class Board extends View {
     if (p) exec("pkill", ["-f", `--pair ${p.code}`]).catch(() => {});
     cx.notify();
   }
+  // One way in: a new group with Topics, and the bot added to it by the link.
   tgGroupStep(C, s, bot) {
-    // Only groups with Topics on: the bridge needs them, and a group from before Topics was turned on is the
-    // same group under its old, dead id.
     const all = this.tg.state?.chats ?? [];
-    const chats = all.filter(c => c.forum);
-    const q = this.groupSearch.value().trim().toLowerCase();
-    const shown = chats.filter(c => !q || c.title.toLowerCase().includes(q));
     const missing = s.chat_id && this.tg.check?.group?.id === s.chat_id ? this.tg.check.rights?.missing ?? [] : [];
     const RIGHT_NAMES = { can_manage_topics: "Manage topics", can_delete_messages: "Delete messages", can_pin_messages: "Pin messages" };
     const p = this.tg.pairing;
-    const body = v_flex().gap(6)
-      .child(div().text_size(12).text_color(C.muted)
-        .child("2. First turn Topics on in the group (group settings → Topics): a group without them does not connect. "
-          + "Then press Add to a group: Telegram opens, pick that group and confirm. The bot gets the admin rights it needs, "
-          + "you become its owner, and Corral starts it. Added the bot another way? Send /init in the group while Corral waits."))
+    const body = v_flex().gap(8)
+      .child(this.guide(C, "tg-guide-group", [
+        ["In Telegram, make a new group: menu → New Group. Nobody else has to be in it."],
+        ["Open the group's settings and turn on Topics. Without them the bot cannot connect."],
+        ["Press Add the bot below. Telegram opens: pick the new group and confirm. The bot gets the admin rights it needs."],
+        ["Wait here. Corral finishes by itself: you become the owner and the bot starts. It takes up to a minute."],
+      ]))
       .child(h_flex().gap(8).items_center()
-        .when(!p, el => el.child(smallButton(C, "tg-pair", "Add to a group", (_e, cx) => this.pairTelegram(cx), C.accent)))
+        .when(!p, el => el.child(smallButton(C, "tg-pair", "Add the bot", (_e, cx) => this.pairTelegram(cx), C.accent)))
         .when(!!p, el => el
           .child(smallButton(C, "tg-pair-cancel", "Cancel", (_e, cx) => this.cancelPairing(cx)))
-          .child(linkText(C, "tg-pair-link", "Open the link again", p.link))))
-      .when(chats.length > 0, el => el
-        .child(div().pt(4).text_size(11).text_color(C.dim).child("Or a group the bot is in already:"))
-        .when(chats.length > 5, el => el.child(field(C, this.groupSearch)))
-        .child(v_flex().id("tg-groups").max_h(120).overflow_y_scrollbar()
-          .children(shown.map(c => this.pickRow(C, `tg-group-${c.id}`, c.title, c.id === s.chat_id, null, (_e, cx) => this.pickGroup(cx, c)))))
-        .child(h_flex().child(smallButton(C, "tg-refresh", "Refresh", (_e, cx) => this.discoverTelegram(cx)))));
-    const title = chats.find(c => c.id === s.chat_id)?.title ?? all.find(c => c.id === s.chat_id)?.title ?? String(s.chat_id);
+          .child(linkText(C, "tg-pair-link", "Telegram did not open? Open the link", p.link))));
+    const title = all.find(c => c.id === s.chat_id)?.title ?? String(s.chat_id);
     return { title: "Group", body,
       summary: missing.length ? `${title} — needs ${missing.map(r => RIGHT_NAMES[r] ?? r).join(", ")}` : title };
   }
@@ -1687,14 +1671,6 @@ export default class Board extends View {
         .child(smallButton(C, "tg-owner-add", "Add", add)))
       .child(div().text_size(11).text_color(C.dim).child("They control the agents on this Mac. The account must have written in the group once."));
     return { title: "Owners", body, summary: list.map(o => o.name ?? (o.login ? `@${o.login}` : `id ${o.id}`)).join(", ") };
-  }
-  pickRow(C, id, label, selected, disabledWhy, onClick) {
-    return h_flex().id(id).flex_none().h(26).px(6).gap(8).items_center().rounded(5)
-      .when(selected, el => el.bg(C.selected))
-      .when(!disabledWhy, el => el.cursor_pointer().hover(st => st.bg(C.selected)).on_click(onClick))
-      .child(div().size(12).flex_none().rounded(6).border(selected ? 4 : 1).border_color(selected ? C.accent : C.input))
-      .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(disabledWhy ? C.dim : C.ink).child(label))
-      .when(!!disabledWhy, el => el.child(div().text_size(11).text_color(C.dim).child(disabledWhy)));
   }
   // Export: telegram.json as it is, token included, to a file the person picks. Import: the same file back.
   async exportTelegram() {
