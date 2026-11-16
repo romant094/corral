@@ -197,7 +197,8 @@ Only releases reach users, not each push to `main`. A test checks that `VERSION`
 - `const VERSION = "x.y.z"` in `main.js`. The section shows it.
 - The board copy checks `https://api.github.com/repos/romant094/corral/releases/latest` at start and every 6 hours
   (no token; the limit is 60 requests per hour). Drafts and pre-releases are skipped.
-- A newer `tag_name` than `VERSION`: a toast "Corral 0.5.0 is out" with "Update" and "Later" buttons,
+- A newer `tag_name` than `VERSION`: a toast "Corral 0.5.0 is out" (Herdr's toast has one click action: it opens
+  Settings → Updates, where "Update" and "Later" are),
   a dot on the gear, and in the section the release notes and an "Update" button.
   "Later" hides the toast for this version; the dot stays.
 - The section has "Check automatically" (on by default) and "Check now". It shows the last check time and its error, if any.
@@ -333,7 +334,13 @@ clean install (sandbox):
 - systemd and Raspberry Pi — macOS (launchd) first; the bridge itself stays portable.
 - Keys for anything but the four views (dock, merge, split…) — the section takes more rows later.
 - Rollback to the version before an update — install the older release by hand for now.
-- Signed or checksummed releases — the download comes over HTTPS from GitHub only.
+- Signed releases (minisign or `ssh-keygen -Y sign`, the key pinned in main.js) — today the trust is GitHub over HTTPS
+  only: whoever can publish a release on the repo can run code on every Mac that presses Update. The security review
+  rated it high; it needs a key-handling decision from the owner.
+- Owner proof by a one-time `/claim <code>` sent in the group — today the owner step shows each person's numeric id,
+  and the help asks to turn Allow Groups off once the bot is in the group.
+- `leaveChat` for groups other than the set one.
+- A gallery install has no bridge until "Install the bridge" (in the Telegram section) fetches this version's release.
 - Other settings sections — the form is ready for them.
 
 ## Open Questions
