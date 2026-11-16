@@ -2,6 +2,18 @@
 
 Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHub release notes.
 
+## 0.1.6
+
+- Telegram: agents' replies go as rich messages (rendered Markdown); a long reply folds its sections, the rest stays in view.
+- Telegram settings: Formatter options. Format is Rich message or Markdown (plain text); Long replies sets the fold limit (default 1200, 0 never folds) and is locked for Markdown.
+- Telegram: only the text that ends a turn is posted, so a note written between tool calls no longer shows up out of order.
+- Telegram: a question's "Chat about this" gets a button; preview boxes stay out of the button labels.
+- Telegram: a message that replies to another one reaches the agent with a line saying which, and with that message's photo or file.
+- Telegram: a persistent command keyboard in the group (/new /status /clear /stop /close /help); /help brings it back.
+- Updates: Install automatically puts a found release in at once; a toast says when an update is installed or failed.
+- Updates: the check uses curl with a timeout, so a hung request no longer stops later checks.
+- Settings: one settings dialog at a time.
+
 ## 0.1.5
 
 - Updates: the 6-hour check counts from the last check, not from when Corral loaded, so a reload does not push it back.

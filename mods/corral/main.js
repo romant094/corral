@@ -1968,6 +1968,9 @@ export default class Board extends View {
       } catch (err) {
         if (u.latest !== VERSION) setUpdates({ installing: null });
         ui.error = u.latest !== VERSION ? `Update failed, ${VERSION} stays: ${err?.message ?? err}` : `Install failed: ${err?.message ?? err}`;
+        // A toast too: an automatic install has no dialog open to show the error in. Success toasts from the new copy.
+        notify({ title: u.latest !== VERSION ? `Corral ${u.latest} was not installed` : "Install failed", body: ui.error,
+          level: "error", action: { name: `${MOD}.settings-updates` } });
       }
       if (tmp) await exec("rm", ["-rf", tmp]).catch(() => {});
       ui.busy = null;
