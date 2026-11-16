@@ -139,6 +139,8 @@ The bridge is a small Node program (`telegram/`, Node 20+, no dependencies) next
    node ~/.config/herdr-app/corral/telegram/bridge.mjs
    ```
 
+Keep the group to yourself and the bot: everyone in it reads the agents' screens and replies. Once the bot is in your group, turn off **Allow Groups** for it in BotFather, so nobody can add it elsewhere.
+
 Each topic rename shows as a line in the topic. Mute the group if they distract you: the agents' questions still arrive.
 
 ### Commands
@@ -153,7 +155,7 @@ Each topic rename shows as a line in the topic. Mute the group if they distract 
 | `/close` | agent topic | end the agent and close or delete its topic |
 | `/help` | anywhere | the commands of this topic |
 
-While an agent waits at a dialog, answer with a button or with `1`…`9`, `y`, `n`, `enter`, `esc`.
+While an agent waits at a dialog, answer with a button or with `1`…`9`, `y`, `n`, `enter`, `esc`. Other commands in an agent's topic (`/compact`, `/model`…) go to Claude as typed. What you wrote while the bridge was offline is not typed when it comes back: send it again if it still applies.
 
 ## Light and dark
 

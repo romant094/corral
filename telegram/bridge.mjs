@@ -72,15 +72,18 @@ async function lock() {
 async function run() {
   await lock();
   const state = await loadState(P.state);
-  let saveTimer = null;
+  // Every write goes through one chain: two writes of the same temp file at
+  // once could publish broken JSON and lose every agent → topic mapping.
+  let saving = Promise.resolve(), saveTimer = null;
+  const saveNow = () => (saving = saving.then(() => saveState(P.state, state)).catch(err => log(`save state: ${err.message}`)));
   const save = () => {
     if (saveTimer) return;
-    saveTimer = setTimeout(() => { saveTimer = null; saveState(P.state, state).catch(err => log(`save state: ${err.message}`)); }, 300);
+    saveTimer = setTimeout(() => { saveTimer = null; saveNow(); }, 300);
   };
   const fail = async (why) => {
     log(why);
     state.daemon = { ...state.daemon, status: "error", error: why };
-    await saveState(P.state, state).catch(() => {});
+    await saveNow();
   };
 
   let settings;
@@ -92,8 +95,16 @@ async function run() {
     process.exit(1);
   }
 
-  // TG_API_BASE points the bridge at a stand-in server for a smoke test.
-  const api = makeApi(settings.token, process.env.TG_API_BASE ? { base: process.env.TG_API_BASE } : {});
+  // TG_API_BASE points the bridge at a stand-in server for a smoke test. Only
+  // this machine or the real API: the token goes wherever this points.
+  const base = process.env.TG_API_BASE;
+  if (base && !/^(http:\/\/(127\.0\.0\.1|localhost)(:\d+)?|https:\/\/api\.telegram\.org)\/?$/.test(base)) {
+    await fail("TG_API_BASE must be http://127.0.0.1:<port>, http://localhost:<port> or https://api.telegram.org");
+    await unlink(P.lock).catch(() => {});
+    process.exit(1);
+  }
+  if (base) log(`using the Bot API at ${base}`);
+  const api = makeApi(settings.token, base ? { base: base.replace(/\/$/, "") } : {});
   let me;
   try {
     me = await api.call("getMe");
@@ -104,7 +115,7 @@ async function run() {
   }
 
   state.daemon = { pid: process.pid, started_at: new Date().toISOString(), heartbeat_at: new Date().toISOString(), status: "running", error: null, bot: me.username };
-  await saveState(P.state, state);
+  await saveNow();
   log(`bridge started as @${me.username}`);
 
   const stop = () => {
@@ -120,16 +131,17 @@ async function run() {
     .catch(err => log(`set commands: ${err.message}`));
 
   const hc = makeHc();
-  const herd = makeHerd();
+  const herd = makeHerd(Date.now, (address) => !!state.agents[address]);
   const buttons = makeButtons();
-  const dashboard = makeDashboard({ api, settings, state, save, herd, buttons, log });
+  const dashboard = makeDashboard({ api, settings, state, save, herd, log });
   const sync = makeSync({ api, hc, settings, state, save, log, buttons, herd, lastReply });
-  const commands = makeCommands({ api, hc, settings, state, save, herd, sync, buttons, dashboard, inbox: P.inbox, log });
+  const commands = makeCommands({ api, hc, settings, state, save, herd, sync, buttons, dashboard, inbox: P.inbox, log, bot: me.username });
 
   // Agents → Telegram. Changes are handled in order, one at a time.
   let first = true, queue = Promise.resolve();
   hc.follow((msg) => {
-    const changes = herd.apply(msg);
+    let changes;
+    try { changes = herd.apply(msg); } catch (err) { log(`event: ${err.message}`); return; }
     const isSnapshot = Array.isArray(msg.terminals);
     queue = queue.then(async () => {
       if (state.daemon.status === "error") { state.daemon.status = "running"; state.daemon.error = null; save(); }
@@ -163,8 +175,9 @@ async function run() {
       continue;
     }
     for (const u of updates) {
+      // Saved before acting: a crash must not replay a prompt or a key press.
       state.offset = u.update_id + 1;
-      save();
+      await saveNow();
       try { await commands.handle(u); } catch (err) { log(`update ${u.update_id}: ${err.message}`); }
     }
   }

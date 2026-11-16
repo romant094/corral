@@ -24,19 +24,21 @@ export function renderStatus(agents, state, chatId, now = Date.now()) {
   return `<b>Agents (${agents.length})</b>\n${rows.join("\n")}`;
 }
 
-export const clearButton = (state, buttons) =>
+// A fixed callback_data, not a registered button: the pinned dashboard lives
+// for days and must not expire.
+export const clearButton = (state) =>
   state.ended.length
-    ? { inline_keyboard: [[{ text: `Clear all (${state.ended.length})`, callback_data: buttons.register({ type: "clearask" }) }]] }
+    ? { inline_keyboard: [[{ text: `Clear all (${state.ended.length})`, callback_data: "clearask" }]] }
     : { inline_keyboard: [] };
 
-export function makeDashboard({ api, settings, state, save, herd, buttons, log, throttleMs = 10000, now = () => Date.now() }) {
+export function makeDashboard({ api, settings, state, save, herd, log, throttleMs = 10000, now = () => Date.now() }) {
   const chat_id = settings.chat_id;
-  let timer = null, at = 0, last = null;
+  let timer = null, at = 0, last = null, drawing = Promise.resolve();
 
   async function draw() {
     const time = new Date(now()).toTimeString().slice(0, 5);
     const text = `${renderStatus(herd.list(), state, chat_id, now())}\n\n<i>updated ${time}</i>`;
-    const reply_markup = clearButton(state, buttons);
+    const reply_markup = clearButton(state);
     const key = text.replace(/updated \d\d:\d\d/, "") + state.ended.length;
     if (key === last && state.dashboard_message_id) return;
     const id = state.dashboard_message_id;
@@ -47,7 +49,7 @@ export function makeDashboard({ api, settings, state, save, herd, buttons, log, 
         return;
       } catch (err) {
         if (/not modified/i.test(err.message)) { last = key; return; }
-        if (!/not found|can't be edited/i.test(err.message)) throw err;
+        if (!/not found|can't be edited|MESSAGE_ID_INVALID/i.test(err.message)) throw err;
         log("dashboard message is gone, posting a new one");
       }
     }
@@ -62,13 +64,14 @@ export function makeDashboard({ api, settings, state, save, herd, buttons, log, 
       .catch(err => log(`pin dashboard: ${err.message}`));
   }
 
-  // At most one edit per throttle window; the last state wins.
+  // At most one edit per throttle window; the last state wins. Draws run one
+  // after another, so a slow first post cannot be posted (and pinned) twice.
   function refresh() {
     if (timer) return;
     timer = setTimeout(() => {
       timer = null;
       at = now();
-      draw().catch(err => log(`dashboard: ${err.message}`));
+      drawing = drawing.then(draw).catch(err => log(`dashboard: ${err.message}`));
     }, Math.max(0, at + throttleMs - now()));
   }
 

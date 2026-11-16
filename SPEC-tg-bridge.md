@@ -209,6 +209,12 @@ file, then rename).
 | photo or document, optional caption | download with `getFile` into `$HERDR_APP_HOME/corral/inbox/<address>/<time>-<name>`, then `hc put <t> <file>`; `hc send <t> "<caption> <path>"` with the path `hc put` printed. Photos take the largest size. Over 20 MB: refused with the limit. While `blocked`: refused like text. |
 | `/status`, `/help` | as in the root topic |
 | `/new`, `/clear` | hint: use the root topic |
+| any other `/command` | Claude's own (`/compact`, `/model`…): sent to the agent as text |
+| text, keys or a file older than 120 s (sent while the bridge was down) | not typed; reply `Sent while the bridge was offline` |
+| `hc` fails | reply `⚠️ Not delivered: <reason>` |
+
+A command addressed to another bot (`/stop@other_bot`) is ignored. A dialog
+button acts only if the screen still shows the same dialog it was made for.
 
 In the closed topic of an ended agent, the **Delete topic** button deletes it
 (`deleteForumTopic`) and removes it from `ended`. Text there answers

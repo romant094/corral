@@ -2,7 +2,8 @@
 import { escapeHtml } from "./telegram.mjs";
 import { rememberChat, rememberTopic } from "./config.mjs";
 import { renderStatus } from "./dashboard.mjs";
-import { tailScreen } from "./dialog.mjs";
+import { tailScreen, parseDialog } from "./dialog.mjs";
+import { dialogKey } from "./agents.mjs";
 import { handleFile } from "./files.mjs";
 
 // The bot's "≡" menu. Telegram has no per-topic menu, so each command says where it works.
@@ -35,6 +36,7 @@ const HELP_AGENT = [
   "/stop — stop the current turn (Esc)",
   "/close — end the agent, close or delete this topic",
   "/status — all agents",
+  "Other commands (/compact, /model…) go to Claude as typed.",
 ].join("\n");
 
 const SHORT_KEYS = new Map([
@@ -52,11 +54,17 @@ export function routeText(agentState, text) {
 }
 
 export function parseCommand(text) {
-  const m = /^\/([a-z]+)(?:@\S+)?(?:\s+([\s\S]*))?$/i.exec(text?.trim() ?? "");
-  return m ? { name: m[1].toLowerCase(), args: (m[2] ?? "").trim() } : null;
+  const m = /^\/([a-z_]+)(?:@(\S+))?(?:\s+([\s\S]*))?$/i.exec(text?.trim() ?? "");
+  return m ? { name: m[1].toLowerCase(), bot: m[2]?.toLowerCase() ?? null, args: (m[3] ?? "").trim() } : null;
 }
 
-export function makeCommands({ api, hc, settings, state, save, herd, sync, buttons, dashboard, inbox, log }) {
+const OURS = new Set(COMMANDS.map(c => c.command));
+
+// Telegram keeps updates for 24 h. Text written while the bridge was down must
+// not answer whatever dialog is open now.
+export const STALE_SECONDS = 120;
+
+export function makeCommands({ api, hc, settings, state, save, herd, sync, buttons, dashboard, inbox, log, bot = null, nowSec = () => Date.now() / 1000 }) {
   const chat_id = settings.chat_id;
   const owners = new Set(settings.owner_ids);
   const closeAsks = new Map(); // address → number of the latest /close question
@@ -92,12 +100,13 @@ export function makeCommands({ api, hc, settings, state, save, herd, sync, butto
     if (cmd.name === "clear") return askClear(msg);
   }
 
+  // The confirm press deletes exactly the topics the question counted.
   async function askClear(msg) {
     const n = state.ended.length;
     if (!n) return reply(msg, "Nothing to clear.");
     return reply(msg, `Delete ${n} topic${n === 1 ? "" : "s"} of ended agents?`, {
       reply_markup: { inline_keyboard: [[
-        { text: "Delete all", callback_data: buttons.register({ type: "clear" }) },
+        { text: "Delete all", callback_data: buttons.register({ type: "clear", topics: state.ended.map(e => e.topic_id) }) },
         { text: "Cancel", callback_data: buttons.register({ type: "cancel" }) },
       ]] },
     });
@@ -139,7 +148,12 @@ export function makeCommands({ api, hc, settings, state, save, herd, sync, butto
     const address = thread ? sync.addressOf(thread) : null;
     const agent = address ? herd.get(address) : null;
     const endedTopic = thread && state.ended.some(e => e.topic_id === thread);
-    const cmd = msg.text ? parseCommand(msg.text) : null;
+    let cmd = msg.text ? parseCommand(msg.text) : null;
+    // /stop@other_bot is for another bot in the group.
+    if (cmd?.bot && bot && cmd.bot !== bot.toLowerCase()) return;
+    // In an agent's topic, a slash command that is not ours is Claude's own
+    // (/compact, /model, /cost…): it goes to the agent as text.
+    if (cmd && agent && !OURS.has(cmd.name)) cmd = null;
 
     if (cmd) {
       if (cmd.name === "status") return reply(msg, renderStatus(herd.list(), state, chat_id));
@@ -157,16 +171,25 @@ export function makeCommands({ api, hc, settings, state, save, herd, sync, butto
       return; // root or another topic: plain talk is left alone
     }
 
-    if (msg.photo || msg.document) {
-      const answer = await handleFile({ msg, agent, api, hc, inbox });
-      if (answer) await reply(msg, answer);
-      return;
+    if (nowSec() - (msg.date ?? nowSec()) > STALE_SECONDS) {
+      return reply(msg, "⚠️ Sent while the bridge was offline, so not delivered. Send it again if it still applies.");
     }
-    if (!msg.text) return;
-    const route = routeText(agent.state, msg.text);
-    if (route.refuse) return reply(msg, route.refuse);
-    if (route.keys) return hc.keys(agent.address, ...route.keys);
-    return hc.send(agent.address, route.send);
+
+    try {
+      if (msg.photo || msg.document) {
+        const answer = await handleFile({ msg, agent, api, hc, inbox });
+        if (answer) await reply(msg, answer);
+        return;
+      }
+      if (!msg.text) return;
+      const route = routeText(agent.state, msg.text);
+      if (route.refuse) return reply(msg, route.refuse);
+      if (route.keys) return await hc.keys(agent.address, ...route.keys);
+      return await hc.send(agent.address, route.send);
+    } catch (err) {
+      log(`deliver to ${agent.address}: ${err.message}`);
+      return reply(msg, `⚠️ Not delivered: ${escapeHtml(err.message)}`);
+    }
   }
 
   const answer = (q, text) => api.call("answerCallbackQuery", { callback_query_id: q.id, ...(text ? { text } : {}) });
@@ -190,7 +213,7 @@ export function makeCommands({ api, hc, settings, state, save, herd, sync, butto
       log(`ignored a button press from user ${q.from?.id ?? "?"}`);
       return answer(q, "Not allowed.");
     }
-    const entry = buttons.get(q.data);
+    const entry = q.data === "clearask" ? { type: "clearask" } : buttons.get(q.data);
     if (!entry) return answer(q, "This button has expired.");
 
     switch (entry.type) {
@@ -199,7 +222,17 @@ export function makeCommands({ api, hc, settings, state, save, herd, sync, butto
         if (!open || open.qid !== entry.qid || herd.get(entry.address)?.state !== "blocked") {
           return answer(q, "This question is no longer open.");
         }
-        await hc.keys(entry.address, String(entry.n));
+        // Claude can go from one dialog to the next without leaving blocked:
+        // the key goes only to the dialog the button was made for.
+        try {
+          if (dialogKey(parseDialog(await hc.read(entry.address))) !== open.labels) {
+            return answer(q, "The dialog has changed. Look at /screen.");
+          }
+          await hc.keys(entry.address, String(entry.n));
+        } catch (err) {
+          log(`option ${entry.address}: ${err.message}`);
+          return answer(q, `Not delivered: ${err.message}`.slice(0, 190));
+        }
         sync.questions.delete(entry.address);
         await answer(q);
         return api.call("editMessageReplyMarkup", {
@@ -216,7 +249,12 @@ export function makeCommands({ api, hc, settings, state, save, herd, sync, butto
         if (entry.mode === "cancel") { await answer(q); return edit(q, "Not closed."); }
         await answer(q);
         await edit(q, entry.mode === "delete" ? "Ending, the topic will be deleted…" : "Ending…");
-        return sync.endAgent(entry.address, entry.mode);
+        try {
+          return await sync.endAgent(entry.address, entry.mode);
+        } catch (err) {
+          log(`end ${entry.address}: ${err.message}`);
+          return edit(q, `⚠️ Could not end the agent: ${escapeHtml(err.message)}`);
+        }
       }
       case "deltopic": {
         if (!state.ended.some(e => e.topic_id === entry.topic_id)) return answer(q, "Nothing to delete.");
@@ -229,7 +267,7 @@ export function makeCommands({ api, hc, settings, state, save, herd, sync, butto
       }
       case "clear": {
         buttons.drop(q.data);
-        const list = [...state.ended];
+        const list = state.ended.filter(e => entry.topics.includes(e.topic_id));
         await answer(q);
         let n = 0;
         for (const e of list) {

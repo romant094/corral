@@ -8,15 +8,21 @@ export const EMOJI = { working: "⚡", blocked: "❓", done: "✅", idle: "💤"
 export const topicName = (state, where) => `${EMOJI[state] ?? EMOJI.idle} ${where}`.slice(0, 128);
 
 // Telegram's ways of saying the topic is gone (deleted by hand in the group).
-const TOPIC_GONE = /thread not found|TOPIC_ID_INVALID|TOPIC_DELETED|TOPIC_CLOSED/i;
+const TOPIC_GONE = /thread not found|TOPIC_ID_INVALID|TOPIC_DELETED/i;
+const TOPIC_CLOSED = /TOPIC_CLOSED/i;
 const NOT_MODIFIED = /not modified/i;
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+// What a dialog asks, to tell one dialog from the next while the agent stays blocked.
+export const dialogKey = (options) => (options ?? []).map(o => `${o.n}.${o.label}`).join("|");
+
 export function makeSync({
   api, hc, settings, state, save, log, buttons, herd,
   lastReply, throttleMs = 10000, blockedDelayMs = 1500, now = () => Date.now(),
+  replyTries = 6, replyRetryMs = 500,
 }) {
+  const posted = new Map();    // address → the last reply posted, to tell a new one
   const chat_id = settings.chat_id;
   const renames = new Map();   // address → { timer, at }
   const creating = new Map();  // address → Promise of the new topic
@@ -45,13 +51,20 @@ export function makeSync({
     return creating.get(agent.address);
   }
 
-  // Runs fn(topicId); if Telegram says the topic is gone, makes a new one and tries once more.
+  // Runs fn(topicId). A topic closed by hand is reopened; a topic deleted by
+  // hand is made again, but only while the agent lives and the topic is still
+  // its own: a call that raced /close must not bring a deleted topic back.
   async function inTopic(agent, fn) {
     const id = await topicOf(agent);
     try {
       return await fn(id);
     } catch (err) {
+      if (TOPIC_CLOSED.test(err.message)) {
+        await api.call("reopenForumTopic", { chat_id, message_thread_id: id });
+        return fn(id);
+      }
       if (!TOPIC_GONE.test(err.message)) throw err;
+      if (!herd.get(agent.address) || state.agents[agent.address]?.topic_id !== id) throw err;
       log(`topic of ${agent.address} is gone, making a new one`);
       delete state.agents[agent.address];
       return fn(await topicOf(agent));
@@ -87,16 +100,36 @@ export function makeSync({
     save();
   }
 
+  // Claude Code can report done before the reply reaches the transcript. A
+  // reply equal to the one posted last time is the previous turn's: wait and
+  // read again, then give up and post the screen.
+  async function freshReply(agent) {
+    for (let i = 0; i < replyTries; i++) {
+      const reply = await lastReply(agent.pid);
+      if (reply && reply !== posted.get(agent.address)) {
+        posted.set(agent.address, reply);
+        return reply;
+      }
+      await sleep(replyRetryMs);
+    }
+    return null;
+  }
+
   async function postDone(agent) {
-    const reply = await lastReply(agent.pid);
+    const reply = await freshReply(agent);
     const chunks = reply
       ? splitText(reply).map(escapeHtml)
       : splitText(tailScreen(await hc.read(agent.address), 20)).map(c => `<pre>${escapeHtml(c)}</pre>`);
     await inTopic(agent, async (id) => { for (const c of chunks) await send(id, c || "(empty)"); });
   }
 
+  // The dialog needs a moment to draw. The wait is a timer, not part of the
+  // event queue, so one blocked agent does not hold up the others.
+  function scheduleBlocked(agent) {
+    setTimeout(() => postBlocked(agent).catch(err => log(`blocked ${agent.address}: ${err.message}`)), blockedDelayMs);
+  }
+
   async function postBlocked(agent) {
-    await sleep(blockedDelayMs);
     if (herd.get(agent.address)?.state !== "blocked") return;
     const screen = await hc.read(agent.address);
     const options = parseDialog(screen);
@@ -109,7 +142,7 @@ export function makeSync({
     };
     const body = `<b>❓ Waiting for you</b>\n<pre>${escapeHtml(tailScreen(screen, 25).slice(-3500))}</pre>`;
     const msg = await inTopic(agent, (id) => send(id, body, reply_markup ? { reply_markup } : {}));
-    questions.set(agent.address, { qid, message_id: msg.message_id });
+    questions.set(agent.address, { qid, message_id: msg.message_id, labels: dialogKey(options) });
   }
 
   async function ended(agent) {
@@ -145,12 +178,14 @@ export function makeSync({
       if (kind === "added") {
         if (state.agents[agent.address]) scheduleRename(agent.address);
         else await topicOf(agent);
+        // Blocked already when first seen (or while the bridge was down): ask now.
+        if (agent.state === "blocked") scheduleBlocked(agent);
       } else if (kind === "where") {
         scheduleRename(agent.address);
       } else if (kind === "state") {
         scheduleRename(agent.address);
         if (agent.state === "done") await postDone(agent);
-        if (agent.state === "blocked") await postBlocked(agent);
+        if (agent.state === "blocked") scheduleBlocked(agent);
       } else if (kind === "ended") {
         await ended(agent);
       }
@@ -169,14 +204,21 @@ export function makeSync({
   }
 
   // /close: the herd's ended event finishes the job (rename or delete).
+  // A failed kill disarms the choice: the agent ending later at the desk must
+  // not delete a topic because of a press that did not work.
   async function endAgent(address, mode) {
     ending.set(address, mode);
-    await hc.kill(address);
+    try {
+      await hc.kill(address);
+    } catch (err) {
+      ending.delete(address);
+      throw err;
+    }
     // Removing the finished terminal makes Herdr.app close its tab.
     await hc.rm(address).catch(err => log(`rm ${address}: ${err.message}`));
   }
 
   const addressOf = (topicId) => Object.keys(state.agents).find(a => state.agents[a].topic_id === topicId) ?? null;
 
-  return { handle, sweep, endAgent, addressOf, questions, send };
+  return { handle, sweep, endAgent, addressOf, questions, send, ending };
 }

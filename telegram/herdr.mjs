@@ -27,14 +27,16 @@ export function makeHc({ bin = process.env.HC_BIN || "hc", spawnImpl = spawn, ti
       child.stderr.on("data", (d) => { err += d; });
       child.on("error", (e) => { err = e.code === "ENOENT" ? `${bin} not found` : String(e.message); finish(-1); });
       child.on("close", (code) => finish(code));
+      child.stdin.on?.("error", () => {});
       if (input !== undefined) child.stdin.write(input);
       child.stdin.end();
     });
   }
 
   // A JSON answer, or an Error with hc's own message.
+  // --json goes right after the verb: after a `--` it would be text.
   async function json(args) {
-    const r = await run([...args, "--json"]);
+    const r = await run([args[0], "--json", ...args.slice(1)]);
     let body;
     try { body = JSON.parse(r.stdout); } catch { body = undefined; }
     if (r.code !== 0 || body === undefined || body?.error) {
@@ -60,6 +62,8 @@ export function makeHc({ bin = process.env.HC_BIN || "hc", spawnImpl = spawn, ti
       const timer = setTimeout(() => finish(new Error(`${method}: no answer from hc`)), timeout);
       child.on("error", (e) => finish(e));
       child.on("close", () => finish(new Error(`${method}: hc connect ended`)));
+      // hc gone or exited early: EPIPE on stdin must not crash the bridge.
+      child.stdin.on("error", () => {});
       child.stdout.on("data", (d) => {
         buf += d;
         let at;
@@ -94,9 +98,8 @@ export function makeHc({ bin = process.env.HC_BIN || "hc", spawnImpl = spawn, ti
           const line = buf.slice(0, at);
           buf = buf.slice(at + 1);
           if (!line.trim()) continue;
-          let msg;
-          try { msg = JSON.parse(line); } catch { continue; }
-          onLine(msg);
+          // One odd line must not kill the stream (or the process).
+          try { onLine(JSON.parse(line)); } catch {}
         }
       });
       const again = (why) => {
@@ -116,11 +119,12 @@ export function makeHc({ bin = process.env.HC_BIN || "hc", spawnImpl = spawn, ti
     run, json, rpc, follow,
     ls: () => json(["ls"]),
     get: (t) => json(["get", t]),
-    send: (t, text) => json(["send", t, text]),
+    // `--` ends hc's options: a prompt like "- fix X" is text, not a flag.
+    send: (t, text) => json(["send", t, "--", text]),
     keys: (t, ...keys) => json(["keys", t, ...keys]),
     kill: (t) => json(["kill", t]),
     rm: (t) => json(["rm", t]),
-    put: (t, file) => json(["put", t, file]),
+    put: (t, file) => json(["put", t, "--", file]),
     read: async (t, lines = 0) => (await json(["read", t, "--lines", String(lines)])).text ?? "",
     spaces: async () => {
       const r = await rpc("doc.get", { name: "herdr-app" });
@@ -129,7 +133,7 @@ export function makeHc({ bin = process.env.HC_BIN || "hc", spawnImpl = spawn, ti
     // Herdr.app adopts a terminal labelled with a tab id it has not seen as a
     // new tab of that space (verified, see SPEC-tg-bridge.md).
     startClaude: (space) => json([
-      "run", "--bg", "--no-parent", "--cwd", space.folder,
+      "run", "--bg", "--no-parent", `--cwd=${space.folder}`,
       "--label", `herdr.space=${space.id}`, "--label", `herdr.tab=tb${randomBytes(16).toString("hex")}`,
       "claude",
     ]),
@@ -172,7 +176,10 @@ export function agentView(t) {
 // Terminals by address, and which of them are agents. `apply` takes one line of
 // `hc events --json` and returns the agent changes it caused:
 //   { kind: "added" | "state" | "where" | "ended", agent }
-export function makeHerd(now = () => Date.now()) {
+// `known(address)` says the bridge had a topic for it before a restart: such a
+// terminal counts as an agent already, so a null status at that moment does
+// not end it.
+export function makeHerd(now = () => Date.now(), known = () => false) {
   const terms = new Map();
   const agents = new Set();
 
@@ -180,7 +187,7 @@ export function makeHerd(now = () => Date.now()) {
     const changes = [];
     for (const [address, t] of terms) {
       const was = agents.has(address);
-      const is = isAgent(t, was);
+      const is = isAgent(t, was || known(address));
       const prev = before.get(address);
       if (is && !was) { agents.add(address); changes.push({ kind: "added", agent: agentView(t) }); }
       else if (!is && was) { agents.delete(address); changes.push({ kind: "ended", agent: agentView(prev ?? t) }); }

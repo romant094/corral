@@ -34,8 +34,9 @@ export async function handleFile({ msg, agent, api, hc, inbox, now = Date.now() 
   if (agent.state === "blocked") return "⚠️ The agent is waiting at a dialog. Answer it first, then send the file again.";
   const { bytes } = await api.download(file.id);
   const local = inboxPath(inbox, agent.address, file.name, now);
-  await mkdir(join(local, ".."), { recursive: true });
-  await writeFile(local, bytes);
+  // Screenshots and documents are private: owner-only, like the rest of the bridge's files.
+  await mkdir(join(local, ".."), { recursive: true, mode: 0o700 });
+  await writeFile(local, bytes, { mode: 0o600 });
   const put = await hc.put(agent.address, local);
   const prompt = [msg.caption?.trim(), put.path ?? local].filter(Boolean).join(" ");
   await hc.send(agent.address, prompt);

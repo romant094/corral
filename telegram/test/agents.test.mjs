@@ -7,10 +7,22 @@ const tick = () => new Promise(r => setTimeout(r, 5));
 
 function setup(opts) {
   const w = world(opts);
-  const sync = makeSync({ ...w, throttleMs: 0, blockedDelayMs: 0 });
+  const sync = makeSync({ ...w, throttleMs: 0, blockedDelayMs: 0, replyRetryMs: 0, ...opts?.sync });
   const feed = async (msg) => { for (const c of w.herd.apply(msg)) await sync.handle(c); await tick(); };
   return { ...w, sync, feed };
 }
+
+test("done waits for a reply that is new, not the previous turn's", async () => {
+  const replies = ["Old answer.", "Old answer.", "New answer."];
+  const s = setup({ sync: { lastReply: async () => replies.shift() ?? "New answer." } });
+  await s.feed({ terminals: [term("t1", "working")] });
+  // The first turn posts "Old answer."; the second sees it twice before the new one lands.
+  await s.feed(status("t1", "done"));
+  await s.feed(status("t1", "working"));
+  await s.feed(status("t1", "done"));
+  const texts = s.api.of("sendMessage").map(c => c.params.text).filter(t => /answer/.test(t));
+  assert.deepEqual(texts, ["Old answer.", "New answer."]);
+});
 
 test("topic name carries the status emoji and is cut to 128", () => {
   assert.equal(topicName("working", "gmail / 1"), "⚡ gmail / 1");

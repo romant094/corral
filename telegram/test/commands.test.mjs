@@ -7,9 +7,11 @@ import { makeSync } from "../agents.mjs";
 import { makeCommands, routeText, parseCommand, COMMANDS } from "../commands.mjs";
 import { world, term, settings } from "./helpers.mjs";
 
+const tick = () => new Promise(r => setTimeout(r, 5));
+
 async function setup({ terminals = [term("t1")], screen = "" } = {}) {
   const w = world({ terminals: [], screen });
-  const sync = makeSync({ ...w, throttleMs: 0, blockedDelayMs: 0 });
+  const sync = makeSync({ ...w, throttleMs: 0, blockedDelayMs: 0, replyRetryMs: 0 });
   const dashboard = { refresh: () => { w.refreshed = (w.refreshed ?? 0) + 1; } };
   const inbox = await mkdtemp(join(tmpdir(), "inbox-"));
   const commands = makeCommands({ ...w, sync, dashboard, inbox });
@@ -35,8 +37,8 @@ test("routeText: keys only while blocked, refusal for other text then", () => {
 });
 
 test("parseCommand handles @bot and args", () => {
-  assert.deepEqual(parseCommand("/new@corral_bot gmail"), { name: "new", args: "gmail" });
-  assert.deepEqual(parseCommand("/Status"), { name: "status", args: "" });
+  assert.deepEqual(parseCommand("/new@Corral_bot gmail"), { name: "new", bot: "corral_bot", args: "gmail" });
+  assert.deepEqual(parseCommand("/Status"), { name: "status", bot: null, args: "" });
   assert.equal(parseCommand("hello"), null);
 });
 
@@ -93,6 +95,7 @@ test("/new lists spaces; a press starts Claude there", async () => {
 test("option button sends the digit once; stale press does nothing", async () => {
   const s = await setup({ terminals: [term("t1", "working")], screen: "❯ 1. Yes\n  2. No\n" });
   for (const c of s.herd.apply({ method: "event", params: { type: "status", terminal: "t1", data: { status: { app: "claude-code", state: "blocked" } } } })) await s.sync.handle(c);
+  await tick();
   const kb = s.api.of("sendMessage").at(-1).params.reply_markup.inline_keyboard;
   await s.press(kb[1][0].callback_data);
   assert.deepEqual(s.hc.calls.filter(c => c[0] === "keys").at(-1), ["keys", "t1", "2"]);

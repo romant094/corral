@@ -88,14 +88,19 @@ export async function saveState(file, state) {
   await rename(tmp, file);
 }
 
-// Groups and topics the bot has seen. The Bot API cannot list them, so the wizard reads these.
+// Groups and topics the bot has seen. The Bot API cannot list them, so the
+// wizard reads these. Anyone can add the bot to a group, so the lists are capped.
+export const MAX_CHATS = 20;
+export const MAX_TOPICS = 200;
+
 export function rememberChat(state, chat) {
   if (!chat || chat.type === "private") return false;
   const entry = { id: chat.id, title: chat.title ?? String(chat.id), forum: !!chat.is_forum };
   const i = state.chats.findIndex(c => c.id === chat.id);
   if (i >= 0 && state.chats[i].title === entry.title && state.chats[i].forum === entry.forum) return false;
   if (i >= 0) state.chats[i] = entry;
-  else state.chats.push(entry);
+  else if (state.chats.length < MAX_CHATS) state.chats.push(entry);
+  else return false;
   return true;
 }
 
@@ -107,6 +112,7 @@ export function rememberTopic(state, chatId, id, name) {
     known.name = name;
     return true;
   }
+  if (list.length >= MAX_TOPICS) return false;
   list.push({ id, name: name ?? `#${id}` });
   return true;
 }

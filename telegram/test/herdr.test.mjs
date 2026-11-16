@@ -72,7 +72,9 @@ test("hc calls pass text as one argv element and drop HC_TERMINAL_ID", async () 
   const rec = [];
   const hc = makeHc({ bin: "hc", spawnImpl: fakeSpawn(rec, { stdout: '{"status":"idle"}' }) });
   await hc.send("t1", "hello; rm -rf / $(x)");
-  assert.deepEqual(rec[0].args, ["send", "t1", "hello; rm -rf / $(x)", "--json"]);
+  assert.deepEqual(rec[0].args, ["send", "--json", "t1", "--", "hello; rm -rf / $(x)"]);
+  await hc.send("t1", "- a bullet, not a flag");
+  assert.deepEqual(rec[1].args.slice(-2), ["--", "- a bullet, not a flag"]);
   assert.equal(rec[0].env.HC_TERMINAL_ID, undefined);
   delete process.env.HC_TERMINAL_ID;
 });
@@ -87,8 +89,8 @@ test("startClaude labels a fresh tab in the space", async () => {
   const hc = makeHc({ spawnImpl: fakeSpawn(rec, { stdout: '{"address":"t5"}' }) });
   await hc.startClaude({ id: "spX", folder: "/p/x" });
   const a = rec[0].args;
-  assert.deepEqual(a.slice(0, 5), ["run", "--bg", "--no-parent", "--cwd", "/p/x"]);
+  assert.deepEqual(a.slice(0, 5), ["run", "--json", "--bg", "--no-parent", "--cwd=/p/x"]);
   assert.ok(a.includes("herdr.space=spX"));
   assert.ok(a.some(x => /^herdr\.tab=tb[0-9a-f]{32}$/.test(x)));
-  assert.equal(a.at(-2), "claude");
+  assert.equal(a.at(-1), "claude");
 });

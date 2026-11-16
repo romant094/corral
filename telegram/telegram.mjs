@@ -21,6 +21,8 @@ export function makeApi(token, { fetchImpl = fetch, base = "https://api.telegram
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(params),
+        // A hung request must not stall a loop; long polling waits its own timeout plus a margin.
+        signal: AbortSignal.timeout(((params.timeout ?? 0) + 30) * 1000),
       });
     } catch (err) {
       throw new TelegramError(method, null, err?.cause?.code ?? err?.name ?? "fetch failed");
@@ -54,9 +56,16 @@ export function makeApi(token, { fetchImpl = fetch, base = "https://api.telegram
   // Bytes of a file the user sent. getFile gives a path; the file URL carries the token too.
   async function download(fileId) {
     const file = await call("getFile", { file_id: fileId });
-    const res = await fetchImpl(`${base}/file/bot${token}/${file.file_path}`);
+    let res, bytes;
+    try {
+      res = await fetchImpl(`${base}/file/bot${token}/${file.file_path}`, { signal: AbortSignal.timeout(120000) });
+      if (res.ok) bytes = new Uint8Array(await res.arrayBuffer());
+    } catch (err) {
+      // fetch errors can quote the URL, and the URL holds the token.
+      throw new TelegramError("download", null, err?.cause?.code ?? err?.name ?? "fetch failed");
+    }
     if (!res.ok) throw new TelegramError("download", res.status, "file download failed");
-    return { bytes: new Uint8Array(await res.arrayBuffer()), path: file.file_path };
+    return { bytes, path: file.file_path };
   }
 
   return { raw, call, download };
