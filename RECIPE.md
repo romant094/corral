@@ -54,6 +54,7 @@ Context and limit colors: below 50% `done` (green), from 50% `blocked` (yellow),
 - **UI:** `gpui-kit` `div`, `svg`, `image`, `uniform_list`, `PathBuilder` with `window.paint_path` for the graph and tags; `gpui-base` `h_flex`, `v_flex`, `Input`, `Editor`, `h_resizable`, `resizable_panel`, `v_virtual_list` with a `VirtualListScrollHandle`.
 - **Programs:** `git`, `hc`, `osascript` and `open` on macOS. **Art:** 18 SVG icons in `mods/corral/icons/`.
 - **Statusline hook:** `statusline/corral-statusline.py`.
+- **Telegram bridge** (`telegram/`, Node 20, no dependencies): a daemon next to herdr-core, not part of the mod. It follows `hc events`, mirrors each Claude agent into a forum topic and drives the agents with `hc send`/`keys`/`run`/`kill`. Its own brief is `SPEC-tg-bridge.md`; tests: `node --test telegram/test/`.
 
 ## Watch out
 
