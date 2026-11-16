@@ -2,6 +2,11 @@
 
 Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHub release notes.
 
+## 0.1.2
+
+- install.sh adds all four view keys to a new keys.json (0.1.0 and 0.1.1 added only the first).
+- install.sh restarts only its own home's Telegram bridge, not one of another Herdr home.
+
 ## 0.1.1
 
 - Updates: the first release to update to from 0.1.0, to try the update path end to end.
