@@ -12,8 +12,9 @@ const FILTER_KEY = "corral.filter";
 const PROJECTS_KEY = "corral.projects";
 // Session data from the statusline hook (statusline/corral-statusline.py), published by the board copy.
 const LIVE_KEY = "corral.live";
-// Board | Files | Changes: what the top area shows.
+// Board | Files | Log | Changes: what the top area shows.
 const VIEW_KEY = "corral.view";
+const VIEWS = ["board", "files", "log", "changes"];
 // The agent Files and Changes follow: { address, focus } holds while `focus` is still the focused agent.
 const TARGET_KEY = "corral.target";
 // git status of the target agent's folder, published by the board copy.
@@ -116,9 +117,9 @@ const openDropdown = (spec) => {
   openOverlay(spec);
 };
 // The header block's height (layouts/corral.json) and the room above its first row: the macOS window
-// buttons sit in the top left of a window without a title bar.
-const HEADER_TOP = 11;
-const HEADER_H = 112 + HEADER_TOP;
+// buttons sit in the top left of a window without a title bar. In full screen they are gone, and so is the room.
+const headerTop = () => appWindow()?.fullscreen ? 0 : 11;
+const headerH = () => 112 + headerTop();
 const DOCK_BAR = 40;
 const DOCK_MS = 200;
 // The height the terminals open to after they were folded by dragging the divider to the bottom.
@@ -128,8 +129,9 @@ const DOCK_CHECK_MS = 30;
 // How far from the divider a press over the board or the bar goes to the divider.
 const DIVIDER_GRAB = 8;
 // The rows above the workspace: the header, the board's min height and the divider (layouts/corral.json).
-const DOCK_ABOVE = HEADER_H + 150 + 1;
-const findWorkspace = (n) => n?.id === "workspace" ? n : (n?.children ?? []).map(findWorkspace).find(Boolean);
+const dockAbove = () => headerH() + 150 + 1;
+const findNode = (n, id) => n?.id === id ? n : (n?.children ?? []).map(c => findNode(c, id)).find(Boolean);
+const findWorkspace = (n) => findNode(n, "workspace");
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const WT_POPUP_MAX = 460;
 const POPUP_MAX = 560;
@@ -161,9 +163,9 @@ const searchField = (C, state) => h_flex().flex_none().h(32).mx(4).mb(4).px(10).
 // The picker sits after the view switch and the slash; its popups open under it.
 const PICKER_X = 370;
 // Where the projects list opens, under the picker.
-const SPACES_Y = 52 + HEADER_TOP;
+const spacesY = () => 52 + headerTop();
 // Row two of the header, where the filter and worktree dropdowns open.
-const ROW2_Y = 96 + HEADER_TOP;
+const row2Y = () => 96 + headerTop();
 // Copy-path chords: Cmd on macOS, Ctrl elsewhere (GPUI's "cmd" is the Windows/Super key there).
 // The window is not there while the module loads, so this is asked on use.
 const copyKeys = () => (appWindow()?.platform ?? "macos") === "macos"
@@ -238,11 +240,21 @@ const projectRows = (all) => {
     r.space = open.find(s => s.folder === r.folder) ?? null;
     r.agents.sort((x, y) => ATTENTION.includes(y.status) - ATTENTION.includes(x.status));
   }
-  const rank = (r) => r.agents.length ? 0 : r.space ? 1 : 2;
-  return rows.sort((x, y) => rank(x) - rank(y));
+  // Rows with agents by their most urgent status, in board order, then by how many agents are not idle;
+  // then open spaces, then folders that are not open.
+  const order = states().map(s => s.key);
+  const urgency = (r) => Math.min(...r.agents.map(a => order.indexOf(a.status)).filter(i => i >= 0), order.length);
+  const busy = (r) => r.agents.filter(a => a.status !== "idle").length;
+  const rank = (r) => r.agents.length ? urgency(r) : order.length + (r.space ? 1 : 2);
+  return rows.sort((x, y) => rank(x) - rank(y) || busy(y) - busy(x));
 };
+// How many of these agents are in each status, in board order; statuses without agents are left out.
+const statusCounts = (list) => states().map(s => ({ ...s, n: list.filter(a => a.status === s.key).length })).filter(s => s.n);
 // Popups get an explicit height: without one the scroll list (flex_1) collapses to nothing.
-const projectsPopupHeight = () => Math.min(POPUP_MAX, 124 + projectRows(agents()).length * 54);
+// The projects list adds its legend under the rows: a divider and one line.
+const PROJECT_ROW_H = 60;
+const PROJECT_LEGEND_H = 36;
+const projectsPopupHeight = () => Math.min(POPUP_MAX, 124 + PROJECT_LEGEND_H + projectRows(agents()).length * PROJECT_ROW_H);
 const worktreesPopupHeight = () => Math.min(WT_POPUP_MAX, 92 + gitState().worktrees.length * 50);
 const matches = (q, ...texts) => !q || texts.some(t => (t ?? "").toLowerCase().includes(q));
 // macOS: a native dialog that takes several folders at once. Elsewhere, or if it can't run, Herdr's single picker.
@@ -536,14 +548,16 @@ export default class Board extends View {
       // an older build hid the node instead.
       run("layout.show", { id: "live-terminals" });
       setShared(PANE_JOBS_KEY, []);
-      cx.timer.every(DOCK_CHECK_MS, (cx) => { this.clampDock(); this.runPaneJobs(cx); });
+      cx.timer.every(DOCK_CHECK_MS, (cx) => { this.fitHeader(); this.clampDock(); this.runPaneJobs(cx); });
       // `herdr-app do corral.dock` (or a key bound to it) folds and opens the terminals as the chevron does;
       // corral.merge, corral.split and corral.detach do what the bar's and the pane header's buttons do;
       // corral.sort moves every running agent to its project's space, as a new agent is moved.
+      // corral.board, corral.files, corral.log and corral.changes switch the top area (mods/corral/keys.json binds them).
       cx.spawn(async (cx) => {
         for (;;) {
           const command = await nextCommand();
           if (command === "dock") this.toggleDock(cx);
+          if (VIEWS.includes(command)) setShared(VIEW_KEY, command);
           // The shown space's tabs into one row, and the focused terminal into a tab of its own.
           const space = spaces().find(s => s.active);
           if (command === "merge" && space) queuePaneJob({ kind: "merge", space: space.id });
@@ -703,6 +717,11 @@ export default class Board extends View {
   // Herdr's divider keeps adding to the stored height past the top and the bottom, and a drag back
   // then waits until it is in range again: keep it in range. At the bottom the terminals fold as the
   // chevron folds them, and they open to DOCK_OPEN; a drag up from there opens them too.
+  // The header block follows full screen: the room for the window buttons comes and goes with them.
+  fitHeader() {
+    const px = findNode(layout(), "board-header")?.size?.px;
+    if (px !== undefined && px !== headerH()) run("layout.resize", { id: "board-header", px: headerH() });
+  }
   clampDock() {
     const max = this.dockMax();
     const px = findWorkspace(layout())?.size?.px;
@@ -834,7 +853,7 @@ export default class Board extends View {
     back();
   }
   dockMax() {
-    return this.viewHeight ? Math.max(Math.floor(this.viewHeight - DOCK_ABOVE), DOCK_BAR) : null;
+    return this.viewHeight ? Math.max(Math.floor(this.viewHeight - dockAbove()), DOCK_BAR) : null;
   }
   async refreshGit(folder) {
     const next = { folder, root: null, branch: "", files: [], worktrees: [] };
@@ -1145,7 +1164,7 @@ export default class Board extends View {
     const groups = [...new Set(limits.filter(l => l.group).map(l => l.group))];
     const v = view();
     // Fixed rows from the top: switching views must not move the header.
-    return v_flex().size_full().bg(C.bar).px(24).pt(19 + HEADER_TOP).gap(12)
+    return v_flex().size_full().bg(C.bar).px(24).pt(19 + headerTop()).gap(12)
       .child(h_flex().items_center().gap(12)
         .child(this.viewSwitch(C))
         .child(vbar(C, 22))
@@ -1153,9 +1172,9 @@ export default class Board extends View {
         .when(v === "board", el => el.child(h_flex().id("space-picker").h(34).pl(12).pr(10).gap(8).items_center().rounded(7).flex_none()
           .bg(C.bg).border(1).border_color(C.line).cursor_pointer().hover(s => s.border_color(C.input))
           .on_click(() => openDropdown({ mod: MOD, props: { role: "spaces" }, kind: "popup", width: 460,
-            height: projectsPopupHeight(), at: { x: PICKER_X, y: SPACES_Y } }))
+            height: projectsPopupHeight(), at: { x: PICKER_X, y: spacesY() } }))
           .child(dot(C.accent, 8))
-          .child(div().text_size(16).font_semibold().text_color(C.ink).child(active?.name ?? "No space"))
+          .child(div().text_size(14).font_semibold().text_color(C.ink).child(active?.name ?? "No space"))
           .child(div().text_size(11).text_color(C.muted).child("▾"))))
         .child(div().flex_1())
         .when(plan.length > 0, el => el.child(limitPill(C, plan, "", C.ink, C.line)))
@@ -1164,24 +1183,32 @@ export default class Board extends View {
       .when(v === "board", el => el.child(h_flex().gap(8).items_center()
         .child(chip(C, "chip-projects", projectLabel + "  ▾", !!f.projects,
           () => openDropdown({ mod: MOD, props: { role: "projectfilter" }, kind: "popup", width: 380,
-            height: checkListHeight(withAgents.length), at: { x: 24, y: ROW2_Y } })))
+            height: checkListHeight(withAgents.length), at: { x: 24, y: row2Y() } })))
         .child(chip(C, "chip-statuses", this.statusFilterLabel() + "  ▾", !!f.statuses,
           () => openDropdown({ mod: MOD, props: { role: "statusfilter" }, kind: "popup", width: 300,
-            height: checkListHeight(states().length), at: { x: Math.round(59 + projectLabel.length * 5.5), y: ROW2_Y } })))
+            height: checkListHeight(states().length), at: { x: Math.round(59 + projectLabel.length * 5.5), y: row2Y() } })))
         .child(div().flex_1())
         .child(h_flex().gap(6).items_center().flex_none().text_size(11).text_color(C.muted)
           .child(dot(theme().done, 6)).child(`${list.length} agents across ${withAgents.length} projects`))
         .child(this.tabButtons(C, active))
         .child(h_flex().id("new-agent").h(28).px(12).gap(6).items_center().rounded(6).flex_none().bg(C.accent).cursor_pointer()
           .text_size(12).font_semibold().text_color(C.card).hover(s => s.opacity(0.82))
-          .tooltip("Start Claude in a new tab of this space")
-          .on_click(() => run("tab.new", active
-            ? { space: active.id, folder: active.folder, name: "claude", argv: ["claude"] }
-            : { name: "claude", argv: ["claude"] }))
+          .tooltip("Start Claude to the right of the active terminal")
+          .on_click(() => this.newAgent(active))
           .child("+ Agent"))))
       .when(v === "files", el => el.child(this.filesBar(C)))
       .when(v === "changes", el => el.child(this.changesBar(C)))
       .when(v === "log", el => el.child(this.logBar(C)));
+  }
+  // + Agent: Claude to the right of the focused terminal of the shown tab, else in a new tab.
+  newAgent(active) {
+    const tab = active?.tabs.find(t => t.active);
+    const inTab = panes().filter(p => p.tab === tab?.id && p.terminal);
+    const pane = inTab.find(p => p.focused) ?? inTab[0];
+    if (pane) run("pane.split", { pane: pane.pane, direction: "right", argv: ["claude"] });
+    else run("tab.new", active
+      ? { space: active.id, folder: active.folder, name: "claude", argv: ["claude"] }
+      : { name: "claude", argv: ["claude"] });
   }
   // Merge and split the shown space's tabs, beside + Agent.
   tabButtons(C, active) {
@@ -1958,7 +1985,7 @@ export default class Board extends View {
       .bg(C.card).border(1).border_color(C.line).font_family("Geist Mono").text_size(11).text_color(C.ink)
       .when(many, el => el.cursor_pointer().hover(s => s.border_color(C.input)).tooltip("Switch worktree")
         .on_click(() => openDropdown({ mod: MOD, props: { role: "worktrees" }, kind: "popup", width: 520,
-          height: worktreesPopupHeight(), at: { x: 24, y: ROW2_Y } })))
+          height: worktreesPopupHeight(), at: { x: 24, y: row2Y() } })))
       .child(svg(`mods/${MOD}/icons/branch.svg`).size(12).text_color(C.muted))
       .child(g.branch || "detached")
       .when(many, el => el.child(div().font_family("Geist").text_color(C.muted).child(`${g.worktrees.length} worktrees ▾`)));
@@ -2074,14 +2101,14 @@ export default class Board extends View {
     return h_flex().id("agent-picker").h(34).pl(12).pr(10).gap(8).items_center().rounded(7).flex_none()
       .bg(C.bg).border(1).border_color(C.line).cursor_pointer().hover(s => s.border_color(C.input)).tooltip("Pick an agent")
       .on_click(() => openDropdown({ mod: MOD, props: { role: "agents" }, kind: "popup", width: 520,
-        height: 40 + Math.max(1, n) * 73 + 46, at: { x: PICKER_X, y: SPACES_Y } }))
+        height: 40 + Math.max(1, n) * 73 + 46, at: { x: PICKER_X, y: spacesY() } }))
       .child(dot(a ? states().find(s => s.key === a.status)?.color ?? C.dim : C.dim, 8))
       .when(!!a, el => el
-        .child(div().text_size(15).font_semibold().text_color(C.ink).child(l.model))
+        .child(div().text_size(14).font_semibold().text_color(C.ink).child(l.model))
         .child(div().font_family("Geist Mono").text_size(12).text_color(C.muted).child(l.sid))
         .child(div().text_color(C.dim).child("·"))
-        .child(div().text_size(14).font_medium().text_color(C.ink).child(l.place)))
-      .when(!a, el => el.child(div().text_size(14).text_color(C.muted).child("No agents")))
+        .child(div().text_size(13).font_medium().text_color(C.ink).child(l.place)))
+      .when(!a, el => el.child(div().text_size(13).text_color(C.muted).child("No agents")))
       .child(div().text_size(11).text_color(C.muted).child("▾"));
   }
   agentsPopup(C) {
@@ -2131,6 +2158,9 @@ export default class Board extends View {
     const details = (name, folder) => v_flex().flex_1().min_w(0).gap(2)
       .child(div().text_size(13).font_semibold().truncate().child(name))
       .child(div().font_family("Geist Mono").text_size(11).text_color(C.muted).truncate().child(tilde(folder) || "~"));
+    // A project without agents: a circle when its space is open, a square when not.
+    const emptyMark = (open, size = 8) => div().size(size).rounded(open ? size : 2).border_1().border_color(C.dim).flex_none();
+    const legendItem = (mark, label) => h_flex().gap(4).items_center().child(mark).child(label);
     const q = (this.spaceSearch?.value() ?? "").trim().toLowerCase();
     const rows = projectRows(agents()).filter(r => matches(q, r.name, r.folder, tilde(r.folder), r.space?.name));
     return v_flex().w_full().h(projectsPopupHeight()).p(6).gap(2).bg(C.bg).text_color(C.ink)
@@ -2139,6 +2169,7 @@ export default class Board extends View {
         .child(div().px(10).pt(6).pb(2).text_size(10).text_color(C.muted).child("PROJECTS"))
         .children(rows.map(r => {
           const n = r.agents.length;
+          const counts = statusCounts(r.agents);
           return row(`project-${r.folder}`, () => {
             if (n) run("agent.focus", { terminal: r.agents[0].address });
             else if (r.space) run("space.select", { id: r.space.id });
@@ -2149,18 +2180,20 @@ export default class Board extends View {
               // "pointer" is where the window last saw the pointer, not this press: place the menu by the
               // press. A popup may report it from its own corner; the row's bounds tell which.
               const local = (e.bounds?.x ?? PICKER_X) < PICKER_X;
-              const at = { x: Math.round(e.position.x + (local ? PICKER_X : 0)), y: Math.round(e.position.y + (local ? SPACES_Y : 0)) };
+              const at = { x: Math.round(e.position.x + (local ? PICKER_X : 0)), y: Math.round(e.position.y + (local ? spacesY() : 0)) };
               openOverlay({ mod: MOD, kind: "popup", at, width: 240, height: PROJECT_MENU_H,
                 props: { role: "projectmenu", name: r.name, folder: r.folder, list: overlay } });
             })
             .when(!!active && r.space?.id === active.id, el => el.bg(C.selected))
             .tooltip(n ? "Go to its agent" : r.space ? "Go to its space" : "Open a space here and start Claude")
-            .child(n
-              ? dot(states().find(x => x.key === r.agents[0].status)?.color ?? C.dim, 8)
-              : r.space ? dot(C.dim, 8) : div().size(8).rounded(2).bg(C.accent).flex_none())
+            // The most urgent status; a project without agents is a gray outline.
+            .child(n ? dot(counts[0].color, 8) : emptyMark(!!r.space))
             .child(details(r.name, r.folder))
-            .child(div().text_size(11).text_color(C.muted).flex_none()
-              .child(n ? `${n} agent${n > 1 ? "s" : ""}` : r.space ? "open" : "not open"))
+            .child(n
+              ? h_flex().id(`counts-${r.folder}`).gap(8).items_center().flex_none().text_size(11).text_color(C.muted)
+                .tooltip(counts.map(s => `${s.n} ${s.label}`).join(" · "))
+                .children(counts.map(s => h_flex().gap(4).items_center().child(dot(s.color, 6)).child(String(s.n))))
+              : div().text_size(11).text_color(C.muted).flex_none().child(r.space ? "open" : "not open"))
             .when(r.saved && !n && !r.space,
               el => el.child(xButton(C, `remove-${r.folder}`, "Remove project", () => removeProject(r.folder), 20)))
             .when(!r.saved, el => el.child(chip(C, `save-${r.folder}`, "Save", false, (_e, cx) => {
@@ -2169,6 +2202,10 @@ export default class Board extends View {
             })));
         }))
         .when(!rows.length, el => el.child(div().px(10).py(12).text_size(12).text_color(C.muted).child("Nothing matches."))))
+      .child(div().h(1).mx(4).my(6).bg(C.line))
+      .child(h_flex().flex_none().px(10).gap(12).text_size(11).text_color(C.muted)
+        .children(states().map(s => legendItem(dot(s.color, 6), s.label)))
+        .child(legendItem(emptyMark(false, 7), "Not open")))
       .child(div().h(1).mx(4).my(6).bg(C.line))
       .child(row("project-add", (_e, cx) => cx.spawn(async () => {
         const folders = await pickFolders();

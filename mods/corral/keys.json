@@ -1,0 +1,8 @@
+{
+  "layout:corral": {
+    "cmd-alt-1": "corral.board",
+    "cmd-alt-2": "corral.files",
+    "cmd-alt-3": "corral.log",
+    "cmd-alt-4": "corral.changes"
+  }
+}

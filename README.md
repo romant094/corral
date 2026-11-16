@@ -23,7 +23,7 @@ cd corral
 herdr-app do layout.switch --name corral
 ```
 
-`install.sh` copies `layouts/corral.json`, `mods/corral/` and `themes/` into `~/.config/herdr-app` (or `$HERDR_APP_HOME`), then runs `herdr-app check` on the mod. With `--statusline` it also copies the Claude Code statusline hook into `~/.claude/scripts/`. To go back to your own layout, press `ctrl-shift-l` or run `herdr-app do layout.switch --name main`.
+`install.sh` copies `layouts/corral.json`, `mods/corral/` and `themes/` into `~/.config/herdr-app` (or `$HERDR_APP_HOME`), then runs `herdr-app check` on the mod. With `--statusline` it also copies the Claude Code statusline hook into `~/.claude/scripts/`. It also adds Corral's keys (`mods/corral/keys.json`) to your `~/.config/herdr-app/keys.json`; a key you already use keeps its action. Herdr treats an edited `keys.json` as yours and stops adding its new default keys to it. To go back to your own layout, press `ctrl-shift-l` or run `herdr-app do layout.switch --name main`.
 
 ### Connect the session data
 
@@ -50,12 +50,14 @@ It does not use the network itself. `git fetch`, `pull` and `push` reach your gi
 
 ## Board
 
+The view switch at the top changes what the top area shows: Board, Files, Log or Changes. In the Corral layout, ⌘⌥1, ⌘⌥2, ⌘⌥3 and ⌘⌥4 do the same. In full screen the header drops the room it keeps for the macOS window buttons.
+
 ![Board](docs/images/board.png)
 
 - **Columns:** Needs you, Working, Done, Idle. A card shows the model, the session id (click to copy), the task, context use with tokens, the project, the cost and the time in this status. The focused agent's card is outlined. A session that has done work asks before it closes.
 - **Context colors:** green below 50%, yellow from 50%, red from 80%, as in the statusline. The 5-hour and 7-day plan limits in the header use the same colors and show the reset time.
 - **Filters:** "All projects" and "All statuses" open lists with checkboxes. A status you leave out hides its column.
-- **+ Agent** starts Claude in a new tab of the active space.
+- **+ Agent** starts Claude to the right of the focused terminal of the shown tab, in that terminal's folder. With no terminal in the tab, it opens a new tab.
 
 ![Card states](docs/images/cards.png)
 
@@ -63,7 +65,7 @@ It does not use the network itself. `git fetch`, `pull` and `push` reach your gi
 
 ![Projects](docs/images/projects.png)
 
-The picker lists project folders: saved ones, folders of open spaces (saved when you open them) and folders where an agent runs. Each agent counts once, in the deepest folder that holds it. Rows with agents come first. A click goes to the agent, else to the open space, else opens a space there and starts Claude. "Add projects…" takes several folders at once on macOS.
+The picker lists project folders: saved ones, folders of open spaces (saved when you open them) and folders where an agent runs. Each agent counts once, in the deepest folder that holds it. Rows with agents come first, the most urgent on top: by status in board order, then by how many agents are busy. A row shows how many of its agents are in each status; the dot on the left has the color of the most urgent one. A project that is not open is a gray square. The legend under the list says what each mark means. A click goes to the agent, else to the open space, else opens a space there and starts Claude. "Add projects…" takes several folders at once on macOS.
 
 Right-click a project for Start Claude here, Open a terminal here and Copy path. The menu opens over the list.
 
@@ -124,6 +126,7 @@ herdr-app check mods/corral
 layouts/corral.json              the layout: header, top area, live workspace
 mods/corral/main.js              one mod; props().role picks the part it draws
 mods/corral/icons/               SVG icons
+mods/corral/keys.json            the view keys, merged into keys.json by install.sh
 themes/one-dark.json, one-light.json
 statusline/corral-statusline.py  Claude Code statusline hook
 RECIPE.md                        the brief to rebuild it from scratch

@@ -46,6 +46,37 @@ cp "$SRC"/mods/corral/icons/*.svg "$HERDR_HOME/mods/corral/icons/"
 cp "$SRC"/themes/*.json "$HERDR_HOME/themes/"
 echo "Installed the corral layout into $HERDR_HOME$($link && echo " (main.js and the layout linked to $SRC)")."
 
+# Corral's keys go into the person's keys.json, in its own section; a key they already bind stays theirs.
+# Herdr writes keys.json with its defaults, so without one the keys are left for them to add.
+if [ -f "$HERDR_HOME/keys.json" ]; then
+  python3 - "$SRC/mods/corral/keys.json" "$HERDR_HOME/keys.json" <<'PY'
+import json, sys
+ours, theirs_path = json.load(open(sys.argv[1])), sys.argv[2]
+try:
+    theirs = json.load(open(theirs_path))
+except ValueError:
+    print(f"Couldn't read {theirs_path}; add the keys from mods/corral/keys.json by hand.")
+    sys.exit(0)
+added, kept = [], []
+for section, keys in ours.items():
+    have = theirs.setdefault(section, {})
+    for key, action in keys.items():
+        if key not in have:
+            have[key] = action
+            added.append(key)
+        elif have[key] != action:
+            kept.append(f"{key} ({have[key]})")
+if added:
+    json.dump(theirs, open(theirs_path, "w"), indent=2, ensure_ascii=False)
+    open(theirs_path, "a").write("\n")
+    print("Added keys:", ", ".join(added))
+if kept:
+    print("Kept your own keys:", ", ".join(kept))
+PY
+else
+  echo "No keys.json in $HERDR_HOME: add the keys from mods/corral/keys.json to it."
+fi
+
 if command -v herdr-app >/dev/null 2>&1; then
   herdr-app check "$HERDR_HOME/mods/corral"
   echo "Switch to it: herdr-app do layout.switch --name corral"
