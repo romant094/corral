@@ -11,19 +11,29 @@ STATUSLINE_DIR="$HOME/.claude/scripts"
 
 with_statusline=false
 link=false
-for arg in "$@"; do
-  case "$arg" in
+name=corral
+while [ $# -gt 0 ]; do
+  case "$1" in
     --statusline) with_statusline=true ;;
     --link) link=true ;;
+    --name)
+      name="${2:-}"; shift
+      if ! [[ "$name" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then echo "--name needs a folder name like corral-2" >&2; exit 1; fi ;;
     -h|--help)
-      echo "Usage: ./install.sh [--link] [--statusline]"
+      echo "Usage: ./install.sh [--link] [--statusline] [--name <mod folder>]"
       echo "  Copies layouts/, mods/corral/, themes/ and telegram/ into $HERDR_HOME."
       echo "  --link        symlinks main.js, the layout and telegram/ to this checkout instead of copying them."
-      echo "  --statusline  also copies statusline/corral-statusline.py into $STATUSLINE_DIR."
+      echo "  --statusline  also copies statusline/corral-statusline.py into $STATUSLINE_DIR (an installed one is always updated)."
+      echo "  --name        the mod's folder, when a gallery install had to rename it (Corral's update passes it)."
       exit 0 ;;
-    *) echo "Unknown option: $arg" >&2; exit 1 ;;
+    *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
+  shift
 done
+if $link && [ "$name" != corral ]; then echo "--link installs as corral only" >&2; exit 1; fi
+# A statusline hook installed before is kept current.
+[ -f "$STATUSLINE_DIR/corral-statusline.py" ] && with_statusline=true
+MOD_DIR="$HERDR_HOME/mods/$name"
 
 if [ ! -d "$HERDR_HOME" ]; then
   echo "Herdr home not found: $HERDR_HOME. Start Herdr once, or set HERDR_APP_HOME." >&2
@@ -31,18 +41,19 @@ if [ ! -d "$HERDR_HOME" ]; then
 fi
 
 # A folder-level symlink from an earlier setup would hide the icons; replace it with a real folder.
-[ -L "$HERDR_HOME/mods/corral" ] && rm "$HERDR_HOME/mods/corral"
-mkdir -p "$HERDR_HOME/layouts" "$HERDR_HOME/mods/corral/icons" "$HERDR_HOME/themes"
-rm -f "$HERDR_HOME/layouts/corral.json" "$HERDR_HOME/mods/corral/main.js"
+[ -L "$MOD_DIR" ] && rm "$MOD_DIR"
+mkdir -p "$HERDR_HOME/layouts" "$MOD_DIR/icons" "$HERDR_HOME/themes"
+rm -f "$HERDR_HOME/layouts/corral.json" "$MOD_DIR/main.js"
 if $link; then
   ln -s "$SRC/layouts/corral.json" "$HERDR_HOME/layouts/corral.json"
-  ln -s "$SRC/mods/corral/main.js" "$HERDR_HOME/mods/corral/main.js"
+  ln -s "$SRC/mods/corral/main.js" "$MOD_DIR/main.js"
 else
-  cp "$SRC/layouts/corral.json" "$HERDR_HOME/layouts/corral.json"
-  cp "$SRC/mods/corral/main.js" "$HERDR_HOME/mods/corral/main.js"
+  # A renamed mod gets its own name in its code and in the layout that shows it.
+  sed "s/^const MOD = \"corral\";/const MOD = \"$name\";/" "$SRC/mods/corral/main.js" > "$MOD_DIR/main.js"
+  sed -e "s/\"mod\": \"corral\"/\"mod\": \"$name\"/" -e "s#mods/corral/#mods/$name/#" "$SRC/layouts/corral.json" > "$HERDR_HOME/layouts/corral.json"
 fi
-cp "$SRC/mods/corral/mod.json" "$SRC/mods/corral/preview.svg" "$HERDR_HOME/mods/corral/"
-cp "$SRC"/mods/corral/icons/*.svg "$HERDR_HOME/mods/corral/icons/"
+cp "$SRC/mods/corral/mod.json" "$SRC/mods/corral/preview.svg" "$MOD_DIR/"
+cp "$SRC"/mods/corral/icons/*.svg "$MOD_DIR/icons/"
 cp "$SRC"/themes/*.json "$HERDR_HOME/themes/"
 # The Telegram bridge: a folder of Node modules, linked whole or copied without its tests.
 rm -rf "$HERDR_HOME/corral/telegram"
@@ -53,14 +64,14 @@ else
   mkdir -p "$HERDR_HOME/corral/telegram"
   cp "$SRC"/telegram/*.mjs "$HERDR_HOME/corral/telegram/"
 fi
-echo "Installed the corral layout into $HERDR_HOME$($link && echo " (main.js, the layout and telegram/ linked to $SRC)")."
+echo "Installed the corral layout into $HERDR_HOME$([ "$name" != corral ] && echo " (mod folder: $name)")$($link && echo " (main.js, the layout and telegram/ linked to $SRC)")."
 
 # Corral's keys go into the person's keys.json, in its own section; a key they already bind stays theirs.
 # Herdr writes keys.json with its defaults, so without one the keys are left for them to add.
 if [ -f "$HERDR_HOME/keys.json" ]; then
-  python3 - "$SRC/mods/corral/keys.json" "$HERDR_HOME/keys.json" <<'PY'
+  python3 - "$SRC/mods/corral/keys.json" "$HERDR_HOME/keys.json" "$name" <<'PY'
 import json, sys
-ours, theirs_path = json.load(open(sys.argv[1])), sys.argv[2]
+ours, theirs_path, name = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3]
 try:
     theirs = json.load(open(theirs_path))
 except ValueError:
@@ -70,6 +81,10 @@ added, kept = [], []
 for section, keys in ours.items():
     have = theirs.setdefault(section, {})
     for key, action in keys.items():
+        action = name + action[len("corral"):] if action.startswith("corral.") else action
+        # An action already on another key was rebound in Corral's settings: it stays there.
+        if action in have.values() and have.get(key) != action:
+            continue
         if key not in have:
             have[key] = action
             added.append(key)
@@ -87,8 +102,13 @@ else
 fi
 
 if command -v herdr-app >/dev/null 2>&1; then
-  herdr-app check "$HERDR_HOME/mods/corral"
+  herdr-app check "$MOD_DIR"
   echo "Switch to it: herdr-app do layout.switch --name corral"
+fi
+
+# A bridge running under launchd picks up the new code.
+if [ "$(uname)" = Darwin ] && launchctl print "gui/$(id -u)/dev.corral.telegram" >/dev/null 2>&1; then
+  launchctl kickstart -k "gui/$(id -u)/dev.corral.telegram" && echo "Restarted the Telegram bridge."
 fi
 
 if $with_statusline; then
