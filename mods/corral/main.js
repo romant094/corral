@@ -708,7 +708,6 @@ export default class Board extends View {
       this.tg = { loaded: false, busy: null, error: null, check: null, editToken: false };
       this.tokenInput = InputState.new({ placeholder: "123456789:AAH…" });
       this.ownerInput = InputState.new({ placeholder: "login" });
-      this.topicInput = InputState.new({ placeholder: "Corral" });
       this.groupSearch = InputState.new({ placeholder: "Filter groups" });
       this.groupSearch.on("change", (_e, cx) => cx.notify());
       // The bridge writes its state file as it goes; the section follows it.
@@ -1419,6 +1418,12 @@ export default class Board extends View {
   }
   checkTelegram(cx) {
     return this.tgAction(cx, "Checking…", async () => {
+      // The root topic is the first topic now; a topic picked by an earlier build goes back to it.
+      if (this.tg.settings?.root_topic_id != null) {
+        await this.saveTelegram({ root_topic_id: undefined, root_topic_name: undefined });
+        await this.loadService();
+        await this.restartIfRunning();
+      }
       const r = await bridgeJson(["--check", "--json"]);
       this.tg.check = r;
       if (r.error) throw new Error(r.error);
@@ -1459,14 +1464,6 @@ export default class Board extends View {
       await this.loadTelegram();
     });
   }
-  createRootTopic(cx, name) {
-    return this.tgAction(cx, `Creating "${name}"…`, async () => {
-      const r = await bridgeJson(["--create-topic", name, "--json"]);
-      if (!r.ok) throw new Error(r.error);
-      await this.saveTelegram({ root_topic_id: r.topic.id, root_topic_name: r.topic.name }); await this.restartIfRunning();
-      await this.loadTelegram();
-    });
-  }
   telegramSection(C) {
     const t = this.tg;
     if (!t?.loaded) return div().text_size(12).text_color(C.muted).child("Loading…");
@@ -1500,11 +1497,10 @@ export default class Board extends View {
         .when(!!b.error, el => el.child(div().text_size(12).text_color(C.danger).child(b.error))));
     }
     const bot = t.check?.bot;
-    // Only Telegram refusing the token undoes it, not an offline check. A file written by hand
-    // without root_topic_id means General, as the bridge reads it.
+    // Only Telegram refusing the token undoes it, not an offline check.
     const rejected = (t.check?.errors ?? []).some(e => e.includes("rejected"));
     const owners = (s.owner_ids ?? []).length > 0;
-    const done = [!!s.token && !rejected, !!s.chat_id, s.chat_id != null && ("root_topic_id" in s || owners), owners];
+    const done = [!!s.token && !rejected, !!s.chat_id, !!s.chat_id, owners];
     const rows = [this.tgTokenStep(C, s, bot), this.tgGroupStep(C, s, bot), this.tgTopicStep(C, s), this.tgOwnerStep(C, s)];
     return foot(v_flex().gap(4).child(head).child(div().h(6))
       // A row opens when the one before it is done; the bridge row is always there.
@@ -1513,14 +1509,15 @@ export default class Board extends View {
       .child(this.tgDaemonStep(C, s)));
   }
   // One line per setting: status, name, value, Change; the editor opens under it.
-  tgRow(C, n, { title, body, summary }, done, open) {
-    const editing = open && (!done || !!this.tg.unfold?.[n]);
+  tgRow(C, n, { title, body, summary, fixed }, done, open) {
+    const editing = !fixed && open && (!done || !!this.tg.unfold?.[n]);
+    if (fixed) done = done && open;
     return v_flex().gap(6)
       .child(h_flex().h(30).gap(10).items_center()
         .child(div().w(14).flex_none().text_size(12).text_color(done ? theme().done : C.dim).child(done ? "✓" : "•"))
         .child(div().w(110).flex_none().text_size(13).text_color(open ? C.ink : C.dim).child(title))
         .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(C.muted).child(done ? summary ?? "" : ""))
-        .when(done && !editing, el => el.child(smallButton(C, `tg-change-${n}`, "Change",
+        .when(done && !editing && !fixed, el => el.child(smallButton(C, `tg-change-${n}`, "Change",
           (_e, cx) => { this.tg.unfold = { ...this.tg.unfold, [n]: true }; cx.notify(); })))
         .when(done && editing, el => el.child(smallButton(C, `tg-done-${n}`, "Done",
           (_e, cx) => { this.tg.unfold = { ...this.tg.unfold, [n]: false }; cx.notify(); }))))
@@ -1554,42 +1551,10 @@ export default class Board extends View {
     return { title: "Group", body,
       summary: missing.length ? `${title} — needs ${missing.map(r => RIGHT_NAMES[r] ?? r).join(", ")}` : title };
   }
-  // General or a topic of the group. Telegram cannot list a group's topics or say that one was deleted: the list
-  // holds the topics the bridge saw a message in, less the agents' own and those hidden here with ×.
+  // The root topic is always the group's first topic (General, whatever it is called now): nothing to pick.
   tgTopicStep(C, s) {
     const general = (this.tg.state?.general_names ?? {})[s.chat_id] ?? "General";
-    const set = "root_topic_id" in s || (s.owner_ids ?? []).length > 0;
-    const hidden = (settingsState().hiddenTopics ?? {})[s.chat_id] ?? [];
-    const own = new Set([...Object.values(this.tg.state?.agents ?? {}).map(a => a.topic_id), ...(this.tg.state?.ended ?? []).map(e => e.topic_id)]);
-    const all = ((this.tg.state?.topics ?? {})[s.chat_id] ?? []).filter(tp => !own.has(tp.id));
-    const topics = all.filter(tp => !hidden.includes(tp.id) || tp.id === s.root_topic_id);
-    const hide = (id) => setSettings({ hiddenTopics: { ...(settingsState().hiddenTopics ?? {}), [s.chat_id]: [...hidden, id] } });
-    const pick = (id) => (_e, cx) => this.tgAction(cx, "Saving…", async () => {
-      await this.saveTelegram({ root_topic_id: id, root_topic_name: id == null ? undefined : all.find(tp => tp.id === id)?.name });
-      this.tg.unfold = { ...this.tg.unfold, 3: false };
-      await this.restartIfRunning();
-    });
-    // A new topic only when no known one has that name: a second "Corral" is never what is meant.
-    const create = (_e, cx) => {
-      const name = this.topicInput.value().trim() || "Corral";
-      const same = all.find(tp => tp.name.toLowerCase() === name.toLowerCase());
-      if (same) { this.tg.error = `There is a topic "${same.name}" already: pick it above.`; return cx.notify(); }
-      this.topicInput.set_value("");
-      this.createRootTopic(cx, name);
-    };
-    const body = v_flex().gap(2)
-      .child(this.pickRow(C, "tg-topic-general", `${general} (the group's first topic)`, set && s.root_topic_id == null, null, pick(null)))
-      .child(v_flex().id("tg-topics").max_h(150).overflow_y_scrollbar()
-        .children(topics.map(tp => h_flex().gap(4).items_center()
-          .child(div().flex_1().min_w(0).child(this.pickRow(C, `tg-topic-${tp.id}`, tp.name, s.root_topic_id === tp.id, null, pick(tp.id))))
-          .when(tp.id !== s.root_topic_id, el => el.child(xButton(C, `tg-topic-hide-${tp.id}`, "Hide from this list", () => hide(tp.id)))))))
-      .child(h_flex().pt(4).gap(8).items_center()
-        .child(field(C, this.topicInput).w(180))
-        .child(smallButton(C, "tg-topic-new", "New topic", create)))
-      .child(div().text_size(11).text_color(C.dim)
-        .child("A topic shows here once someone writes in it. × hides a topic that is gone; Telegram does not tell bots."));
-    const current = s.root_topic_id == null ? general : all.find(tp => tp.id === s.root_topic_id)?.name ?? s.root_topic_name ?? `Topic #${s.root_topic_id}`;
-    return { title: "Root topic", body, summary: current };
+    return { title: "Root topic", summary: `${general} (the group's first topic)`, fixed: true };
   }
   // Owners by login: the bridge learns a login's id when that account writes in the group. The id is what the
   // bridge checks (a login can change hands); the login is kept beside it to show.
@@ -1665,7 +1630,7 @@ export default class Board extends View {
     const c = await exec("cat", [path]);
     const imported = parseJson(c.stdout);
     if (!imported || typeof imported.token !== "string") throw new Error("That file is not a Corral Telegram settings file.");
-    const keep = ["token", "chat_id", "root_topic_id", "root_topic_name", "owner_ids", "owners", "enabled"];
+    const keep = ["token", "chat_id", "owner_ids", "owners", "enabled"];
     const f = tgFiles();
     await fs.mkdir(f.dir, { recursive: true }).catch(() => {});
     await exec("chmod", ["700", f.dir]).catch(() => {});

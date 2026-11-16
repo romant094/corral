@@ -150,6 +150,18 @@ test("dashboard: posted and pinned once, edited after, re-posted when gone", asy
   assert.equal(w.api.of("sendMessage").length, 2);
 });
 
+test("dashboard: a dashboard left in an old root topic is unpinned and posted again in the root", async () => {
+  const w = world({ terminals: [term("t1")] });
+  w.state.dashboard_message_id = 40;
+  w.state.dashboard_where = "-1001/229";
+  const d = makeDashboard({ ...w, throttleMs: 0, now: () => 0 });
+  await d.draw();
+  assert.equal(w.api.of("unpinChatMessage")[0].params.message_id, 40);
+  assert.equal(w.api.of("editMessageText").length, 0);
+  assert.equal(w.api.of("sendMessage")[0].params.message_thread_id, undefined);
+  assert.equal(w.state.dashboard_where, "-1001/general");
+});
+
 test("dashboard: a slow first post is not doubled by the next refresh", async () => {
   const w = world({ terminals: [term("t1")] });
   const call = w.api.call;

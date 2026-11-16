@@ -62,6 +62,12 @@ export function makeDashboard({ api, settings, state, save, herd, log, throttleM
     const text = `${renderStatus(herd.list(), state, chat_id, now())}\n\n<i>updated ${time}</i>`;
     const reply_markup = clearButton(state);
     const key = text.replace(/updated \d\d:\d\d/, "") + state.ended.length;
+    // A dashboard posted in another root topic (or another group) stays there; the root gets a new one.
+    const where = `${chat_id}/${settings.root_topic_id ?? "general"}`;
+    if (state.dashboard_message_id && (state.dashboard_where ?? where) !== where) {
+      api.call("unpinChatMessage", { chat_id: Number(state.dashboard_where.split("/")[0]), message_id: state.dashboard_message_id }).catch(() => {});
+      state.dashboard_message_id = null;
+    }
     if (key === last && state.dashboard_message_id) return;
     const id = state.dashboard_message_id;
     if (id) {
@@ -80,6 +86,7 @@ export function makeDashboard({ api, settings, state, save, herd, log, throttleM
       ...(settings.root_topic_id ? { message_thread_id: settings.root_topic_id } : {}),
     });
     state.dashboard_message_id = msg.message_id;
+    state.dashboard_where = where;
     save();
     last = key;
     await api.call("pinChatMessage", { chat_id, message_id: msg.message_id, disable_notification: true })
