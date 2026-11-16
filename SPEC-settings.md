@@ -74,9 +74,18 @@ From `AGENTS.md` (Herdr's guide for mods):
   while one has focus.
 - Option+digits and letters type characters on many Mac keyboards; Herdr's guide asks not to pick them unasked.
 
-To verify in the first task (a spike), before the code depends on it:
+Spike results (Task 1):
 
-1. `exec` finds `node` 20+ on PATH. If not, the mod asks a login shell: `zsh -lc 'command -v node'`.
+- **Node.** On the owner's Mac, Node 20 comes from nvm (`~/.nvm/versions/node/v20.19.5/bin/node`), and nvm is loaded
+  only in `~/.zshrc`, so only an interactive shell has it. herdr-core's own terminals did not find `node` (seen in the
+  bridge pilot). So the mod does not trust one PATH. It finds Node in this order and takes the first that reports
+  v20 or newer: `exec("node", ["-v"])`; `$SHELL -lic 'command -v node'`; the newest `~/.nvm/versions/node/*/bin/node`;
+  `/opt/homebrew/bin/node`; `/usr/local/bin/node`. The absolute path goes into the plist, so launchd needs no PATH for it.
+- **`--link` install.** The owner's install today is a copy (`mods/corral/main.js` is a plain file; `corral/telegram`
+  is not installed, the bridge runs from the worktree). `--link` makes `main.js` a symlink, not the folder,
+  so the mod asks `exec("test", ["-L", <appHome>/mods/<MOD>/main.js])`.
+- **Second Herdr.** `herdr-app --help`: "Home: ~/.config/herdr-app (HERDR_APP_HOME picks another)". Whether a second
+  window runs beside the owner's is tried in Task 12, the only task that needs it.
 
 ## Part 1: settings-form
 
@@ -271,7 +280,8 @@ in the owner's local Herdr.
 4. "Update" brings the sandbox to the latest release; the dot goes.
 5. The sandbox is removed at the end.
 
-To verify in the spike: Herdr starts a second instance with another `HERDR_APP_HOME`.
+If Herdr does not run a second window beside the owner's, the fallback is to quit the owner's Herdr for the check
+(agents keep running in herdr-core) and start it with `HERDR_APP_HOME` set, with the owner's consent.
 
 ## Boundaries
 

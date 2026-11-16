@@ -5,7 +5,7 @@ Checks: `node --test telegram/test/` for the bridge; `herdr-app check mods/corra
 
 ## Phase 1: Foundation
 
-- [ ] **Task 1: Spike the facts the code depends on**
+- [x] **Task 1: Spike the facts the code depends on**
   - Acceptance:
     - [ ] The spec says where `exec` finds Node 20+ (plain PATH or a login shell)
     - [ ] The spec says if a second Herdr runs with another `HERDR_APP_HOME`, and how to start it
