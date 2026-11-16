@@ -736,6 +736,7 @@ export default class Board extends View {
       this.tg = { loaded: false, busy: null, error: null, check: null, editToken: false };
       this.tokenInput = InputState.new({ placeholder: "123456789:AAH…" });
       this.ownerInput = InputState.new({ placeholder: "login" });
+      this.foldInput = InputState.new({ placeholder: "1200" });
       // The bridge writes its state file as it goes; the section follows it.
       cx.spawn(async (cx) => { await this.loadTelegram(); cx.notify(); if (this.tg.settings?.token) this.checkTelegram(cx); });
       cx.timer.every(2000, (cx) => cx.spawn(async (cx) => { if (await this.loadTelegram()) cx.notify(); }));
@@ -1542,8 +1543,26 @@ export default class Board extends View {
     return foot(v_flex().gap(4).child(head).child(div().h(6))
       // A row opens when the one before it is done; the bridge row is always there.
       .children(rows.map((row, i) => this.tgRow(C, i + 1, row, done[i], done.slice(0, i).every(Boolean))))
+      .when(done[3], el => el.child(this.tgFoldRow(C, s)))
       .child(div().h(1).my(6).bg(C.line))
       .child(this.tgDaemonStep(C, s)));
+  }
+  // How long a reply may be before the bridge folds it into sections; 0 never folds.
+  tgFoldRow(C, s) {
+    const current = s.fold_chars ?? 1200;
+    const save = (_e, cx) => {
+      const n = Number(this.foldInput.value().trim());
+      if (!Number.isInteger(n) || n < 0 || n > 30000) { this.tg.error = "A whole number from 0 (never fold) to 30000."; return cx.notify(); }
+      this.foldInput.set_value("");
+      this.tgAction(cx, "Saving…", async () => { await this.saveTelegram({ fold_chars: n }); await this.restartIfRunning(); });
+    };
+    return h_flex().h(30).gap(10).items_center()
+      .child(div().w(14).flex_none())
+      .child(div().w(110).flex_none().text_size(13).child("Long replies"))
+      .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(C.muted)
+        .child(current ? `fold after ${current} characters` : "never fold"))
+      .child(field(C, this.foldInput).w(80))
+      .child(smallButton(C, "tg-fold-save", "Set", save));
   }
   // One line per setting: status, name, value, Change; the editor opens under it.
   tgRow(C, n, { title, body, summary, fixed, action }, done, open) {
@@ -1725,7 +1744,7 @@ export default class Board extends View {
     const c = await exec("cat", [path]);
     const imported = parseJson(c.stdout);
     if (!imported || typeof imported.token !== "string") throw new Error("That file is not a Corral Telegram settings file.");
-    const keep = ["token", "chat_id", "owner_ids", "owners", "enabled"];
+    const keep = ["token", "chat_id", "owner_ids", "owners", "enabled", "fold_chars"];
     const f = tgFiles();
     await fs.mkdir(f.dir, { recursive: true }).catch(() => {});
     await exec("chmod", ["700", f.dir]).catch(() => {});

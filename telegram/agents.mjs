@@ -189,7 +189,7 @@ export function makeSync({
     const reply = await freshReply(agent);
     if (reply) {
       await inTopic(agent, async (id) => {
-        for (const part of richParts(reply)) {
+        for (const part of richParts(reply, { fold: settings.fold_chars ?? 1200 })) {
           try { await sendRich(id, part); } catch (err) {
             // A gone or closed topic is inTopic's to handle; anything else about the rich message falls back.
             if (TOPIC_GONE.test(err.message) || TOPIC_CLOSED.test(err.message)) throw err;

@@ -23,7 +23,8 @@ export function escapeText(md) {
     }
     if (f) { fence = f[1]; out.push(line); continue; }
     // Split on inline code spans; escape only outside them.
-    out.push(line.split(/(`+[^`]*`+)/).map((part, i) => i % 2 ? part : part.replace(/</g, "\\<")).join(""));
+    // An HTML entity, not a backslash: rich Markdown shows "\<" as it is and drops a tag after it.
+    out.push(line.split(/(`+[^`]*`+)/).map((part, i) => i % 2 ? part : part.replace(/&/g, "&amp;").replace(/</g, "&lt;")).join(""));
   }
   return out.join("\n");
 }
@@ -49,9 +50,11 @@ const isQuestion = (block) => !/^\s*(```|\|)/.test(block) && /\?\s*$/.test(block
 const details = (summary, body) => `<details><summary>${summary}</summary>\n\n${body}\n</details>`;
 
 // The reply as rich Markdown, folded when long.
-export function foldReply(md) {
+// fold: the length in characters above which a reply folds (the Telegram settings' choice); 0 never folds.
+export function foldReply(md, fold = FOLD_CHARS) {
   const text = escapeText(md.trim());
-  if (text.length <= FOLD_CHARS && text.split("\n").length <= FOLD_LINES) return text;
+  const lines = Math.max(FOLD_LINES, Math.round(fold / 50));
+  if (!fold || (text.length <= fold && text.split("\n").length <= lines)) return text;
   const blocks = paragraphs(text);
   const tail = blocks.length > 1 && isQuestion(blocks.at(-1)) ? blocks.pop() : null;
   // The opening: everything before the first heading, or the first paragraph when the reply starts with one.
@@ -76,7 +79,7 @@ export function foldReply(md) {
 }
 
 // The parts to send: a reply over Telegram's limit is cut at paragraph ends, each part folded on its own.
-export function richParts(md, limit = PART_CHARS) {
+export function richParts(md, { limit = PART_CHARS, fold = FOLD_CHARS } = {}) {
   const parts = [];
   let cur = "";
   for (const b of paragraphs(md.trim())) {
@@ -97,5 +100,5 @@ export function richParts(md, limit = PART_CHARS) {
     cur = cur ? `${cur}\n\n${b}` : b;
   }
   if (cur) parts.push(cur);
-  return parts.map(foldReply);
+  return parts.map(p => foldReply(p, fold));
 }

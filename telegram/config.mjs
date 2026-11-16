@@ -52,9 +52,14 @@ export function validateSettings(raw, { partial = false } = {}) {
   if (owner_ids !== null && (!Array.isArray(owner_ids) || owner_ids.length === 0 || !owner_ids.every(id => Number.isSafeInteger(id) && id > 0))) {
     throw new ConfigError("owner_ids", "must list at least one Telegram user id");
   }
+  // fold_chars: replies longer than this fold into sections; 0 never folds. Set in Corral's settings.
+  const { fold_chars = 1200 } = raw;
+  if (!(Number.isSafeInteger(fold_chars) && fold_chars >= 0 && fold_chars <= 30000)) {
+    throw new ConfigError("fold_chars", "must be a whole number from 0 (never fold) to 30000");
+  }
   const missing = [chat_id === null && "chat_id", owner_ids === null && "owner_ids"].filter(Boolean);
   if (missing.length && !partial) throw new IncompleteError(missing);
-  return { token, chat_id, root_topic_id, owner_ids };
+  return { token, chat_id, root_topic_id, owner_ids, fold_chars };
 }
 
 export async function loadSettings(file, options) {

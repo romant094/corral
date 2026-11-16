@@ -3,8 +3,15 @@ import assert from "node:assert/strict";
 import { escapeText, foldReply, richParts, FOLD_CHARS } from "../format.mjs";
 
 test("escapeText: < outside code only", () => {
-  assert.equal(escapeText("a < b and `x<y` here"), "a \\< b and `x<y` here");
-  assert.equal(escapeText("```html\n<div>\n```\n<p>"), "```html\n<div>\n```\n\\<p>");
+  assert.equal(escapeText("a < b & `x<y` here"), "a &lt; b &amp; `x<y` here");
+  assert.equal(escapeText("```html\n<div>\n```\n<p>"), "```html\n<div>\n```\n&lt;p>");
+});
+
+test("the fold limit is the person's: 0 never folds, a low one folds early", () => {
+  const md = "Opening.\n\n## Part\n\nBody text.";
+  assert.equal(foldReply(md, 0), md);
+  assert.match(foldReply(md, 10), /<details><summary>Part<\/summary>/);
+  assert.equal(foldReply(md, 5000), md);
 });
 
 test("a short reply goes as it is", () => {
@@ -40,7 +47,7 @@ test("a long reply without headings folds everything after its first paragraph",
 
 test("richParts: a reply over the limit is cut at paragraphs, and a cut code block stays code", () => {
   const code = "```\n" + Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n") + "\n```";
-  const parts = richParts(`Intro.\n\n${code}`, 200);
+  const parts = richParts(`Intro.\n\n${code}`, { limit: 200 });
   assert.ok(parts.length > 2);
   for (const p of parts.slice(1)) assert.match(p, /```/);
   for (const p of parts) assert.equal((p.match(/```/g) ?? []).length % 2, 0);
