@@ -662,7 +662,7 @@ export default class Board extends View {
       this.groupSearch.on("change", (_e, cx) => cx.notify());
       // The bridge writes its state file as it goes; the section follows it.
       cx.spawn(async (cx) => { await this.loadTelegram(); cx.notify(); if (this.tg.settings?.token) this.checkTelegram(cx); });
-      cx.timer.every(2000, (cx) => cx.spawn(async (cx) => { if (await this.loadTelegram()) cx.notify(); }));
+      cx.timer.every(2000, (cx) => cx.spawn(async (cx) => { if (await this.loadTelegram()) cx.notify(); })); cx.spawn(async (cx) => { await this.loadService(); cx.notify(); }); cx.timer.every(5000, (cx) => cx.spawn(async (cx) => { if (await this.loadService()) cx.notify(); }));
     }
     if (!p?.role || p.role === "header") this.selfFocus = cx.focus_handle();
     if (p?.role === "logfilter") {
@@ -1365,7 +1365,7 @@ export default class Board extends View {
         throw new Error((r.errors ?? []).join("; ") || r.error || "Telegram did not take the token");
       }
       this.tg.check = r;
-      this.tg.editToken = false;
+      this.tg.editToken = false; await this.restartIfRunning();
       this.tokenInput.set_value("");
     });
   }
@@ -1373,7 +1373,7 @@ export default class Board extends View {
     return this.tgAction(cx, "Checking the group…", async () => {
       // Another group's topic and owners do not carry over.
       await this.saveTelegram({ chat_id: chat.id, root_topic_id: undefined, owner_ids: undefined });
-      this.tg.unfold = {};
+      this.tg.unfold = {}; await this.restartIfRunning();
       this.tg.check = await bridgeJson(["--check", "--json"]);
     });
   }
@@ -1388,7 +1388,7 @@ export default class Board extends View {
     return this.tgAction(cx, "Creating the topic…", async () => {
       const r = await bridgeJson(["--create-topic", "Corral", "--json"]);
       if (!r.ok) throw new Error(r.error);
-      await this.saveTelegram({ root_topic_id: r.topic.id });
+      await this.saveTelegram({ root_topic_id: r.topic.id }); await this.restartIfRunning();
       await this.loadTelegram();
     });
   }
@@ -1416,7 +1416,8 @@ export default class Board extends View {
       this.tgDaemonStep(C, s),
     ];
     // A step opens when the one before it is done.
-    const done = [!!s.token && !!bot, !!s.chat_id, s.chat_id != null && "root_topic_id" in s, (s.owner_ids ?? []).length > 0];
+    // A saved token counts until a check says Telegram refused it.
+    const done = [!!s.token && !(this.tg.check && !bot),!!s.chat_id, s.chat_id != null && "root_topic_id" in s, (s.owner_ids ?? []).length > 0];
     return v_flex().gap(14).child(toggle)
       .children(steps.map((body, i) => this.tgStep(C, i + 1, body, done[i] ?? false, i === 0 || done.slice(0, i).every(Boolean))))
       .when(!!t.busy, el => el.child(div().text_size(12).text_color(C.muted).child(t.busy)))
@@ -1478,7 +1479,7 @@ export default class Board extends View {
     const set = "root_topic_id" in s;
     const pick = (id) => (_e, cx) => this.tgAction(cx, "Saving…", async () => {
       await this.saveTelegram({ root_topic_id: id });
-      this.tg.unfold = { ...this.tg.unfold, 3: false };
+      this.tg.unfold = { ...this.tg.unfold, 3: false }; await this.restartIfRunning();
     });
     const body = v_flex().gap(2)
       .child(div().pb(4).text_size(12).text_color(C.muted).child("Where /new, /clear and the list of agents live."))
@@ -1494,7 +1495,7 @@ export default class Board extends View {
     const unknown = owners.filter(id => !people.some(p => p.id === id)).map(id => ({ id, name: `User ${id}`, username: null }));
     const toggle = (id) => (_e, cx) => this.tgAction(cx, "Saving…", () => {
       const next = owners.includes(id) ? owners.filter(o => o !== id) : [...owners, id];
-      return this.saveTelegram({ owner_ids: next.length ? next : undefined });
+      return this.saveTelegram({ owner_ids: next.length ? next : undefined }).then(() => this.restartIfRunning());
     });
     const body = v_flex().gap(2)
       .child(div().pb(4).text_size(12).text_color(C.muted)
@@ -1516,9 +1517,73 @@ export default class Board extends View {
       .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(disabledWhy ? C.dim : C.ink).child(label))
       .when(!!disabledWhy, el => el.child(div().text_size(11).text_color(C.dim).child(disabledWhy)));
   }
-  // Task 7 fills the daemon step and what the toggle does to it.
-  async setTelegramEnabled(on) { await this.saveTelegram({ enabled: on }); }
-  tgDaemonStep(C) { return { title: "Bridge", body: div().text_size(12).text_color(C.muted).child("Start and stop come next.") }; }
+  // launchd's view of the bridge; null until the first answer.
+  async loadService() {
+    const r = await bridgeJson(["--service", "status"], 20000);
+    const changed = JSON.stringify(r) !== JSON.stringify(this.tg.service);
+    this.tg.service = r;
+    return changed;
+  }
+  async service(verb) {
+    const r = await bridgeJson(["--service", verb]);
+    if (!r.ok) throw new Error(r.error);
+    this.tg.service = r;
+    await this.loadTelegram();
+  }
+  // A changed token, group, topic or owner list reaches a running bridge only through a restart.
+  async restartIfRunning() {
+    if (this.tg.service?.running) await this.service("restart");
+  }
+  // Off stops the bridge and takes it out of launchd; the settings stay, so on starts it again.
+  async setTelegramEnabled(on) {
+    await this.saveTelegram({ enabled: on });
+    const s = this.tg.settings;
+    if (!on) await this.service("uninstall");
+    else if (s.token && s.chat_id && s.owner_ids?.length) await this.service("start");
+  }
+  // A bridge started by hand (a terminal, before launchd) holds the lock; it goes before launchd starts one.
+  async takeOver() {
+    const pid = this.tg.state?.daemon?.pid;
+    if (pid) await exec("kill", [String(pid)]).catch(() => {});
+    for (let i = 0; i < 20 && pid; i++) {
+      const r = await exec("kill", ["-0", String(pid)]).catch(() => ({ code: 1 }));
+      if (r.code !== 0) break;
+      await exec("sleep", ["0.25"]);
+    }
+    await this.service("start");
+  }
+  tgDaemonStep(C) {
+    const t = this.tg;
+    const d = t.state?.daemon ?? {};
+    const svc = t.service;
+    const fresh = d.heartbeat_at && Date.now() - Date.parse(d.heartbeat_at) < 90000;
+    const since = d.started_at ? new Date(d.started_at) : null;
+    const at = since ? `${pad2(since.getHours())}:${pad2(since.getMinutes())}` : "";
+    // What the person sees, from launchd and the bridge's own heartbeat.
+    const [color, line] = !svc ? [C.muted, "Looking…"]
+      : svc.error ? [C.danger, svc.error]
+      : d.status === "error" && d.error ? [C.danger, `Error: ${d.error}`]
+      : svc.running && fresh ? [theme().done, `Running as @${d.bot ?? "bot"} since ${at}`]
+      : svc.running ? [theme().blocked, "Not responding"]
+      : d.status === "running" && fresh ? [theme().blocked, `Running outside Corral (pid ${d.pid}), started by hand`]
+      : [C.muted, "Stopped"];
+    const known = !!svc && !svc.error;
+    const outside = known && !svc.running && d.status === "running" && fresh;
+    const act = (label, work) => (_e, cx) => this.tgAction(cx, label, work);
+    const body = v_flex().gap(10)
+      .child(h_flex().gap(8).items_center().child(dot(color, 8)).child(div().text_size(13).text_color(color).child(line)))
+      .when(known, el => el.child(h_flex().gap(8)
+        .when(outside, el => el.child(settingsButton(C, "tg-takeover", "Run it from Corral", true, act("Moving the bridge…", () => this.takeOver()))))
+        .when(!outside && !svc?.running, el => el.child(settingsButton(C, "tg-start", "Start", true, act("Starting…", () => this.service("start")))))
+        .when(!!svc?.running, el => el
+          .child(settingsButton(C, "tg-stop", "Stop", false, act("Stopping…", () => this.service("stop"))))
+          .child(settingsButton(C, "tg-restart", "Restart", false, act("Restarting…", () => this.service("restart")))))
+        .child(div().flex_1())
+        .child(settingsButton(C, "tg-log", "Show log", false, () => run("tab.new", { name: "Telegram log", argv: ["tail", "-n", "200", "-f", tgFiles().log] })))))
+      .child(div().text_size(12).text_color(C.dim)
+        .child("The bridge runs under launchd: it starts again after a restart of the Mac until you stop it. Keep the Mac awake."));
+    return { title: "Bridge", body };
+  }
   keysSection(C) { return div().text_size(12).text_color(C.muted).child("The keys that switch Board, Files, Log and Changes."); }
   updatesSection(C) { return div().text_size(12).text_color(C.muted).child("New versions of Corral."); }
   // + Agent: Claude to the right of the focused terminal of the shown tab, else in a new tab.
