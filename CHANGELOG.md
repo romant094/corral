@@ -2,6 +2,11 @@
 
 Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHub release notes.
 
+## 0.1.3
+
+- Updates: a yellow dot on the gear and on the section when a new version is out.
+- Updates: after the installed version changes, Corral checks for releases at once instead of waiting an hour.
+
 ## 0.1.2
 
 - install.sh adds all four view keys to a new keys.json (0.1.0 and 0.1.1 added only the first).
