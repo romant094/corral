@@ -1,0 +1,14 @@
+────────────────────────────────────────────────────────────────────────────────
+ ☐ Approach
+
+ Which approach should I take?
+
+ ❯ 1. Daemon
+      Runs without the app window
+   2. Mod only
+      Simpler, stops with the app
+   3. Type something.
+────────────────────────────────────────────────────────────────────────────────
+   4. Chat about this
+
+ Enter to select · ↑/↓ to navigate · Esc to cancel
