@@ -58,6 +58,24 @@ export function listing(state) {
   return { chats: state.chats, topics, people: state.people ?? [] };
 }
 
+// Brings the group's General topic back: shown, open, and with a fresh message, which is what makes a client
+// that dropped it list it again. "Not modified" means it already was shown or open.
+export async function restoreGeneral({ api, settings }) {
+  if (!settings.chat_id) throw new Error("set the group first");
+  const done = [];
+  for (const method of ["unhideGeneralForumTopic", "reopenGeneralForumTopic"]) {
+    try {
+      await api.call(method, { chat_id: settings.chat_id }, { tries: 1 });
+      done.push(method === "unhideGeneralForumTopic" ? "shown" : "reopened");
+    } catch (err) {
+      if (!/not.modified/i.test(err.message)) throw err;
+    }
+  }
+  await api.call("sendMessage", { chat_id: settings.chat_id, text: "Corral's root topic is here: /new, /status, /clear.",
+    disable_notification: true }, { tries: 1 });
+  return { done };
+}
+
 export async function createTopic({ api, settings, state, name }) {
   if (!settings.chat_id) throw new Error("set the group first");
   const topic = await api.call("createForumTopic", { chat_id: settings.chat_id, name }, { tries: 1 });

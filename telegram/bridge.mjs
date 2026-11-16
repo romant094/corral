@@ -3,7 +3,8 @@
 //   node bridge.mjs           run in the foreground (launchd runs it the same way)
 //   node bridge.mjs --check [--json]          check settings, bot, group and hc; sends nothing
 //   node bridge.mjs --discover --json         groups, topics and people the bot sees (for Corral's wizard)
-//   node bridge.mjs --create-topic <name> --json//   node bridge.mjs --service install|start|stop|restart|uninstall|status   the bridge under launchd
+//   node bridge.mjs --create-topic <name> --json
+//   node bridge.mjs --restore-general --json  show and reopen General, the root topic, after it was hidden//   node bridge.mjs --service install|start|stop|restart|uninstall|status   the bridge under launchd
 import { readFile, writeFile, unlink, mkdir, chmod } from "node:fs/promises";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { paths, loadSettings, loadState, saveState, trimLog } from "./config.mjs";
@@ -77,6 +78,7 @@ async function wizard(mode) {
       if (changed) await saveState(P.state, state);
       return print({ ok: true, ...found });
     }
+    if (mode === "restore-general") return print({ ok: true, ...(await setup.restoreGeneral({ api, settings })) });
     const name = arg("--create-topic");
     if (!name) throw new Error("--create-topic needs a name");
     const topic = await setup.createTopic({ api, settings, state, name });
@@ -245,4 +247,5 @@ async function serviceCommand(verb) {
 if (process.argv.includes("--check")) check(process.argv.includes("--json"));
 else if (process.argv.includes("--service")) serviceCommand(arg("--service"));
 else if (process.argv.includes("--discover")) wizard("discover");
-else if (process.argv.includes("--create-topic")) wizard("create-topic");else run().catch(err => { log(err.stack ?? err.message); process.exit(1); });
+else if (process.argv.includes("--create-topic")) wizard("create-topic");
+else if (process.argv.includes("--restore-general")) wizard("restore-general");else run().catch(err => { log(err.stack ?? err.message); process.exit(1); });

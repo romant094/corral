@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { emptyState, rememberMessage } from "../config.mjs";
 import { TelegramError } from "../telegram.mjs";
-import { check, discover, createTopic, listing } from "../setup.mjs";
+import { check, discover, createTopic, listing, restoreGeneral } from "../setup.mjs";
 import { fakeApi, settings } from "./helpers.mjs";
 
 const hc = { ls: async () => ({ terminals: [{ agent: "claude-code" }, { agent: null }] }) };
@@ -74,6 +74,18 @@ test("listing leaves out the agents' own topics", () => {
   state.agents.t1 = { topic_id: 5 };
   state.ended.push({ topic_id: 6 });
   assert.deepEqual(listing(state).topics[-1001], [{ id: 3, name: "Corral" }]);
+});
+
+test("restoreGeneral shows and opens General, takes 'not modified' as done, and posts a line there", async () => {
+  const a = api({
+    unhideGeneralForumTopic: new TelegramError("unhideGeneralForumTopic", 400, "Bad Request: TOPIC_NOT_MODIFIED"),
+    reopenGeneralForumTopic: true,
+    sendMessage: { message_id: 1 },
+  });
+  assert.deepEqual(await restoreGeneral({ api: a, settings }), { done: ["reopened"] });
+  assert.equal(a.of("sendMessage")[0].params.message_thread_id, undefined);
+  const bad = api({ unhideGeneralForumTopic: new TelegramError("unhideGeneralForumTopic", 400, "Bad Request: not enough rights") });
+  await assert.rejects(restoreGeneral({ api: bad, settings }), /rights/);
 });
 
 test("createTopic makes the topic in the set group and remembers it", async () => {

@@ -1509,7 +1509,7 @@ export default class Board extends View {
       .child(this.tgDaemonStep(C, s)));
   }
   // One line per setting: status, name, value, Change; the editor opens under it.
-  tgRow(C, n, { title, body, summary, fixed }, done, open) {
+  tgRow(C, n, { title, body, summary, fixed, action }, done, open) {
     const editing = !fixed && open && (!done || !!this.tg.unfold?.[n]);
     if (fixed) done = done && open;
     return v_flex().gap(6)
@@ -1517,6 +1517,7 @@ export default class Board extends View {
         .child(div().w(14).flex_none().text_size(12).text_color(done ? theme().done : C.dim).child(done ? "✓" : "•"))
         .child(div().w(110).flex_none().text_size(13).text_color(open ? C.ink : C.dim).child(title))
         .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(C.muted).child(done ? summary ?? "" : ""))
+        .when(done && !!action, el => el.child(action))
         .when(done && !editing && !fixed, el => el.child(smallButton(C, `tg-change-${n}`, "Change",
           (_e, cx) => { this.tg.unfold = { ...this.tg.unfold, [n]: true }; cx.notify(); })))
         .when(done && editing, el => el.child(smallButton(C, `tg-done-${n}`, "Done",
@@ -1554,7 +1555,13 @@ export default class Board extends View {
   // The root topic is always the group's first topic (General, whatever it is called now): nothing to pick.
   tgTopicStep(C, s) {
     const general = (this.tg.state?.general_names ?? {})[s.chat_id] ?? "General";
-    return { title: "Root topic", summary: `${general} (the group's first topic)`, fixed: true };
+    // Restore: General hidden, closed or gone from a client's list comes back, with a line in it.
+    const restore = (_e, cx) => this.tgAction(cx, "Restoring the root topic…", async () => {
+      const r = await bridgeJson(["--restore-general", "--json"]);
+      if (!r.ok) throw new Error(r.error);
+    });
+    return { title: "Root topic", summary: `${general} (the group's built-in topic)`, fixed: true,
+      action: smallButton(C, "tg-restore-general", "Restore", restore) };
   }
   // Owners by login: the bridge learns a login's id when that account writes in the group. The id is what the
   // bridge checks (a login can change hands); the login is kept beside it to show.

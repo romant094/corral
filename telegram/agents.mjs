@@ -159,7 +159,8 @@ export function makeSync({
     known.icon = icon;
     known.icon_ok = !!icon;
     save();
-    log(`${address} ${agent.state}: ${name}`);
+    // The log stays in English: the session title (any language) is in the topic, not here.
+    log(`${address} ${agent.state}, topic ${known.topic_id}${newName ? ", renamed" : ""}`);
   }
 
   // Claude Code can report done before the reply reaches the transcript. A
