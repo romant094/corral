@@ -180,9 +180,10 @@ file, then rename).
 - The status is the topic icon (`icon_custom_emoji_id`), not an emoji in the
   name: clients show a leading emoji in some places only. At start the bridge
   reads Telegram's icon set (`getForumTopicIconStickers`) and gives each status
-  the first emoji of its list the set has: starting ⏳ 🕓 ⌛, working ⚡ 🔥 🏃,
-  blocked ❓ ❗ 🔔, done ✅ ✔ 👍, idle 💤 😴 🛌, ended 🏁 🔚 ❌. A status with none
-  of them gets no icon; an ended topic without one gets 🏁 in its name.
+  the first emoji of its list the set has: starting 🎬 👀, working ⚡ 🔥,
+  blocked ❓ ⁉ ❗, done ✅ 🏆, idle ☕ 💬, ended 🏁 🏆. The first of each is in
+  the set groups get without Premium. A status with none of them gets no icon;
+  an ended topic without one gets 🏁 in its name.
 - On a new agent: `createForumTopic` with the name and icon, store the
   mapping, post one line: `Started in <cwd>`.
 - On a status or title change: `editForumTopic` with the new name and icon.

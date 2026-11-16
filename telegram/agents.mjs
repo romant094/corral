@@ -4,18 +4,19 @@
 import { escapeHtml, splitText } from "./telegram.mjs";
 import { tailScreen, parseChoices } from "./dialog.mjs";
 
-export const EMOJI = { starting: "⏳", working: "⚡", blocked: "❓", done: "✅", idle: "💤", ended: "🏁" };
+export const EMOJI = { starting: "🎬", working: "⚡", blocked: "❓", done: "✅", idle: "☕", ended: "🏁" };
 
 // Topic icons come from Telegram's own set (getForumTopicIconStickers); an
-// emoji in the name shows on some clients only. Each status takes the first of
-// its emoji the set has.
+// emoji in the name shows on some clients only. The first emoji of each list is
+// in the set every group can use without Premium; the others stand in if
+// Telegram changes it.
 const ICON_CHOICES = {
-  starting: ["⏳", "🕓", "⌛"],
-  working: ["⚡", "🔥", "🏃"],
-  blocked: ["❓", "❗", "🔔"],
-  done: ["✅", "✔", "👍"],
-  idle: ["💤", "😴", "🛌"],
-  ended: ["🏁", "🔚", "❌"],
+  starting: ["🎬", "👀"],
+  working: ["⚡", "🔥"],
+  blocked: ["❓", "⁉", "❗"],
+  done: ["✅", "🏆"],
+  idle: ["☕", "💬"],
+  ended: ["🏁", "🏆"],
 };
 const bare = (e) => String(e ?? "").replace(/️/g, "");
 

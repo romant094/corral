@@ -32,10 +32,11 @@ test("topic name is [project] title, cut to 128", () => {
 });
 
 test("icons: each status takes the first emoji Telegram's set has", () => {
-  const icons = pickIcons([{ emoji: "⚡️", custom_emoji_id: "w" }, { emoji: "😴", custom_emoji_id: "z" }, { emoji: "✅", custom_emoji_id: "d" }]);
+  const icons = pickIcons([{ emoji: "⚡️", custom_emoji_id: "w" }, { emoji: "💬", custom_emoji_id: "c" }, { emoji: "✅", custom_emoji_id: "d" }, { emoji: "🏆", custom_emoji_id: "t" }]);
   assert.equal(icons.working, "w");
-  assert.equal(icons.idle, "z");
+  assert.equal(icons.idle, "c");     // no ☕ in this set: the stand-in
   assert.equal(icons.done, "d");
+  assert.equal(icons.ended, "t");
   assert.equal(icons.blocked, null);
 });
 

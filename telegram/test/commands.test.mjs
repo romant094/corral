@@ -71,7 +71,7 @@ test("/stop sends esc; /status in a topic shows that agent only", async () => {
   assert.deepEqual(s.hc.calls.at(-1), ["keys", "t1", "esc"]);
   await s.commands.handle(s.msg("/status"));
   const text = s.api.of("sendMessage").at(-1).params.text;
-  assert.match(text, /^<b>\[t1\] new session<\/b>\n💤 idle · /);
+  assert.match(text, /^<b>\[t1\] new session<\/b>\n☕ idle · /);
   assert.ok(!/Agents \(/.test(text));
 });
 
