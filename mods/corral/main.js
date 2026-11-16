@@ -1543,9 +1543,13 @@ export default class Board extends View {
     return foot(v_flex().gap(4).child(head).child(div().h(6))
       // A row opens when the one before it is done; the bridge row is always there.
       .children(rows.map((row, i) => this.tgRow(C, i + 1, row, done[i], done.slice(0, i).every(Boolean))))
-      .when(done[3], el => el.child(this.tgFoldRow(C, s)))
       .child(div().h(1).my(6).bg(C.line))
-      .child(this.tgDaemonStep(C, s)));
+      .child(this.tgDaemonStep(C, s))
+      // How the bridge shapes the agents' replies; more options join this group later.
+      .when(done[3], el => el
+        .child(div().h(1).my(6).bg(C.line))
+        .child(div().pt(2).pb(2).text_size(11).font_semibold().text_color(C.muted).child("FORMATTER OPTIONS"))
+        .child(this.tgFoldRow(C, s))));
   }
   // How long a reply may be before the bridge folds it into sections; 0 never folds.
   tgFoldRow(C, s) {
