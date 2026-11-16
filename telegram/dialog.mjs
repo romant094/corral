@@ -30,5 +30,35 @@ export function parseDialog(text) {
   }
   if (!best || best.length > 9) return null;
   const buttons = best.filter(o => !TEXT_ONLY.test(o.label));
-  return buttons.length ? buttons : null;
+  return buttons.length ? buttons.map(o => ({ ...o, keys: [String(o.n)] })) : null;
 }
+
+// A menu without numbers, moved through with arrows ("Do you trust this
+// folder?"): the line with ❯ is the chosen one, its neighbours at the same
+// indent are the others. Only a screen that says "Enter to confirm" counts, so
+// Claude's input line (also ❯) is never read as a menu.
+export function parseMenu(text) {
+  const lines = String(text).split("\n");
+  if (!lines.some(l => /Enter to (confirm|select)/i.test(l))) return null;
+  let at = -1;
+  for (let i = lines.length - 1; i >= 0; i--) if (/^\s*❯\s+\S/.test(lines[i]) && !OPTION.test(lines[i])) { at = i; break; }
+  if (at < 0) return null;
+  const col = lines[at].search(/❯\s+\S/);
+  const textCol = col + lines[at].slice(col + 1).search(/\S/) + 1;
+  const isOption = (l) => l.length > textCol && /^\s*$/.test(l.slice(0, textCol)) && /\S/.test(l[textCol]);
+  let top = at, bottom = at;
+  while (top > 0 && isOption(lines[top - 1])) top--;
+  while (bottom < lines.length - 1 && isOption(lines[bottom + 1])) bottom++;
+  if (bottom === top || bottom - top > 8) return null;
+  const options = [];
+  for (let i = top; i <= bottom; i++) {
+    const label = lines[i].slice(textCol).trim();
+    const moves = i - at;
+    const step = moves < 0 ? "up" : "down";
+    options.push({ n: options.length + 1, label, keys: [...Array(Math.abs(moves)).fill(step), "enter"] });
+  }
+  return options;
+}
+
+// Buttons for whatever the screen asks: a numbered dialog, else an arrow menu.
+export const parseChoices = (text) => parseDialog(text) ?? parseMenu(text);

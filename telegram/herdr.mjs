@@ -130,11 +130,12 @@ export function makeHc({ bin = process.env.HC_BIN || "hc", spawnImpl = spawn, ti
       const r = await rpc("doc.get", { name: "herdr-app" });
       return Array.isArray(r?.value?.spaces) ? r.value.spaces : [];
     },
-    // Herdr.app adopts a terminal labelled with a tab id it has not seen as a
-    // new tab of that space (verified, see SPEC-tg-bridge.md).
-    startClaude: (space) => json([
+    // Herdr.app adopts a labelled terminal: into that tab, to the right of its
+    // panes, or as a new tab when it has not seen the tab id (verified, see
+    // SPEC-tg-bridge.md).
+    startClaude: (space, tabId = null) => json([
       "run", "--bg", "--no-parent", `--cwd=${space.folder}`,
-      "--label", `herdr.space=${space.id}`, "--label", `herdr.tab=tb${randomBytes(16).toString("hex")}`,
+      "--label", `herdr.space=${space.id}`, "--label", `herdr.tab=${tabId ?? `tb${randomBytes(16).toString("hex")}`}`,
       "claude",
     ]),
   };
@@ -154,8 +155,25 @@ function pick(t) {
     // The terminal's cwd is where its shell started; Claude's own is the foreground's.
     cwd: t.foreground?.cwd ?? t.cwd ?? "",
     where: t.labels?.where ?? "",
+    title: cleanTitle(t.title),
     since: t.status_ms ?? Date.now(),
   };
+}
+
+// Claude Code puts the session's title in the terminal title, behind a spinner
+// while it works ("✳ Fix the login"). Its default title says nothing.
+export function cleanTitle(title) {
+  const t = String(title ?? "").replace(/^[^\p{L}\p{N}[(«"']+/u, "").trim();
+  return /^claude( code)?$/i.test(t) ? "" : t;
+}
+
+// The project an agent works in: its Herdr space; for the catch-all space of
+// agents outside any project, the agent's own folder.
+export function projectOf(where, cwd, home = process.env.HOME) {
+  const space = String(where ?? "").split(" / ")[0].trim();
+  if (space && space !== "No project" && space !== "~") return space;
+  if (!cwd || cwd === home) return "~";
+  return cwd.split("/").filter(Boolean).pop() ?? "~";
 }
 
 // A Claude Code agent: a live top-level terminal whose status says claude-code.
@@ -170,7 +188,10 @@ function isAgent(t, was) {
 const stateOf = (t) => t.status?.state ?? "idle";
 
 export function agentView(t) {
-  return { address: t.address, state: stateOf(t), where: t.where || t.address, cwd: t.cwd, pid: t.pid, since: t.since };
+  return {
+    address: t.address, state: stateOf(t), where: t.where || t.address, cwd: t.cwd, pid: t.pid, since: t.since,
+    title: t.title, project: projectOf(t.where, t.cwd), running: t.fg === "claude",
+  };
 }
 
 // Terminals by address, and which of them are agents. `apply` takes one line of
@@ -193,7 +214,7 @@ export function makeHerd(now = () => Date.now(), known = () => false) {
       else if (!is && was) { agents.delete(address); changes.push({ kind: "ended", agent: agentView(prev ?? t) }); }
       else if (is && prev) {
         if (stateOf(prev) !== stateOf(t) && t.status) changes.push({ kind: "state", agent: agentView(t), from: stateOf(prev) });
-        if (prev.where !== t.where) changes.push({ kind: "where", agent: agentView(t) });
+        if (prev.where !== t.where || prev.title !== t.title) changes.push({ kind: "where", agent: agentView(t) });
       }
     }
     for (const address of [...agents]) {
@@ -225,6 +246,7 @@ export function makeHerd(now = () => Date.now(), known = () => false) {
       case "status": if (t) { t.status = d.status ?? null; t.since = now(); } break;
       case "foreground": if (t) { t.fg = d.name ?? null; t.pid = d.pid ?? t.pid; t.cwd = d.cwd ?? t.cwd; } break;
       case "labels": if (t) t.where = d.labels?.where ?? t.where; break;
+      case "title": if (t) t.title = cleanTitle(d.title); break;
       case "finished": if (t) t.live = false; break;
       case "removed": terms.delete(p.terminal); break;
       default: return [];
@@ -234,5 +256,7 @@ export function makeHerd(now = () => Date.now(), known = () => false) {
 
   const list = () => [...agents].map(a => agentView(terms.get(a)));
   const get = (address) => (agents.has(address) ? agentView(terms.get(address)) : null);
-  return { apply, list, get };
+  // Any live terminal, agent or not yet: /new watches Claude before it reports a status.
+  const live = (address) => { const t = terms.get(address); return t?.live ? agentView(t) : null; };
+  return { apply, list, get, live };
 }

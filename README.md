@@ -112,7 +112,7 @@ Right-click a branch for: new branch or worktree from it, checkout, update, push
 
 ## Telegram
 
-Work with the agents from a Telegram group with Topics. The root topic (General by default) starts agents and pins a dashboard of all of them. Every live Claude Code agent gets a topic of its own: its status is the emoji in the topic name, its last reply arrives when it finishes, and its screen with one button per option arrives when it waits for you. What you write in the topic goes to the agent, and so do photos and files.
+Work with the agents from a Telegram group with Topics. The root topic (General by default) starts agents and pins a dashboard of all of them. Every live Claude Code agent gets a topic of its own, named like its card, `[project] session title`: its status is the topic icon, its last reply arrives when it finishes, and its screen with one button per option arrives when it waits for you. What you write in the topic goes to the agent, and so do photos and files.
 
 The bridge is a small Node program (`telegram/`, Node 20+, no dependencies) next to herdr-core, so it keeps working when the Herdr window is closed. It stops while the Mac sleeps; Telegram keeps your messages for 24 hours.
 
@@ -147,15 +147,15 @@ Each topic rename shows as a line in the topic. Mute the group if they distract 
 
 | Command | Where | What it does |
 |---|---|---|
-| `/new` | root topic | buttons with your workspaces; a press starts Claude in a new tab there |
-| `/status` | anywhere | all agents, their status and a link to their topic |
+| `/new` | root topic | buttons with your workspaces; a press starts Claude there, to the right of the workspace's agents |
+| `/status` | root topic | all agents, their status and a link to their topic |
+| `/status` | agent topic | this agent, as its card: status, model, context, cost, folder |
 | `/clear` | root topic | delete the topics of ended agents (also **Clear all** under the dashboard) |
-| `/screen` | agent topic | the agent's screen |
 | `/stop` | agent topic | stop the current turn (Esc) |
 | `/close` | agent topic | end the agent and close or delete its topic |
 | `/help` | anywhere | the commands of this topic |
 
-While an agent waits at a dialog, answer with a button or with `1`…`9`, `y`, `n`, `enter`, `esc`. Other commands in an agent's topic (`/compact`, `/model`…) go to Claude as typed. What you wrote while the bridge was offline is not typed when it comes back: send it again if it still applies.
+While an agent waits at a dialog, answer with a button or with `1`…`9`, `y`, `n`, `enter`, `esc`. Other commands in an agent's topic (`/compact`, `/model`…) go to Claude as typed. What you wrote while the bridge was offline is not typed when it comes back: send it again if it still applies. A closed topic takes no messages: the bot removes what you write there.
 
 ## Light and dark
 

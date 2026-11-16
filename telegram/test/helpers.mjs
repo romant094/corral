@@ -31,8 +31,14 @@ export function fakeHc(screen = "") {
     send: rec("send"), keys: rec("keys"), kill: rec("kill"), rm: rec("rm"),
     put: async (t, f) => { calls.push(["put", t, f]); return { path: `/core/files/${t}/x` }; },
     read: async (t) => { calls.push(["read", t]); return screen; },
-    spaces: async () => [{ id: "spA", name: "gmail", folder: "/p/gmail" }, { id: "spB", name: "notes", folder: "/p/notes" }],
-    startClaude: rec("startClaude"),
+    spaces: async () => [
+      { id: "spA", name: "gmail", folder: "/p/gmail", tabs: [
+        { id: "tbA1", root: { children: [{ content: { terminal: "tX" } }] } },
+        { id: "tbA2", root: { children: [{ content: { terminal: "t1" } }] } },
+      ] },
+      { id: "spB", name: "notes", folder: "/p/notes", tabs: [] },
+    ],
+    startClaude: async (...args) => { calls.push(["startClaude", ...args]); return { address: `t9${calls.length}` }; },
   };
 }
 

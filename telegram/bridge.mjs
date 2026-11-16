@@ -7,11 +7,11 @@ import { writeFileSync, unlinkSync } from "node:fs";
 import { paths, loadSettings, loadState, saveState } from "./config.mjs";
 import { makeApi } from "./telegram.mjs";
 import { makeHc, makeHerd } from "./herdr.mjs";
-import { makeSync } from "./agents.mjs";
+import { makeSync, loadIcons } from "./agents.mjs";
 import { makeButtons } from "./buttons.mjs";
 import { makeDashboard } from "./dashboard.mjs";
 import { makeCommands, COMMANDS } from "./commands.mjs";
-import { lastReply } from "./transcript.mjs";
+import { lastReply, session } from "./transcript.mjs";
 
 const log = (...a) => console.error(new Date().toISOString(), ...a);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -133,9 +133,10 @@ async function run() {
   const hc = makeHc();
   const herd = makeHerd(Date.now, (address) => !!state.agents[address]);
   const buttons = makeButtons();
+  const icons = await loadIcons(api, log);
   const dashboard = makeDashboard({ api, settings, state, save, herd, log });
-  const sync = makeSync({ api, hc, settings, state, save, log, buttons, herd, lastReply });
-  const commands = makeCommands({ api, hc, settings, state, save, herd, sync, buttons, dashboard, inbox: P.inbox, log, bot: me.username });
+  const sync = makeSync({ api, hc, settings, state, save, log, buttons, herd, icons, lastReply, session });
+  const commands = makeCommands({ api, hc, settings, state, save, herd, sync, buttons, dashboard, inbox: P.inbox, log, bot: me.username, session });
 
   // Agents → Telegram. Changes are handled in order, one at a time.
   let first = true, queue = Promise.resolve();

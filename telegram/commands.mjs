@@ -1,16 +1,16 @@
 // Telegram → agents: what a message or a button press in the group does.
 import { escapeHtml } from "./telegram.mjs";
 import { rememberChat, rememberTopic } from "./config.mjs";
-import { renderStatus } from "./dashboard.mjs";
-import { tailScreen, parseDialog } from "./dialog.mjs";
+import { renderStatus, renderAgent } from "./dashboard.mjs";
+import { parseChoices } from "./dialog.mjs";
 import { dialogKey } from "./agents.mjs";
+import { projectOf } from "./herdr.mjs";
 import { handleFile } from "./files.mjs";
 
 // The bot's "≡" menu. Telegram has no per-topic menu, so each command says where it works.
 export const COMMANDS = [
   { command: "new", description: "Start an agent in a workspace" },
-  { command: "status", description: "All agents and their status" },
-  { command: "screen", description: "Show the agent's screen" },
+  { command: "status", description: "All agents, or this agent in its topic" },
   { command: "stop", description: "Stop the current turn (Esc)" },
   { command: "close", description: "End the agent, close or delete its topic" },
   { command: "clear", description: "Delete the topics of ended agents" },
@@ -18,26 +18,33 @@ export const COMMANDS = [
 ];
 
 const ROOT_ONLY = new Set(["new", "clear"]);
-const AGENT_ONLY = new Set(["screen", "stop", "close"]);
+const AGENT_ONLY = new Set(["stop", "close"]);
 
 const HELP_ROOT = [
   "<b>Root topic</b>",
   "/new — start Claude in a workspace",
   "/status — all agents and their status",
   "/clear — delete the topics of ended agents",
-  "Agent commands (/screen /stop /close) work in an agent's topic.",
+  "Agent commands (/stop /close) work in an agent's topic.",
 ].join("\n");
 
 const HELP_AGENT = [
   "<b>Agent topic</b>",
   "Text — a prompt for the agent. While it waits at a dialog: 1…9, y, n, enter, esc, or the buttons.",
   "Photo or file — saved and passed to the agent with your caption.",
-  "/screen — the agent's screen",
+  "/status — this agent: status, model, context, cost",
   "/stop — stop the current turn (Esc)",
   "/close — end the agent, close or delete this topic",
-  "/status — all agents",
   "Other commands (/compact, /model…) go to Claude as typed.",
 ].join("\n");
+
+// The tab /new puts Claude into, to the right of what is there: the space's
+// tab with Claude agents in it, else its first tab. Null: a tab of its own.
+export function tabFor(space, isAgent) {
+  const terminals = (node) => node?.content?.terminal ? [node.content.terminal] : (node?.children ?? []).flatMap(terminals);
+  const tabs = space.tabs ?? [];
+  return (tabs.find(t => terminals(t.root).some(isAgent)) ?? tabs[0])?.id ?? null;
+}
 
 const SHORT_KEYS = new Map([
   ["y", "y"], ["n", "n"], ["enter", "enter"], ["esc", "esc"],
@@ -64,11 +71,25 @@ const OURS = new Set(COMMANDS.map(c => c.command));
 // not answer whatever dialog is open now.
 export const STALE_SECONDS = 120;
 
-export function makeCommands({ api, hc, settings, state, save, herd, sync, buttons, dashboard, inbox, log, bot = null, nowSec = () => Date.now() / 1000 }) {
+export function makeCommands({
+  api, hc, settings, state, save, herd, sync, buttons, dashboard, inbox, log,
+  bot = null, nowSec = () => Date.now() / 1000, session = async () => null, noticeMs = 5000,
+}) {
   const chat_id = settings.chat_id;
   const owners = new Set(settings.owner_ids);
   const closeAsks = new Map(); // address → number of the latest /close question
   let closeIds = 0;
+
+  // The message goes; a short notice says why and goes after noticeMs.
+  async function dropInEnded(msg) {
+    await api.call("deleteMessage", { chat_id, message_id: msg.message_id }).catch(err => log(`delete message: ${err.message}`));
+    const notice = await api.call("sendMessage", {
+      chat_id, message_thread_id: msg.message_thread_id, text: "Agent has ended. Messages here are not kept.", disable_notification: true,
+    }).catch(err => log(`notice: ${err.message}`));
+    if (notice?.message_id) {
+      setTimeout(() => api.call("deleteMessage", { chat_id, message_id: notice.message_id }).catch(() => {}), noticeMs);
+    }
+  }
 
   const reply = (msg, text, extra = {}) =>
     api.call("sendMessage", {
@@ -94,7 +115,9 @@ export function makeCommands({ api, hc, settings, state, save, herd, sync, butto
     if (cmd.name === "new") {
       const spaces = (await hc.spaces()).filter(s => s.folder);
       if (!spaces.length) return reply(msg, "No workspaces in Herdr.");
-      const rows = spaces.map(s => [{ text: s.name || s.folder, callback_data: buttons.register({ type: "new", space: { id: s.id, name: s.name, folder: s.folder } }) }]);
+      const rows = spaces.map(s => [{ text: s.name || s.folder, callback_data: buttons.register({
+        type: "new", space: { id: s.id, name: s.name, folder: s.folder }, tab: tabFor(s, (t) => !!herd.get(t)),
+      }) }]);
       return reply(msg, "Start Claude in which workspace?", { reply_markup: { inline_keyboard: rows } });
     }
     if (cmd.name === "clear") return askClear(msg);
@@ -113,10 +136,6 @@ export function makeCommands({ api, hc, settings, state, save, herd, sync, butto
   }
 
   async function onAgentCommand(msg, cmd, agent) {
-    if (cmd.name === "screen") {
-      const text = tailScreen(await hc.read(agent.address), 40);
-      return reply(msg, `<pre>${escapeHtml(text.slice(-3800) || "(empty)")}</pre>`);
-    }
     if (cmd.name === "stop") {
       await hc.keys(agent.address, "esc");
       return reply(msg, "⏹ sent esc");
@@ -126,7 +145,7 @@ export function makeCommands({ api, hc, settings, state, save, herd, sync, butto
       const ask = (mode) => buttons.register({ type: "close", address: agent.address, mode, cq });
       const ids = { close: ask("close"), delete: ask("delete"), cancel: ask("cancel") };
       closeAsks.set(agent.address, cq);
-      return reply(msg, `End <b>${escapeHtml(agent.where)}</b>?`, {
+      return reply(msg, `End <b>${escapeHtml(await sync.nameOf(agent))}</b>?`, {
         reply_markup: { inline_keyboard: [
           [{ text: "End & close topic", callback_data: ids.close }],
           [{ text: "End & delete topic", callback_data: ids.delete }],
@@ -155,19 +174,26 @@ export function makeCommands({ api, hc, settings, state, save, herd, sync, butto
     // (/compact, /model, /cost…): it goes to the agent as text.
     if (cmd && agent && !OURS.has(cmd.name)) cmd = null;
 
+    // A closed topic still takes messages from admins (the owner is one), and
+    // Telegram cannot stop that: the bridge removes them instead.
+    if (endedTopic) return dropInEnded(msg);
+
     if (cmd) {
-      if (cmd.name === "status") return reply(msg, renderStatus(herd.list(), state, chat_id));
+      if (cmd.name === "status") {
+        if (agent) return reply(msg, await renderAgent(agent, await sync.nameOf(agent), session));
+        return reply(msg, renderStatus(herd.list(), state, chat_id));
+      }
       if (cmd.name === "help") return reply(msg, agent ? HELP_AGENT : HELP_ROOT);
       if (ROOT_ONLY.has(cmd.name)) return isRoot ? onRootCommand(msg, cmd) : reply(msg, where(cmd.name));
       if (AGENT_ONLY.has(cmd.name)) {
         if (agent) return onAgentCommand(msg, cmd, agent);
-        return reply(msg, endedTopic ? "Agent has ended." : where(cmd.name));
+        return reply(msg, address ? "Claude is still starting." : where(cmd.name));
       }
       return reply(msg, "Unknown command. /help lists them.");
     }
 
     if (!agent) {
-      if (endedTopic) return reply(msg, "Agent has ended.");
+      if (address) return reply(msg, "Claude is still starting. Answer its question with the buttons above.");
       return; // root or another topic: plain talk is left alone
     }
 
@@ -219,16 +245,18 @@ export function makeCommands({ api, hc, settings, state, save, herd, sync, butto
     switch (entry.type) {
       case "opt": {
         const open = sync.questions.get(entry.address);
-        if (!open || open.qid !== entry.qid || herd.get(entry.address)?.state !== "blocked") {
+        // A question before Claude starts has no blocked status: a live terminal is enough.
+        const waiting = open?.pending ? !!herd.live(entry.address) : herd.get(entry.address)?.state === "blocked";
+        if (!open || open.qid !== entry.qid || !waiting) {
           return answer(q, "This question is no longer open.");
         }
         // Claude can go from one dialog to the next without leaving blocked:
         // the key goes only to the dialog the button was made for.
         try {
-          if (dialogKey(parseDialog(await hc.read(entry.address))) !== open.labels) {
-            return answer(q, "The dialog has changed. Look at /screen.");
+          if (dialogKey(parseChoices(await hc.read(entry.address))) !== open.labels) {
+            return answer(q, "The dialog has changed.");
           }
-          await hc.keys(entry.address, String(entry.n));
+          await hc.keys(entry.address, ...entry.keys);
         } catch (err) {
           log(`option ${entry.address}: ${err.message}`);
           return answer(q, `Not delivered: ${err.message}`.slice(0, 190));
@@ -283,13 +311,20 @@ export function makeCommands({ api, hc, settings, state, save, herd, sync, butto
       case "new": {
         buttons.drop(q.data);
         await answer(q);
-        await edit(q, `Starting Claude in <b>${escapeHtml(entry.space.name || entry.space.folder)}</b>…`);
+        const name = escapeHtml(entry.space.name || entry.space.folder);
+        await edit(q, `Starting Claude in <b>${name}</b>…`);
+        let started;
         try {
-          await hc.startClaude(entry.space);
+          started = await hc.startClaude(entry.space, entry.tab);
         } catch (err) {
-          return edit(q, `⚠️ Claude did not start in <b>${escapeHtml(entry.space.name)}</b>: ${escapeHtml(err.message)}`);
+          return edit(q, `⚠️ Claude did not start in <b>${name}</b>: ${escapeHtml(err.message)}`);
         }
-        return;
+        await edit(q, `Started Claude in <b>${name}</b>.`);
+        // Its topic now, before Claude reports anything: a first question lands there.
+        return sync.starting(herd.live(started.address) ?? {
+          address: started.address, cwd: entry.space.folder, title: "",
+          project: projectOf(`${entry.space.name} / `, entry.space.folder),
+        });
       }
       default:
         return answer(q);

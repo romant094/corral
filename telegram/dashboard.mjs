@@ -1,7 +1,7 @@
 // /status and the pinned dashboard in the root topic: every live agent with its
 // status, how long it has been in it, and a link to its topic.
 import { escapeHtml, topicLink } from "./telegram.mjs";
-import { EMOJI } from "./agents.mjs";
+import { EMOJI, topicName } from "./agents.mjs";
 
 export function duration(ms) {
   const min = Math.floor(ms / 60000);
@@ -11,17 +11,39 @@ export function duration(ms) {
   return min % 60 ? `${h} h ${min % 60} min` : `${h} h`;
 }
 
+// Each row is named like the agent's topic: "[project] session title".
 export function renderStatus(agents, state, chatId, now = Date.now()) {
   if (!agents.length) return "<b>No live agents</b>";
+  const nameOf = (a) => state.agents[a.address]?.title ?? topicName(a.project, a.title);
   const rows = [...agents]
-    .sort((a, b) => a.where.localeCompare(b.where))
+    .sort((a, b) => nameOf(a).localeCompare(nameOf(b)))
     .map(a => {
       const topic = state.agents[a.address]?.topic_id;
-      const name = escapeHtml(a.where);
+      const name = escapeHtml(nameOf(a));
       const label = topic ? `<a href="${topicLink(chatId, topic)}">${name}</a>` : name;
       return `${EMOJI[a.state] ?? EMOJI.idle} ${label} · ${a.state} · ${duration(now - a.since)}`;
     });
   return `<b>Agents (${agents.length})</b>\n${rows.join("\n")}`;
+}
+
+const tokens = (n) => n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+
+// /status in an agent's topic: the Corral card of that agent.
+export async function renderAgent(agent, name, session, now = Date.now()) {
+  const s = await session(agent.pid);
+  const lines = [`<b>${escapeHtml(name)}</b>`, `${EMOJI[agent.state] ?? EMOJI.idle} ${agent.state} · ${duration(now - agent.since)}`];
+  if (s) {
+    const facts = [];
+    if (s.model?.display_name) facts.push(escapeHtml(s.model.display_name));
+    const ctx = s.context_window;
+    if (ctx?.used_percentage != null) facts.push(`context ${Math.round(ctx.used_percentage)}%${ctx.total_input_tokens ? ` (${tokens(ctx.total_input_tokens)})` : ""}`);
+    if (s.cost?.total_cost_usd != null) facts.push(`$${Number(s.cost.total_cost_usd).toFixed(2)}`);
+    if (facts.length) lines.push(facts.join(" · "));
+  }
+  const home = process.env.HOME;
+  const cwd = home && agent.cwd?.startsWith(home) ? `~${agent.cwd.slice(home.length)}` : agent.cwd;
+  if (cwd) lines.push(`<code>${escapeHtml(cwd)}</code>`);
+  return lines.join("\n");
 }
 
 // A fixed callback_data, not a registered button: the pinned dashboard lives

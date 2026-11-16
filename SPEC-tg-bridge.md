@@ -32,7 +32,8 @@ reads them after wake-up.
 5. The agent asks a question or waits for approval. Its topic gets the screen
    with the question and one button per numbered option. I press a button, or
    reply `1`, `y` or `esc`, and the agent gets that key.
-6. The topic name shows the agent's status as a leading emoji.
+6. The topic icon shows the agent's status; the topic name is
+   `[project] session title`, as on the Corral card.
 7. In an agent's topic I send `/close`. I choose **End & close topic** or
    **End & delete topic**. The agent ends; its topic is closed or deleted.
 8. An agent ends at the desk. Its topic gets 🏁, is closed, and its last
@@ -74,7 +75,12 @@ Verified on this Mac (hc 0.1.21):
   makes Herdr.app add a new tab with that terminal to the space, and set
   `where` and `keep=true` on it (checked with the app running, 2026-11-16).
 - `hc kill <t>` ends the terminal (`finished`); `hc rm <t>` then removes it,
-  and Herdr.app removes its tab. `/close` uses both.
+  and Herdr.app removes its pane (and the tab, when it held nothing else).
+  `/close` uses both.
+- A terminal labelled with an existing `herdr.tab` goes into that tab, to the
+  right of its panes (checked 2026-11-16). `/new` uses this.
+- Claude Code started in a folder it does not trust yet shows "Do you trust
+  this folder?" and reports no status until it is answered.
 - `hc events --json` lines after the snapshot are JSON-RPC notifications:
   `{"method":"event","params":{"type","terminal","data","seq"}}`. Types used:
   `created`, `status` (`data.status` may be `null`), `foreground`
@@ -106,8 +112,8 @@ telegram/
   bridge.mjs        entry point: load config, start the two loops, write state
   telegram.mjs      Bot API calls: getUpdates, sendMessage, forum topics, commands
   herdr.mjs         hc calls: events stream, run, send, keys, read, kill, doc.get
-  agents.mjs        agent ↔ topic sync, status emoji, notification texts
-  commands.mjs      /new /status /screen /stop /close /help and plain text routing
+  agents.mjs        agent ↔ topic sync, status icons, notification texts
+  commands.mjs      /new /status /stop /close /clear /help and plain text routing
   config.mjs        read and validate telegram.json, read/write telegram-state.json
   test/*.test.mjs   node:test unit tests with fakes for Telegram and hc
 ```
@@ -167,20 +173,32 @@ file, then rename).
 
 - An agent is a live terminal whose `status.app` is `claude-code` and that has
   no `parent` (helpers started by an agent are not agents).
-- On a new agent: `createForumTopic` with the name `<emoji> <where>`, store the
+- Topic name: `[project] title`. The project is the agent's Herdr space; for
+  the "No project" space it is the agent's folder name (`~` for home). The
+  title is the terminal title Claude Code sets (without its spinner), else the
+  statusline's `session_name`, else `new session`. A new title renames the topic.
+- The status is the topic icon (`icon_custom_emoji_id`), not an emoji in the
+  name: clients show a leading emoji in some places only. At start the bridge
+  reads Telegram's icon set (`getForumTopicIconStickers`) and gives each status
+  the first emoji of its list the set has: starting ⏳ 🕓 ⌛, working ⚡ 🔥 🏃,
+  blocked ❓ ❗ 🔔, done ✅ ✔ 👍, idle 💤 😴 🛌, ended 🏁 🔚 ❌. A status with none
+  of them gets no icon; an ended topic without one gets 🏁 in its name.
+- On a new agent: `createForumTopic` with the name and icon, store the
   mapping, post one line: `Started in <cwd>`.
-- On a status change: rename the topic (`editForumTopic`) with the new emoji.
-  Emoji: `working` ⚡, `blocked` ❓, `done` ✅, `idle` 💤, ended 🏁.
-  Renames for one topic are throttled to one per 10 s; the last state wins.
+- On a status or title change: `editForumTopic` with the new name and icon.
+  Edits for one topic are throttled to one per 10 s; the last state wins.
 - On `done`: post the last assistant message from the session transcript.
   Without a transcript, post the last 20 screen lines as a code block.
   Text longer than 3500 characters is split into several messages.
-- On `blocked`: wait 1.5 s, then post the last 25 screen lines as a code block
-  with `Waiting for you`. This message notifies with sound. When the screen
-  ends in a numbered dialog with 2–9 options (lines such as `❯ 1. Yes`,
-  `  2. No`), the message gets one inline button per option: `1 · Yes`.
-- `working` and `idle` change only the topic name: no message.
-- On `finished` or `removed`: rename with 🏁, post `Agent ended` with a
+- On `blocked` (also when an agent is first seen blocked): wait 1.5 s, then
+  post the last 25 screen lines as a code block with `Waiting for you`. This
+  message notifies with sound. When the screen ends in a numbered dialog with
+  2–9 options (lines such as `❯ 1. Yes`, `  2. No`), the message gets one inline
+  button per option: `1 · Yes`. An arrow menu without numbers (a screen with
+  `Enter to confirm`, the chosen line marked `❯`) gets buttons too; they move
+  with `up`/`down` and press `enter`.
+- `working` and `idle` change only the topic: no message.
+- On `finished` or `removed`: set the ended icon, post `Agent ended` with a
   **Delete topic** button, call `closeForumTopic`, move the mapping to `ended`.
 - On start the bridge reconciles: it reuses mapped topics of live agents,
   closes topics of agents that ended while it was down, creates missing ones.
@@ -191,8 +209,9 @@ file, then rename).
   keeps in memory (Telegram limits it to 64 bytes). The bridge always answers
   with `answerCallbackQuery`.
 - A dialog option button acts only while it belongs to the agent's latest
-  `blocked` post and the agent is still `blocked`. It sends the option's digit
-  (`hc keys <t> <n>`) and edits the post to `✅ <n> · <option>`. A stale button
+  question and the agent is still `blocked` (for a question before Claude
+  starts: still live). It sends the option's keys (`hc keys <t> <n>`, or the
+  arrows and `enter`) and edits the post to `✅ <n> · <option>`. A stale button
   answers `This question is no longer open` and does nothing.
 - After a restart the in-memory ids are gone: old buttons answer
   `This button has expired`.
@@ -203,11 +222,11 @@ file, then rename).
 |---|---|
 | plain text, agent `blocked`, text is `y`, `n`, `1`…`9`, `enter`, `esc` | `hc keys <t> <key>` |
 | plain text, otherwise | `hc send <t> <text>`; when `blocked`, refused with a hint to answer the dialog first |
-| `/screen` | last 40 screen lines (`hc read`) as a code block |
 | `/stop` | `hc keys <t> esc`; reply `⏹ sent esc` |
 | `/close` | question with **End & close topic** / **End & delete topic** / **Cancel** buttons. Close → `hc kill <t>`, then the ended path above. Delete → `hc kill <t>`, then `deleteForumTopic`, no `ended` entry. |
 | photo or document, optional caption | download with `getFile` into `$HERDR_APP_HOME/corral/inbox/<address>/<time>-<name>`, then `hc put <t> <file>`; `hc send <t> "<caption> <path>"` with the path `hc put` printed. Photos take the largest size. Over 20 MB: refused with the limit. While `blocked`: refused like text. |
-| `/status`, `/help` | as in the root topic |
+| `/status` | this agent only, as its Corral card: name, status and time in it, model, context, cost, folder |
+| `/help` | the commands of an agent topic |
 | `/new`, `/clear` | hint: use the root topic |
 | any other `/command` | Claude's own (`/compact`, `/model`…): sent to the agent as text |
 | text, keys or a file older than 120 s (sent while the bridge was down) | not typed; reply `Sent while the bridge was offline` |
@@ -217,8 +236,10 @@ A command addressed to another bot (`/stop@other_bot`) is ignored. A dialog
 button acts only if the screen still shows the same dialog it was made for.
 
 In the closed topic of an ended agent, the **Delete topic** button deletes it
-(`deleteForumTopic`) and removes it from `ended`. Text there answers
-`Agent has ended`.
+(`deleteForumTopic`) and removes it from `ended`. Telegram lets admins (the
+owner is one) write in a closed topic and a bot cannot stop it, so the bridge
+deletes any message there and posts `Agent has ended`, which it deletes after
+5 s.
 
 Text and file paths go to `hc` as argv elements, never through a shell. File
 names from Telegram are reduced to `[A-Za-z0-9._-]`, so a name cannot leave
@@ -228,8 +249,8 @@ the inbox folder.
 
 | Input | Action |
 |---|---|
-| `/new` | one inline button per space from `doc.get herdr-app` (name; folder as tooltip text in the message). A press starts `claude` in that space (see Facts) and answers `Starting Claude in <space>…`. The topic appears through the normal agent sync. |
-| `/status` | each live agent: emoji, `where`, time in the current state, link to its topic. |
+| `/new` | one inline button per space from `doc.get herdr-app`. A press starts `claude` in that space, to the right of the panes of its tab that holds Claude agents (else its first tab; with no tab, a new one), and answers `Started Claude in <space>`. Its topic is made at once, named `[project] starting`. Until Claude reports a status the bridge reads the screen every 5 s (for 5 min) and posts a question it finds (such as "trust this folder?") with its buttons. A terminal that ends before that gets the ended path. |
+| `/status` | each live agent: emoji, topic name, time in the current state, link to its topic. |
 | `/clear` | `Delete N topics of ended agents?` with **Delete all** / **Cancel**. Delete all → `deleteForumTopic` for each entry of `ended`, then `Deleted N topics`. With no ended topics: `Nothing to clear`. |
 | `/help` | the command list for this topic |
 | other text | ignored |
@@ -246,8 +267,7 @@ At start: `setMyCommands` with scope `{ type: "chat", chat_id }`:
 | Command | Description |
 |---|---|
 | `new` | Start an agent in a workspace |
-| `status` | All agents and their status |
-| `screen` | Show the agent's screen |
+| `status` | All agents, or this agent in its topic |
 | `stop` | Stop the current turn (Esc) |
 | `close` | End the agent, close or delete its topic |
 | `clear` | Delete the topics of ended agents |

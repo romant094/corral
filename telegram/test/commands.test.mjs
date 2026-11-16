@@ -14,7 +14,7 @@ async function setup({ terminals = [term("t1")], screen = "" } = {}) {
   const sync = makeSync({ ...w, throttleMs: 0, blockedDelayMs: 0, replyRetryMs: 0 });
   const dashboard = { refresh: () => { w.refreshed = (w.refreshed ?? 0) + 1; } };
   const inbox = await mkdtemp(join(tmpdir(), "inbox-"));
-  const commands = makeCommands({ ...w, sync, dashboard, inbox });
+  const commands = makeCommands({ ...w, sync, dashboard, inbox, noticeMs: 10 });
   for (const c of w.herd.apply({ terminals })) await sync.handle(c);
   w.api.calls.length = 0;
   const topic = w.state.agents.t1?.topic_id;
@@ -42,8 +42,8 @@ test("parseCommand handles @bot and args", () => {
   assert.equal(parseCommand("hello"), null);
 });
 
-test("the menu has the seven commands", () => {
-  assert.deepEqual(COMMANDS.map(c => c.command), ["new", "status", "screen", "stop", "close", "clear", "help"]);
+test("the menu has the six commands", () => {
+  assert.deepEqual(COMMANDS.map(c => c.command), ["new", "status", "stop", "close", "clear", "help"]);
 });
 
 test("text in an agent topic goes to the agent as one argv element", async () => {
@@ -65,12 +65,14 @@ test("messages from other users or chats change nothing", async () => {
   assert.ok(s.logs.some(l => /ignored a message from user 99/.test(l)));
 });
 
-test("/stop sends esc; /screen posts the screen", async () => {
-  const s = await setup({ screen: "hello\n" });
+test("/stop sends esc; /status in a topic shows that agent only", async () => {
+  const s = await setup();
   await s.commands.handle(s.msg("/stop"));
   assert.deepEqual(s.hc.calls.at(-1), ["keys", "t1", "esc"]);
-  await s.commands.handle(s.msg("/screen"));
-  assert.equal(s.api.of("sendMessage").at(-1).params.text, "<pre>hello</pre>");
+  await s.commands.handle(s.msg("/status"));
+  const text = s.api.of("sendMessage").at(-1).params.text;
+  assert.match(text, /^<b>\[t1\] new session<\/b>\n💤 idle · /);
+  assert.ok(!/Agents \(/.test(text));
 });
 
 test("commands in the wrong topic say where they work", async () => {
@@ -86,8 +88,13 @@ test("/new lists spaces; a press starts Claude there", async () => {
   await s.commands.handle(s.msg("/new", { thread: null }));
   const kb = s.api.of("sendMessage").at(-1).params.reply_markup.inline_keyboard;
   assert.deepEqual(kb.map(r => r[0].text), ["gmail", "notes"]);
+  await s.press(kb[0][0].callback_data);
+  // Into the tab where gmail's agent works, to its right.
+  assert.deepEqual(s.hc.calls.at(-1), ["startClaude", { id: "spA", name: "gmail", folder: "/p/gmail" }, "tbA2"]);
   await s.press(kb[1][0].callback_data);
-  assert.deepEqual(s.hc.calls.at(-1), ["startClaude", { id: "spB", name: "notes", folder: "/p/notes" }]);
+  // A space without tabs: a tab of its own.
+  assert.deepEqual(s.hc.calls.at(-1), ["startClaude", { id: "spB", name: "notes", folder: "/p/notes" }, null]);
+  assert.match(s.api.of("createForumTopic").at(-1).params.name, /^\[notes\] starting$/);
   await s.press(kb[1][0].callback_data);
   assert.equal(s.api.of("answerCallbackQuery").at(-1).params.text, "This button has expired.");
 });
@@ -184,4 +191,15 @@ test("groups and topics the bot sees are remembered for the wizard", async () =>
     is_topic_message: true, message_thread_id: 12, forum_topic_created: { name: "Corral" } } });
   assert.ok(s.state.chats.some(c => c.id === -2002 && c.forum));
   assert.deepEqual(s.state.topics[-2002], [{ id: 12, name: "Corral" }]);
+});
+
+test("messages in a closed topic are removed, with a notice that goes too", async () => {
+  const s = await setup();
+  s.state.ended.push({ topic_id: 40, title: "", ended_at: "" });
+  await s.commands.handle(s.msg("still there?", { thread: 40 }));
+  assert.deepEqual(s.api.of("deleteMessage").map(c => c.params.message_id), [1]);
+  assert.match(s.api.of("sendMessage").at(-1).params.text, /Agent has ended/);
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(s.api.of("deleteMessage").length, 2);
+  assert.equal(s.hc.calls.length, 0);
 });

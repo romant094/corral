@@ -39,6 +39,16 @@ export function lastReplyFrom(jsonl) {
   return null;
 }
 
+// The statusline JSON the Corral cards read: model, context, cost, session name.
+export async function session(pid, dir = sessionsDir()) {
+  if (!pid) return null;
+  try {
+    return JSON.parse(await readFile(join(dir, `${pid}.json`), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 export async function lastReply(pid, dir = sessionsDir()) {
   if (!pid) return null;
   try {
