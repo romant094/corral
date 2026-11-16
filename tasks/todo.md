@@ -50,7 +50,7 @@ Checks: `node --test telegram/test/` for the bridge; `herdr-app check mods/corra
   - Verify: `node --test telegram/test/`; by hand once: install, status, uninstall (with a stopped bridge)
   - Dependencies: 3. Files: `telegram/service.mjs` (new), `telegram/bridge.mjs`, `telegram/test/service.test.mjs`. Scope: M
 
-- [ ] **Task 6: Telegram section — toggle and wizard steps 1–4**
+- [x] **Task 6: Telegram section — toggle and wizard steps 1–4**
   - Acceptance:
     - [ ] Toggle off shows one line; on shows the steps, each open when the one before is done
     - [ ] Token: masked field, "Check" runs `--check --json`; good saves `telegram.json` (0600 via the bridge), bad saves nothing
