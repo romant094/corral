@@ -1527,14 +1527,18 @@ export default class Board extends View {
           (_e, cx) => { this.tg.unfold = { ...this.tg.unfold, [n]: true }; cx.notify(); })))
         .when(done && editing, el => el.child(smallButton(C, `tg-done-${n}`, "Done",
           (_e, cx) => { this.tg.unfold = { ...this.tg.unfold, [n]: false }; cx.notify(); }))))
-      .when(editing, el => el.child(div().pl(24).pb(6).child(body)));
+      .when(editing, el => el.child(div().w_full().min_w(0).pl(24).pb(6).child(body)));
   }
   // Numbered how-to lines; a part is text or [label, url] for a link.
   guide(C, id, lines) {
-    return v_flex().gap(4).children(lines.map((parts, i) => h_flex().gap(4).items_start()
+    // A line of plain text wraps as one block; a line with a link is laid out word by word, so it wraps too.
+    const words = (p, i, j) => Array.isArray(p) ? [linkText(C, `${id}-${i}-${j}`, p[0], p[1])]
+      : p.split(" ").filter(Boolean).map(w => div().flex_none().child(w));
+    return v_flex().w_full().gap(4).children(lines.map((parts, i) => h_flex().w_full().gap(4).items_start()
       .child(div().w(16).flex_none().text_size(12).text_color(C.dim).child(`${i + 1}.`))
-      .child(h_flex().flex_1().min_w(0).flex_wrap().gap(4).text_size(12).text_color(C.muted)
-        .children(parts.map((p, j) => Array.isArray(p) ? linkText(C, `${id}-${i}-${j}`, p[0], p[1]) : div().child(p))))));
+      .child(parts.some(Array.isArray)
+        ? h_flex().flex_1().min_w(0).flex_wrap().gap(4).text_size(12).text_color(C.muted).children(parts.flatMap((p, j) => words(p, i, j)))
+        : div().flex_1().min_w(0).text_size(12).text_color(C.muted).child(parts.join(" ")))));
   }
   tgTokenStep(C, s, bot) {
     const body = v_flex().gap(8)
