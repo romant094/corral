@@ -71,7 +71,10 @@ export async function pair({ api, state, code, seconds = 290, now = Date.now, wa
   const start = new RegExp(`^/start(@${me.username})?\\s+${code}$`, "i");
   let found = null, asked = null;
   while (now() < deadline) {
-    const timeout = Math.max(0, Math.min(wait, Math.floor((deadline - now()) / 1000)));
+    // Long waits for the /start; once it came, every few seconds, because turning Topics on in a supergroup
+    // sends the bot nothing and only getChat shows it.
+    const step = asked ? Math.min(wait, 3) : wait;
+    const timeout = Math.max(0, Math.min(step, Math.floor((deadline - now()) / 1000)));
     const updates = await api.raw("getUpdates", { offset: state.offset, timeout, allowed_updates: ["message", "my_chat_member"] });
     for (const u of updates) {
       state.offset = u.update_id + 1;
