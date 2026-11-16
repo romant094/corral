@@ -115,6 +115,10 @@ const openDropdown = (spec) => {
   if (closed?.key === dropdownKey(spec.props) && Date.now() - closed.at < POPUP_REOPEN_MS) return;
   openOverlay(spec);
 };
+// The header block's height (layouts/corral.json) and the room above its first row: the macOS window
+// buttons sit in the top left of a window without a title bar.
+const HEADER_TOP = 11;
+const HEADER_H = 112 + HEADER_TOP;
 const DOCK_BAR = 40;
 const DOCK_MS = 200;
 // The height the terminals open to after they were folded by dragging the divider to the bottom.
@@ -124,7 +128,7 @@ const DOCK_CHECK_MS = 30;
 // How far from the divider a press over the board or the bar goes to the divider.
 const DIVIDER_GRAB = 8;
 // The rows above the workspace: the header, the board's min height and the divider (layouts/corral.json).
-const DOCK_ABOVE = 112 + 150 + 1;
+const DOCK_ABOVE = HEADER_H + 150 + 1;
 const findWorkspace = (n) => n?.id === "workspace" ? n : (n?.children ?? []).map(findWorkspace).find(Boolean);
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const WT_POPUP_MAX = 460;
@@ -157,7 +161,9 @@ const searchField = (C, state) => h_flex().flex_none().h(32).mx(4).mb(4).px(10).
 // The picker sits after the view switch and the slash; its popups open under it.
 const PICKER_X = 370;
 // Where the projects list opens, under the picker.
-const SPACES_Y = 52;
+const SPACES_Y = 52 + HEADER_TOP;
+// Row two of the header, where the filter and worktree dropdowns open.
+const ROW2_Y = 96 + HEADER_TOP;
 // Copy-path chords: Cmd on macOS, Ctrl elsewhere (GPUI's "cmd" is the Windows/Super key there).
 // The window is not there while the module loads, so this is asked on use.
 const copyKeys = () => (appWindow()?.platform ?? "macos") === "macos"
@@ -1139,7 +1145,7 @@ export default class Board extends View {
     const groups = [...new Set(limits.filter(l => l.group).map(l => l.group))];
     const v = view();
     // Fixed rows from the top: switching views must not move the header.
-    return v_flex().size_full().bg(C.bar).px(24).pt(19).gap(12)
+    return v_flex().size_full().bg(C.bar).px(24).pt(19 + HEADER_TOP).gap(12)
       .child(h_flex().items_center().gap(12)
         .child(this.viewSwitch(C))
         .child(vbar(C, 22))
@@ -1158,10 +1164,10 @@ export default class Board extends View {
       .when(v === "board", el => el.child(h_flex().gap(8).items_center()
         .child(chip(C, "chip-projects", projectLabel + "  ▾", !!f.projects,
           () => openDropdown({ mod: MOD, props: { role: "projectfilter" }, kind: "popup", width: 380,
-            height: checkListHeight(withAgents.length), at: { x: 24, y: 96 } })))
+            height: checkListHeight(withAgents.length), at: { x: 24, y: ROW2_Y } })))
         .child(chip(C, "chip-statuses", this.statusFilterLabel() + "  ▾", !!f.statuses,
           () => openDropdown({ mod: MOD, props: { role: "statusfilter" }, kind: "popup", width: 300,
-            height: checkListHeight(states().length), at: { x: Math.round(59 + projectLabel.length * 5.5), y: 96 } })))
+            height: checkListHeight(states().length), at: { x: Math.round(59 + projectLabel.length * 5.5), y: ROW2_Y } })))
         .child(div().flex_1())
         .child(h_flex().gap(6).items_center().flex_none().text_size(11).text_color(C.muted)
           .child(dot(theme().done, 6)).child(`${list.length} agents across ${withAgents.length} projects`))
@@ -1952,7 +1958,7 @@ export default class Board extends View {
       .bg(C.card).border(1).border_color(C.line).font_family("Geist Mono").text_size(11).text_color(C.ink)
       .when(many, el => el.cursor_pointer().hover(s => s.border_color(C.input)).tooltip("Switch worktree")
         .on_click(() => openDropdown({ mod: MOD, props: { role: "worktrees" }, kind: "popup", width: 520,
-          height: worktreesPopupHeight(), at: { x: 24, y: 96 } })))
+          height: worktreesPopupHeight(), at: { x: 24, y: ROW2_Y } })))
       .child(svg(`mods/${MOD}/icons/branch.svg`).size(12).text_color(C.muted))
       .child(g.branch || "detached")
       .when(many, el => el.child(div().font_family("Geist").text_color(C.muted).child(`${g.worktrees.length} worktrees ▾`)));
@@ -2068,7 +2074,7 @@ export default class Board extends View {
     return h_flex().id("agent-picker").h(34).pl(12).pr(10).gap(8).items_center().rounded(7).flex_none()
       .bg(C.bg).border(1).border_color(C.line).cursor_pointer().hover(s => s.border_color(C.input)).tooltip("Pick an agent")
       .on_click(() => openDropdown({ mod: MOD, props: { role: "agents" }, kind: "popup", width: 520,
-        height: 40 + Math.max(1, n) * 73 + 46, at: { x: PICKER_X, y: 52 } }))
+        height: 40 + Math.max(1, n) * 73 + 46, at: { x: PICKER_X, y: SPACES_Y } }))
       .child(dot(a ? states().find(s => s.key === a.status)?.color ?? C.dim : C.dim, 8))
       .when(!!a, el => el
         .child(div().text_size(15).font_semibold().text_color(C.ink).child(l.model))

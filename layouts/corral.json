@@ -20,7 +20,7 @@
       "id": "board-header",
       "type": "block",
       "size": {
-        "px": 112
+        "px": 123
       },
       "window_drag": true,
       "content": {
