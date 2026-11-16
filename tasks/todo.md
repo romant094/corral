@@ -42,7 +42,7 @@ Checks: `node --test telegram/test/` for the bridge; `herdr-app check mods/corra
   - Verify: `node --test telegram/test/` with the fake Bot API
   - Dependencies: 3. Files: `telegram/bridge.mjs`, `telegram/setup.mjs` (new), `telegram/config.mjs`, `telegram/test/setup.test.mjs`. Scope: M
 
-- [ ] **Task 5: Bridge `--service install|start|stop|restart|uninstall|status`**
+- [x] **Task 5: Bridge `--service install|start|stop|restart|uninstall|status`**
   - Acceptance:
     - [ ] The plist text has Node's absolute path, the bridge path, PATH, `HERDR_APP_HOME` when set, the log path, `KeepAlive.SuccessfulExit=false`, `ThrottleInterval` 10
     - [ ] Each verb runs the right `launchctl` call (injected runner in tests); `status` prints `{ installed, running, pid }`

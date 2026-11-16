@@ -4,6 +4,7 @@
 //   node bridge.mjs --check [--json]          check settings, bot, group and hc; sends nothing
 //   node bridge.mjs --discover --json         groups, topics and people the bot sees (for Corral's wizard)
 //   node bridge.mjs --create-topic <name> --json
+//   node bridge.mjs --service install|start|stop|restart|uninstall|status   the bridge under launchd
 import { readFile, writeFile, unlink, mkdir, chmod } from "node:fs/promises";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { paths, loadSettings, loadState, saveState, trimLog } from "./config.mjs";
@@ -15,6 +16,10 @@ import { makeDashboard } from "./dashboard.mjs";
 import { makeCommands, COMMANDS } from "./commands.mjs";
 import { lastReply, session } from "./transcript.mjs";
 import * as setup from "./setup.mjs";
+import { makeService } from "./service.mjs";
+import { execFile } from "node:child_process";
+import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 
 const log = (...a) => console.error(new Date().toISOString(), ...a);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -219,7 +224,24 @@ async function run() {
   }
 }
 
+// --service <verb>: the bridge under launchd. Prints the agent's status, or { ok: false, error }.
+async function serviceCommand(verb) {
+  const run = (cmd, args) => new Promise((resolve) => execFile(cmd, args, (err, stdout, stderr) =>
+    resolve({ code: err ? (typeof err.code === "number" ? err.code : 1) : 0, stdout, stderr })));
+  const service = makeService({
+    run, uid: process.getuid(), home: homedir(), node: process.execPath, bridge: fileURLToPath(import.meta.url), log: P.log,
+    env: { PATH: process.env.PATH, HERDR_APP_HOME: process.env.HERDR_APP_HOME },
+  });
+  try {
+    await mkdir(P.dir, { recursive: true });
+    print({ ok: true, ...(await service(verb)) });
+  } catch (err) {
+    print({ ok: false, error: err.message });
+  }
+}
+
 if (process.argv.includes("--check")) check(process.argv.includes("--json"));
+else if (process.argv.includes("--service")) serviceCommand(arg("--service"));
 else if (process.argv.includes("--discover")) wizard("discover");
 else if (process.argv.includes("--create-topic")) wizard("create-topic");
 else run().catch(err => { log(err.stack ?? err.message); process.exit(1); });
