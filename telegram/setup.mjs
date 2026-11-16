@@ -96,7 +96,7 @@ async function pairLoop({ api, state, code, seconds, now, wait, me }) {
     // Long waits for the /start; once it came, every few seconds, because turning Topics on in a supergroup
     // sends the bot nothing and only getChat shows it. The same while a group waits for its /init prompt.
     const waiting = [...invited.keys()].some(id => !prompted.has(id));
-    const step = asked || waiting ? Math.min(wait, 3) : wait;
+    const step = asked || waiting ? Math.min(wait, 2) : wait;
     const timeout = Math.max(0, Math.min(step, Math.floor((deadline - now()) / 1000)));
     const updates = await api.raw("getUpdates", { offset: state.offset, timeout, allowed_updates: ["message", "my_chat_member"] });
     for (const u of updates) {
@@ -134,9 +134,11 @@ async function pairLoop({ api, state, code, seconds, now, wait, me }) {
     if (!chat.is_forum) {
       if (asked !== chat.id) {
         asked = chat.id;
-        await api.call("sendMessage", { chat_id: chat.id,
-          text: "Almost there: turn on Topics in this group (group settings → Topics). Corral finishes by itself then." }, { tries: 1 })
-          .catch(() => {});
+        await api.call("sendMessage", { chat_id: chat.id, text:
+          "Corral is connecting to this group. One thing is missing: Telegram tells bots that Topics are off here, and Corral "
+          + "needs them, a topic per agent. Turn them on (group settings → Topics); if they already look on, this is a plain "
+          + "group, and the bot should go to a group with Topics instead. Corral checks every 2 seconds and finishes by itself." },
+          { tries: 1 }).catch(() => {});
       }
       continue;
     }

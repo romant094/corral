@@ -129,7 +129,7 @@ test("pair: a group without Topics is asked once and followed to its supergroup"
   ], { [-546]: { ...plain, is_forum: false }, [-1001]: herd });
   const out = await pair({ api: a, state: emptyState(), code: "K7Q2", seconds: 60 });
   assert.equal(out.chat.id, -1001);
-  assert.equal(a.of("sendMessage").filter(c => /turn on Topics/.test(c.params.text)).length, 1);
+  assert.equal(a.of("sendMessage").filter(c => /Topics are off here/.test(c.params.text)).length, 1);
 });
 
 test("pair: /init works for whoever added the bot in this window, not for others; the menu is set and removed", async () => {
@@ -156,7 +156,7 @@ test("pair: a group the bot was added to without the link is told to send /init,
   const prompts = a.of("sendMessage").filter(c => /Send \/init/.test(c.params.text));
   assert.equal(prompts.length, 1);
   // Short polls until the prompt went out.
-  assert.equal(a.of("getUpdates")[1].params.timeout, 3);
+  assert.equal(a.of("getUpdates")[1].params.timeout, 2);
 });
 
 test("pair: nothing in time is an error", async () => {
