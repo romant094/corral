@@ -118,8 +118,9 @@ function announceUpdate() {
   const u = updatesState();
   if (!updateReady() || u.later === u.latest || u.announced === u.latest) return;
   setUpdates({ announced: u.latest });
+  // The yellow dot the gear shows, so the toast and the gear read as one thing.
   notify({ title: `Corral ${u.latest} is out`, body: `You have ${VERSION}. Click to see what's new and update.`,
-    level: "info", action: { name: `${MOD}.settings-updates` } });
+    level: "info", icon: `mods/${MOD}/icons/update-dot.svg`, action: { name: `${MOD}.settings-updates` } });
 }
 async function checkUpdates() {
   if (await linkedTo()) return;
