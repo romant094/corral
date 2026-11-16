@@ -1610,7 +1610,8 @@ export default class Board extends View {
     const p = this.tg.pairing;
     const body = v_flex().gap(6)
       .child(div().text_size(12).text_color(C.muted)
-        .child("2. Add to a group: Telegram opens, pick a group with Topics on and confirm. The bot gets the admin rights it needs, "
+        .child("2. First turn Topics on in the group (group settings → Topics): a group without them does not connect. "
+          + "Then press Add to a group: Telegram opens, pick that group and confirm. The bot gets the admin rights it needs, "
           + "you become its owner, and Corral starts it. Added the bot another way? Send /init in the group while Corral waits."))
       .child(h_flex().gap(8).items_center()
         .when(!p, el => el.child(smallButton(C, "tg-pair", "Add to a group", (_e, cx) => this.pairTelegram(cx), C.accent)))
