@@ -1,6 +1,6 @@
 // Telegram → agents: what a message or a button press in the group does.
 import { escapeHtml } from "./telegram.mjs";
-import { rememberChat, rememberTopic } from "./config.mjs";
+import { rememberChat, rememberMessage } from "./config.mjs";
 import { renderStatus, renderAgent } from "./dashboard.mjs";
 import { parseChoices } from "./dialog.mjs";
 import { dialogKey } from "./agents.mjs";
@@ -103,12 +103,7 @@ export function makeCommands({
 
   // Remembers groups and topics for the settings wizard; true when state changed.
   function remember(msg) {
-    let changed = rememberChat(state, msg.chat);
-    const thread = msg.is_topic_message ? msg.message_thread_id : null;
-    const created = msg.forum_topic_created ?? msg.reply_to_message?.forum_topic_created;
-    if (thread && created) changed = rememberTopic(state, msg.chat.id, thread, created.name) || changed;
-    if (thread && msg.forum_topic_edited?.name) changed = rememberTopic(state, msg.chat.id, thread, msg.forum_topic_edited.name) || changed;
-    return changed;
+    return rememberMessage(state, msg);
   }
 
   async function onRootCommand(msg, cmd) {

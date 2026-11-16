@@ -91,6 +91,7 @@ export const emptyState = () => ({
   offset: 0,
   chats: [],
   topics: {},
+  people: [],
   agents: {},
   ended: [],
   dashboard_message_id: null,
@@ -128,6 +129,33 @@ export function rememberChat(state, chat) {
   if (i >= 0) state.chats[i] = entry;
   else if (state.chats.length < MAX_CHATS) state.chats.push(entry);
   else return false;
+  return true;
+}
+
+// What one group message tells the wizard: the group, its topic, who wrote. True when state changed.
+export function rememberMessage(state, msg) {
+  let changed = rememberChat(state, msg.chat);
+  if (msg.chat?.type === "private") return changed;
+  const thread = msg.is_topic_message ? msg.message_thread_id : null;
+  const created = msg.forum_topic_created ?? msg.reply_to_message?.forum_topic_created;
+  if (thread && created) changed = rememberTopic(state, msg.chat.id, thread, created.name) || changed;
+  if (thread && msg.forum_topic_edited?.name) changed = rememberTopic(state, msg.chat.id, thread, msg.forum_topic_edited.name) || changed;
+  if (msg.chat) changed = rememberPerson(state, msg.from, msg.chat.id) || changed;
+  return changed;
+}
+
+// People who wrote in a known group: the wizard's owner step lists them, newest first.
+export const MAX_PEOPLE = 50;
+export function rememberPerson(state, from, chatId) {
+  if (!from || from.is_bot) return false;
+  const people = (state.people ??= []);
+  const name = [from.first_name, from.last_name].filter(Boolean).join(" ") || from.username || String(from.id);
+  const entry = { id: from.id, name, username: from.username ?? null, chat_id: chatId };
+  const i = people.findIndex(p => p.id === from.id && p.chat_id === chatId);
+  if (i === 0 && JSON.stringify(people[0]) === JSON.stringify(entry)) return false;
+  if (i >= 0) people.splice(i, 1);
+  people.unshift(entry);
+  people.length = Math.min(people.length, MAX_PEOPLE);
   return true;
 }
 

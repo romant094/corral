@@ -34,7 +34,7 @@ Checks: `node --test telegram/test/` for the bridge; `herdr-app check mods/corra
   - Verify: `node --test telegram/test/`
   - Dependencies: None. Files: `telegram/config.mjs`, `telegram/bridge.mjs`, `telegram/test/config.test.mjs`. Scope: S
 
-- [ ] **Task 4: Bridge `--check --json`, `--discover --json`, `--create-topic`**
+- [x] **Task 4: Bridge `--check --json`, `--discover --json`, `--create-topic`**
   - Acceptance:
     - [ ] `--check --json` prints one object: bot, group, rights.missing, hc, errors
     - [ ] `--discover --json` (daemon stopped) stores and prints groups, topics and `people`; it does not move the offset past unhandled updates

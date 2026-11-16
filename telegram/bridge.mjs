@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // Corral's Telegram bridge: Herdr agents ↔ topics of a Telegram forum group.
 //   node bridge.mjs           run in the foreground (launchd runs it the same way)
-//   node bridge.mjs --check   check settings, bot, group and hc; sends nothing
-import { readFile, writeFile, unlink, mkdir } from "node:fs/promises";
+//   node bridge.mjs --check [--json]          check settings, bot, group and hc; sends nothing
+//   node bridge.mjs --discover --json         groups, topics and people the bot sees (for Corral's wizard)
+//   node bridge.mjs --create-topic <name> --json
+import { readFile, writeFile, unlink, mkdir, chmod } from "node:fs/promises";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { paths, loadSettings, loadState, saveState, trimLog } from "./config.mjs";
 import { makeApi } from "./telegram.mjs";
@@ -12,45 +14,73 @@ import { makeButtons } from "./buttons.mjs";
 import { makeDashboard } from "./dashboard.mjs";
 import { makeCommands, COMMANDS } from "./commands.mjs";
 import { lastReply, session } from "./transcript.mjs";
+import * as setup from "./setup.mjs";
 
 const log = (...a) => console.error(new Date().toISOString(), ...a);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const P = paths();
 
-async function check() {
-  let ok = true;
-  const line = (good, what, detail) => { ok &&= good; console.log(`${good ? "OK  " : "FAIL"} ${what}${detail ? `: ${detail}` : ""}`); };
-  let settings;
+const arg = (name) => { const i = process.argv.indexOf(name); return i >= 0 ? process.argv[i + 1] : undefined; };
+const print = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+
+// The settings file holds the token: only its owner reads it, whoever wrote it.
+async function draft() {
+  const settings = await loadSettings(P.settings, { partial: true });
+  await chmod(P.settings, 0o600).catch(() => {});
+  return settings;
+}
+
+async function daemonRunning() {
+  const pid = Number(await readFile(P.lock, "utf8").catch(() => ""));
+  try { if (pid) { process.kill(pid, 0); return true; } } catch {}
+  return false;
+}
+
+// --check: a person reads it; --check --json: the wizard does. Both send nothing to the group.
+async function check(json) {
+  let settings, result;
   try {
-    settings = await loadSettings(P.settings);
-    line(true, "settings", P.settings);
+    settings = await draft();
+    result = await setup.check({ api: makeApi(settings.token), hc: makeHc(), settings });
   } catch (err) {
-    line(false, "settings", err.message);
+    result = { ok: false, bot: null, group: null, rights: null, hc: null, errors: [`settings: ${err.message}`] };
   }
-  const hc = makeHc();
+  if (json) { print(result); process.exit(0); }
+  const line = (good, what, detail) => console.log(`${good ? "OK  " : "FAIL"} ${what}${detail ? `: ${detail}` : ""}`);
+  for (const e of result.errors) line(false, ...e.split(/: (.*)/s));
+  if (settings) line(true, "settings", P.settings);
+  if (result.hc) line(true, "hc", `${result.hc.agents} Claude agents`);
+  if (result.bot) line(true, "bot", `@${result.bot.username}`);
+  if (result.group) line(result.group.forum, "group", result.group.title);
+  if (result.rights) line(!result.rights.missing.length, "bot rights",
+    result.rights.missing.length ? `missing ${result.rights.missing.join(", ")}` : "manage topics, delete, pin");
+  if (result.bot) await loadIcons(makeApi(settings.token), (text) => console.log(`     ${text}`));
+  process.exit(result.ok ? 0 : 1);
+}
+
+// --discover: groups, topics and people the bot can see now. --create-topic <name>: a topic in the set group.
+async function wizard(mode) {
   try {
-    const { terminals } = await hc.ls();
-    line(true, "hc", `${terminals.filter(t => t.agent === "claude-code").length} Claude agents`);
-  } catch (err) {
-    line(false, "hc", err.message);
-  }
-  if (settings) {
+    const settings = await draft();
     const api = makeApi(settings.token);
-    try {
-      const me = await api.call("getMe", {}, { tries: 1 });
-      line(true, "bot", `@${me.username}`);
-      const chat = await api.call("getChat", { chat_id: settings.chat_id }, { tries: 1 });
-      line(!!chat.is_forum, "group", `${chat.title}${chat.is_forum ? "" : " (Topics are off)"}`);
-      const member = await api.call("getChatMember", { chat_id: settings.chat_id, user_id: me.id }, { tries: 1 });
-      const rights = ["can_manage_topics", "can_delete_messages", "can_pin_messages"];
-      const missing = member.status === "creator" ? [] : rights.filter(r => !member[r]);
-      line(missing.length === 0, "bot rights", missing.length ? `missing ${missing.join(", ")}` : "manage topics, delete, pin");
-      await loadIcons(api, (text) => console.log(`     ${text}`));
-    } catch (err) {
-      line(false, "telegram", err.message);
+    const state = await loadState(P.state);
+    const running = await daemonRunning();
+    if (mode === "discover") {
+      // The running daemon keeps the lists itself; a second reader would take its updates.
+      if (running) return print({ ok: true, ...setup.listing(state) });
+      const { changed, found } = await setup.discover({ api, state });
+      if (changed) await saveState(P.state, state);
+      return print({ ok: true, ...found });
     }
+    const name = arg("--create-topic");
+    if (!name) throw new Error("--create-topic needs a name");
+    const topic = await setup.createTopic({ api, settings, state, name });
+    // The daemon owns the state file while it runs.
+    if (!running) await saveState(P.state, state);
+    print({ ok: true, topic });
+  } catch (err) {
+    print({ ok: false, error: err.code === 401 ? "the token was rejected" : err.message });
   }
-  process.exit(ok ? 0 : 1);
 }
 
 // One bridge per machine: two would both poll Telegram and fight (409 Conflict).
@@ -189,5 +219,7 @@ async function run() {
   }
 }
 
-if (process.argv.includes("--check")) check();
+if (process.argv.includes("--check")) check(process.argv.includes("--json"));
+else if (process.argv.includes("--discover")) wizard("discover");
+else if (process.argv.includes("--create-topic")) wizard("create-topic");
 else run().catch(err => { log(err.stack ?? err.message); process.exit(1); });
