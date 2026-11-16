@@ -137,7 +137,13 @@ export function rememberChat(state, chat) {
 
 // What one group message tells the wizard: the group, its topic, who wrote. True when state changed.
 export function rememberMessage(state, msg) {
-  let changed = rememberChat(state, msg.chat);
+  // Turning Topics on makes a group a supergroup with a new id; the old id is dead from then on.
+  const dead = msg.migrate_to_chat_id ? msg.chat?.id : msg.migrate_from_chat_id;
+  if (dead && state.chats.some(c => c.id === dead)) {
+    state.chats = state.chats.filter(c => c.id !== dead);
+    if (msg.migrate_to_chat_id) return true;
+  }
+  let changed = rememberChat(state, msg.chat) || !!dead;
   if (msg.chat?.type === "private") return changed;
   const thread = msg.is_topic_message ? msg.message_thread_id : null;
   const created = msg.forum_topic_created ?? msg.reply_to_message?.forum_topic_created;

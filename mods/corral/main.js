@@ -1533,7 +1533,11 @@ export default class Board extends View {
     return { title: "Bot", body, summary: s.token ? `${bot ? `@${bot.username}` : "token saved"}  …${s.token.slice(-4)}` : "" };
   }
   tgGroupStep(C, s, bot) {
-    const chats = this.tg.state?.chats ?? [];
+    // Only groups with Topics on: the bridge needs them, and a group from before Topics was turned on is the
+    // same group under its old, dead id.
+    const all = this.tg.state?.chats ?? [];
+    const chats = all.filter(c => c.forum);
+    const withoutTopics = all.length - chats.length;
     const q = this.groupSearch.value().trim().toLowerCase();
     const shown = chats.filter(c => !q || c.title.toLowerCase().includes(q));
     const missing = s.chat_id && this.tg.check?.group?.id === s.chat_id ? this.tg.check.rights?.missing ?? [] : [];
@@ -1546,8 +1550,9 @@ export default class Board extends View {
         .child(smallButton(C, "tg-refresh", "Refresh", (_e, cx) => this.discoverTelegram(cx))))
       .child(v_flex().id("tg-groups").max_h(120).overflow_y_scrollbar()
         .when(!shown.length, el => el.child(div().py(4).text_size(12).text_color(C.dim).child("No groups yet.")))
-        .children(shown.map(c => this.pickRow(C, `tg-group-${c.id}`, c.title, c.id === s.chat_id, c.forum ? null : "Topics are off",
-          (_e, cx) => this.pickGroup(cx, c)))));
+        .children(shown.map(c => this.pickRow(C, `tg-group-${c.id}`, c.title, c.id === s.chat_id, null, (_e, cx) => this.pickGroup(cx, c)))))
+      .when(withoutTopics > 0, el => el.child(div().text_size(11).text_color(C.dim)
+        .child(`${withoutTopics} group${withoutTopics > 1 ? "s" : ""} without Topics not shown: turn Topics on there, write a message, Refresh.`)));
     const title = chats.find(c => c.id === s.chat_id)?.title ?? String(s.chat_id);
     return { title: "Group", body,
       summary: missing.length ? `${title} — needs ${missing.map(r => RIGHT_NAMES[r] ?? r).join(", ")}` : title };

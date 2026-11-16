@@ -61,6 +61,16 @@ test("discover: reads without confirming and learns groups, topics and people", 
   assert.deepEqual(found.people, [{ id: 7, name: "Anton", username: "anton", chat_id: -1001 }]);
 });
 
+test("a group that became a supergroup forgets its old id", () => {
+  const state = emptyState();
+  rememberMessage(state, { chat: { id: -546, type: "group", title: "Herd" }, from: { id: 7, first_name: "A" } });
+  rememberMessage(state, { chat: { id: -546, type: "group", title: "Herd" }, migrate_to_chat_id: -1001 });
+  assert.deepEqual(state.chats, []);
+  rememberMessage(state, { chat: { id: -546, type: "group", title: "Herd" }, from: { id: 7, first_name: "A" } });
+  rememberMessage(state, { chat: { id: -1001, type: "supergroup", title: "Herd", is_forum: true }, migrate_from_chat_id: -546 });
+  assert.deepEqual(state.chats.map(c => c.id), [-1001]);
+});
+
 test("a rename of General is remembered by group", () => {
   const state = emptyState();
   rememberMessage(state, { chat: { id: -1001, type: "supergroup", title: "Herd", is_forum: true }, from: { id: 7, first_name: "A" },
