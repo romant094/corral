@@ -160,7 +160,8 @@ async function checkUpdates() {
   }
 }
 // The gear and `herdr-app do corral.settings` open it.
-const openSettings = () => openOverlay({ mod: MOD, kind: "dialog", width: 720, height: 520, props: { role: "settings" } });
+// A window, not a dialog: it can be dragged aside while you look at the board, and opens where it was left.
+const openSettings = () => openOverlay({ mod: MOD, kind: "window", key: "corral-settings", width: 720, height: 560, props: { role: "settings" } });
 // Changes as a folder tree (the default) or a flat list, per repository: { [root]: boolean }.
 const CHANGE_TREE_KEY = "corral.changeTree";
 const changeTree = () => {
@@ -725,9 +726,13 @@ export default class Board extends View {
     }
     if (p?.role === "settings") {
       this.tg = { loaded: false, busy: null, error: null, check: null, editToken: false };
+      this.settingsFocus = cx.focus_handle();
+      this.settingsFocus.focus();
       this.keysFocus = cx.focus_handle();
       this.keysUi = { recording: null, error: null, warn: null };
       this.tokenInput = InputState.new({ placeholder: "123456789:AAH…" });
+      this.ownerInput = InputState.new({ placeholder: "User id" });
+      this.keyInput = InputState.new({ placeholder: "cmd-1" });
       this.groupSearch = InputState.new({ placeholder: "Filter groups" });
       this.groupSearch.on("change", (_e, cx) => cx.notify());
       // The bridge writes its state file as it goes; the section follows it.
@@ -1386,7 +1391,9 @@ export default class Board extends View {
   settingsDialog(C) {
     const { overlay } = props();
     const current = SECTIONS.find(s => s.id === settingsState().section) ?? SECTIONS[0];
-    return h_flex().size_full().bg(C.bg).text_color(C.ink)
+    // A window gets no Esc from Herdr: the dialog closes itself, unless a key is being recorded.
+    return h_flex().size_full().bg(C.bg).text_color(C.ink).track_focus(this.settingsFocus)
+      .on_key_down((e, cx) => { if (e.key === "escape" && !this.keysUi?.recording) { cx.stop_propagation(); closeOverlay(overlay); } })
       .child(v_flex().w(180).h_full().flex_none().p(10).gap(2).bg(C.bar)
         .child(div().px(10).pt(6).pb(10).text_size(14).font_semibold().child("Settings"))
         .children(SECTIONS.map(s => h_flex().id(`section-${s.id}`).h(32).px(10).gap(8).items_center().rounded(6)
@@ -1399,7 +1406,7 @@ export default class Board extends View {
       .child(v_flex().flex_1().min_w(0).h_full()
         .child(h_flex().h(52).flex_none().px(20).items_center().border_b(1).border_color(C.line)
           .child(div().flex_1().text_size(15).font_semibold().child(current.title))
-          .child(xButton(C, "settings-close", "Close", () => closeOverlay(overlay))))
+          .child(xButton(C, "settings-close", "Close (Esc)", () => closeOverlay(overlay), 30, 20)))
         .child(v_flex().id("settings-body").flex_1().min_h(0).overflow_y_scrollbar().p(20).gap(14)
           .child(this[current.render](C))));
   }
@@ -1527,7 +1534,9 @@ export default class Board extends View {
     const owners = (s.owner_ids ?? []).length > 0;
     const done = [!!s.token && !rejected, !!s.chat_id, s.chat_id != null && ("root_topic_id" in s || owners), owners];
     return v_flex().gap(14).child(toggle)
-      .children(steps.map((body, i) => this.tgStep(C, i + 1, body, done[i] ?? false, i === 0 || done.slice(0, i).every(Boolean))))
+      // The bridge step is always open: its status and Stop matter even while a step above is being changed.
+      .children(steps.map((body, i) => this.tgStep(C, i + 1, body, done[i] ?? false,
+        i === 0 || i === steps.length - 1 || done.slice(0, i).every(Boolean))))
       .when(!!t.busy, el => el.child(div().text_size(12).text_color(C.muted).child(t.busy)))
       .when(!!t.error, el => el.child(div().text_size(12).text_color(C.danger).child(t.error)));
   }
@@ -1601,11 +1610,19 @@ export default class Board extends View {
   tgOwnerStep(C, s) {
     const owners = s.owner_ids ?? [];
     const people = (this.tg.state?.people ?? []).filter(p => p.chat_id === s.chat_id);
-    const unknown = owners.filter(id => !people.some(p => p.id === id)).map(id => ({ id, name: `User ${id}`, username: null }));
-    const toggle = (id) => (_e, cx) => this.tgAction(cx, "Saving…", () => {
-      const next = owners.includes(id) ? owners.filter(o => o !== id) : [...owners, id];
-      return this.saveTelegram({ owner_ids: next.length ? next : undefined }).then(() => this.restartIfRunning());
-    });
+    // An owner unticked here stays in the list until the dialog closes, so a slip is one click to undo.
+    const seen = (this.tg.ownersSeen ??= new Set());
+    owners.forEach(id => seen.add(id));
+    const unknown = [...seen].filter(id => !people.some(p => p.id === id)).map(id => ({ id, name: `User ${id}`, username: null }));
+    const save = (next) => this.saveTelegram({ owner_ids: next.length ? next : undefined }).then(() => this.restartIfRunning());
+    const toggle = (id) => (_e, cx) => this.tgAction(cx, "Saving…", () => save(owners.includes(id) ? owners.filter(o => o !== id) : [...owners, id]));
+    // By id, for when the bridge has not seen the person write yet.
+    const add = (_e, cx) => {
+      const id = Number(this.ownerInput.value().trim());
+      if (!Number.isSafeInteger(id) || id <= 0) { this.tg.error = "A Telegram user id is a number, like 218155526 (@userinfobot tells yours)."; return cx.notify(); }
+      this.ownerInput.set_value("");
+      this.tgAction(cx, "Saving…", () => save(owners.includes(id) ? owners : [...owners, id]));
+    };
     const body = v_flex().gap(2)
       .child(div().pb(4).text_size(12).text_color(C.muted)
         .child("Only these people can start, answer and stop agents: they run code on this Mac. Write in the group and press Refresh "
@@ -1617,7 +1634,12 @@ export default class Board extends View {
         .child(div().text_size(13).child(p.name))
         .when(!!p.username, el => el.child(div().text_size(12).text_color(C.muted).child(`@${p.username}`)))
         // Names can be copied; the id cannot. Yours is in Telegram's settings or from @userinfobot.
-        .child(div().text_size(11).text_color(C.dim).font_family("Geist Mono").child(`id ${p.id}`))));
+        .child(div().text_size(11).text_color(C.dim).font_family("Geist Mono").child(`id ${p.id}`))))
+      .child(h_flex().pt(6).gap(8)
+        .child(div().w(200).h(30).px(10).flex().items_center().rounded(6).bg(C.card).border(1).border_color(C.input).text_size(12)
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.ownerInput)))
+        .child(settingsButton(C, "tg-owner-add", "Add", false, add))
+        .child(settingsButton(C, "tg-owner-refresh", "Refresh", false, (_e, cx) => this.discoverTelegram(cx))));
     return { title: "Who may give commands", body,
       summary: [...unknown, ...people].filter(p => owners.includes(p.id)).map(p => p.username ? `@${p.username}` : p.name).join(", ") };
   }
@@ -1668,8 +1690,10 @@ export default class Board extends View {
     }
     await this.service("start");
   }
-  tgDaemonStep(C) {
+  tgDaemonStep(C, s) {
     const t = this.tg;
+    // The bridge refuses to run without these; Start says what is missing instead.
+    const missing = [!s.token && "the token", !s.chat_id && "the group", !(s.owner_ids ?? []).length && "who may give commands"].filter(Boolean);
     const d = t.state?.daemon ?? {};
     const svc = t.service;
     const fresh = d.heartbeat_at && Date.now() - Date.parse(d.heartbeat_at) < 90000;
@@ -1690,7 +1714,9 @@ export default class Board extends View {
       .child(h_flex().gap(8).items_center().child(dot(color, 8)).child(div().text_size(13).text_color(color).child(line)))
       .when(known, el => el.child(h_flex().gap(8)
         .when(outside, el => el.child(settingsButton(C, "tg-takeover", "Run it from Corral", true, act("Moving the bridge…", () => this.takeOver()))))
-        .when(!outside && !svc?.running, el => el.child(settingsButton(C, "tg-start", "Start", true, act("Starting…", () => this.service("start")))))
+        .when(!outside && !svc?.running && !missing.length, el => el.child(settingsButton(C, "tg-start", "Start", true, act("Starting…", () => this.service("start")))))
+        .when(!outside && !svc?.running && missing.length > 0, el => el.child(div().text_size(12).text_color(C.muted)
+          .child(`To start, set ${missing.join(", ")}.`)))
         .when(!!svc?.running, el => el
           .child(settingsButton(C, "tg-stop", "Stop", false, act("Stopping…", () => this.service("stop"))))
           .child(settingsButton(C, "tg-restart", "Restart", false, act("Restarting…", () => this.service("restart")))))
@@ -1748,12 +1774,22 @@ export default class Board extends View {
     const m = e.modifiers ?? {};
     const plain = !m.platform && !m.control && !m.alt && !m.function;
     if (plain && e.key === "escape") { ui.recording = null; return cx.notify(); }
-    if (plain && e.key === "backspace") return this.saveViewKey(cx, view, null);
+    // Plain keys are typing into the "or type it" field; they also reach here.
+    if (plain) return;
     const chord = chordOf(e);
-    if (!chord) return;
-    if (plain) { ui.error = "Use at least one of ⌘, ⌃ or ⌥: plain keys are typing."; return cx.notify(); }
-    if (SYSTEM_KEYS.includes(normChord(chord))) { ui.error = `${keyCaps(chord).join("")} belongs to macOS.`; return cx.notify(); }
-    this.saveViewKey(cx, view, chord);
+    if (chord) this.applyChord(cx, view, chord);
+  }
+  // A pressed or typed chord: at least one of cmd, ctrl, alt, and not one macOS keeps.
+  applyChord(cx, view, chord) {
+    const ui = this.keysUi;
+    const n = normChord(chord);
+    const parts = n.split("-");
+    if (!parts.pop() || !parts.some(m => ["cmd", "ctrl", "alt"].includes(m))) {
+      ui.error = "Use at least one of ⌘, ⌃ or ⌥: plain keys are typing.";
+      return cx.notify();
+    }
+    if (SYSTEM_KEYS.includes(n)) { ui.error = `${keyCaps(chord).join("")} belongs to macOS.`; return cx.notify(); }
+    this.saveViewKey(cx, view, n);
   }
   saveViewKey(cx, view, chord) {
     const ui = this.keysUi;
@@ -1783,7 +1819,18 @@ export default class Board extends View {
             .when(!recording && !chord, el => el.child(div().text_size(12).text_color(C.dim).child("No key")))
             .when(!recording && !!chord, el => el.children(keyCaps(chord).map(cap => div().px(6).h(20).flex().items_center().rounded(4)
               .bg(C.bg).border(1).border_color(C.line).font_family("Geist Mono").text_size(11).child(cap)))))
-          .when(recording, el => el.child(div().text_size(11).text_color(C.dim).child("Esc cancels · ⌫ clears"))))
+          .when(recording, el => el
+            .child(div().text_size(11).text_color(C.dim).child("Esc cancels"))
+            .child(settingsButton(C, `key-clear-${view}`, "No key", false, (_e, cx) => this.saveViewKey(cx, view, null)))))
+        // Herdr runs a key it already binds (cmd-1 switches tabs) before this window sees it: such a key is typed.
+        .when(recording, el => el.child(h_flex().pl(102).gap(8).items_center()
+          .child(div().text_size(11).text_color(C.dim).child("or type it:"))
+          .child(div().w(140).h(28).px(8).flex().items_center().rounded(6).bg(C.card).border(1).border_color(C.input).text_size(12)
+            .font_family("Geist Mono").on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.keyInput)))
+          .child(settingsButton(C, `key-set-${view}`, "Set", false, (_e, cx) => {
+            const typed = this.keyInput.value().trim().toLowerCase().replace(/\s+/g, "");
+            if (typed) { this.keyInput.set_value(""); this.applyChord(cx, view, typed); }
+          }))))
         .when(!!note, el => el.child(div().pl(102).text_size(11).text_color(theme().blocked).child(note)));
     };
     return v_flex().gap(10).track_focus(this.keysFocus).on_key_down((e, cx) => this.keyPressed(e, cx))
