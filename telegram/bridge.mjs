@@ -45,6 +45,7 @@ async function check() {
       const rights = ["can_manage_topics", "can_delete_messages", "can_pin_messages"];
       const missing = member.status === "creator" ? [] : rights.filter(r => !member[r]);
       line(missing.length === 0, "bot rights", missing.length ? `missing ${missing.join(", ")}` : "manage topics, delete, pin");
+      await loadIcons(api, (text) => console.log(`     ${text}`));
     } catch (err) {
       line(false, "telegram", err.message);
     }

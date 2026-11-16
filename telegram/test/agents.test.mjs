@@ -13,6 +13,23 @@ function setup(opts) {
   return { ...w, sync, feed };
 }
 
+test("a status change with the same name edits the icon only", async () => {
+  const s = setup();
+  await s.feed({ terminals: [term("t1")] });
+  await s.feed(status("t1", "working"));
+  await tick();
+  assert.deepEqual(s.api.of("editForumTopic").at(-1).params, { chat_id: -1001, message_thread_id: 101, icon_custom_emoji_id: "i-working" });
+});
+
+test("an icon recorded before icon_ok is sent once more after a restart", async () => {
+  const s = setup();
+  s.state.agents.t1 = { topic_id: 55, title: "[t1] new session", icon: "i-idle", state: "idle" };
+  await s.feed({ terminals: [term("t1")] });
+  await tick();
+  assert.deepEqual(s.api.of("editForumTopic").map(c => c.params), [{ chat_id: -1001, message_thread_id: 55, icon_custom_emoji_id: "i-idle" }]);
+  assert.equal(s.state.agents.t1.icon_ok, true);
+});
+
 test("done waits for a reply that is new, not the previous turn's", async () => {
   const replies = ["Old answer.", "Old answer.", "New answer."];
   const s = setup({ sync: { lastReply: async () => replies.shift() ?? "New answer." } });
@@ -95,7 +112,7 @@ test("an agent that ends gets 🏁, a Delete topic button, a closed topic and an
   const s = setup();
   await s.feed({ terminals: [term("t1")] });
   await s.feed({ method: "event", params: { type: "finished", terminal: "t1", data: {} } });
-  assert.deepEqual(s.api.of("editForumTopic").at(-1).params, { chat_id: -1001, message_thread_id: 101, name: "[t1] new session", icon_custom_emoji_id: "i-ended" });
+  assert.deepEqual(s.api.of("editForumTopic").at(-1).params, { chat_id: -1001, message_thread_id: 101, icon_custom_emoji_id: "i-ended" });
   const post = s.api.of("sendMessage").at(-1).params;
   assert.equal(post.text, "🏁 Agent ended");
   assert.equal(s.buttons.get(post.reply_markup.inline_keyboard[0][0].callback_data).type, "deltopic");

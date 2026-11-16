@@ -27,7 +27,12 @@ export function pickIcons(stickers) {
 
 export async function loadIcons(api, log = () => {}) {
   try {
-    return pickIcons(await api.call("getForumTopicIconStickers", {}));
+    const stickers = await api.call("getForumTopicIconStickers", {});
+    const icons = pickIcons(stickers);
+    const byId = new Map((stickers ?? []).map(s => [s.custom_emoji_id, s.emoji]));
+    log(`topic icons: ${Object.entries(icons).map(([k, id]) => `${k} ${id ? byId.get(id) : "none"}`).join(", ")}`);
+    log(`icon set: ${(stickers ?? []).map(s => s.emoji).join(" ")}`);
+    return icons;
   } catch (err) {
     log(`topic icons: ${err.message}`);
     return pickIcons([]);
@@ -71,7 +76,7 @@ export function makeSync({
   async function create(agent, name, iconState) {
     const icon = icons[iconState];
     const topic = await api.call("createForumTopic", { chat_id, name, ...(icon ? { icon_custom_emoji_id: icon } : {}) });
-    state.agents[agent.address] = { topic_id: topic.message_thread_id, title: topic.name, icon: icon ?? null, state: iconState };
+    state.agents[agent.address] = { topic_id: topic.message_thread_id, title: topic.name, icon: icon ?? null, icon_ok: !!icon, state: iconState };
     save();
     await send(topic.message_thread_id, `Started in <code>${escapeHtml(agent.cwd)}</code>`);
     return topic.message_thread_id;
@@ -128,17 +133,24 @@ export function makeSync({
     const name = await nameOf(agent);
     const icon = icons[agent.state] ?? null;
     known.state = agent.state;
-    if (known.title === name && known.icon === icon) return;
+    // Only what changed goes: Telegram answers "not modified" to an edit whose
+    // name is the same, and then keeps the old icon. An icon counts as set only
+    // after Telegram took it (icon_ok); older state is checked once.
+    const newName = known.title !== name;
+    const newIcon = !!icon && (known.icon !== icon || !known.icon_ok);
+    if (!newName && !newIcon) return;
     try {
       await inTopic(agent, (id) => api.call("editForumTopic", {
-        chat_id, message_thread_id: id, name, ...(icon ? { icon_custom_emoji_id: icon } : {}),
+        chat_id, message_thread_id: id, ...(newName ? { name } : {}), ...(newIcon ? { icon_custom_emoji_id: icon } : {}),
       }));
     } catch (err) {
       if (!NOT_MODIFIED.test(err.message)) throw err;
     }
     known.title = name;
     known.icon = icon;
+    known.icon_ok = !!icon;
     save();
+    log(`${address} ${agent.state}: ${name}`);
   }
 
   // Claude Code can report done before the reply reaches the transcript. A
@@ -240,7 +252,7 @@ export function makeSync({
     // The 🏁 icon marks it; without one in Telegram's set, the name carries it.
     const icon = icons.ended;
     const title = icon ? known.title : `🏁 ${known.title}`.slice(0, 128);
-    await api.call("editForumTopic", { chat_id, message_thread_id: id, name: title, ...(icon ? { icon_custom_emoji_id: icon } : {}) })
+    await api.call("editForumTopic", { chat_id, message_thread_id: id, ...(icon ? { icon_custom_emoji_id: icon } : { name: title }) })
       .catch(err => log(`rename ${id}: ${err.message}`));
     await send(id, "🏁 Agent ended", {
       reply_markup: { inline_keyboard: [[{ text: "Delete topic", callback_data: buttons.register({ type: "deltopic", topic_id: id }) }]] },
