@@ -30,6 +30,25 @@ test("an icon recorded before icon_ok is sent once more after a restart", async 
   assert.equal(s.state.agents.t1.icon_ok, true);
 });
 
+test("an icon Telegram calls not modified is bounced so clients see it", async () => {
+  const s = setup();
+  s.state.agents.t1 = { topic_id: 55, title: "[t1] new session", icon: "i-idle", state: "idle" };
+  const call = s.api.call;
+  let first = true;
+  s.api.call = async (m, p) => {
+    if (m === "editForumTopic" && first) { first = false; throw new Error("editForumTopic: 400 Bad Request: TOPIC_NOT_MODIFIED"); }
+    return call(m, p);
+  };
+  await s.feed({ terminals: [term("t1")] });
+  await tick();
+  const edits = s.api.of("editForumTopic").map(c => c.params.icon_custom_emoji_id);
+  assert.equal(edits.length, 2);
+  assert.notEqual(edits[0], "i-idle");
+  assert.equal(edits[1], "i-idle");
+  assert.equal(s.state.agents.t1.icon_ok, true);
+  assert.deepEqual(s.logs.filter(l => /rename/.test(l) && /NOT_MODIFIED/.test(l)), []);
+});
+
 test("done waits for a reply that is new, not the previous turn's", async () => {
   const replies = ["Old answer.", "Old answer.", "New answer."];
   const s = setup({ sync: { lastReply: async () => replies.shift() ?? "New answer." } });

@@ -44,7 +44,7 @@ export const topicName = (project, title) => `[${project}] ${title || "new sessi
 // Telegram's ways of saying the topic is gone (deleted by hand in the group).
 const TOPIC_GONE = /thread not found|TOPIC_ID_INVALID|TOPIC_DELETED/i;
 const TOPIC_CLOSED = /TOPIC_CLOSED/i;
-const NOT_MODIFIED = /not modified/i;
+const NOT_MODIFIED = /not.modified/i; // "message is not modified", "TOPIC_NOT_MODIFIED"
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -126,6 +126,13 @@ export function makeSync({
     }, Math.max(0, r.at + throttleMs - now()));
   }
 
+  async function bounceIcon(topicId, icon) {
+    const other = Object.values(icons).find(i => i && i !== icon);
+    if (!other) return;
+    await api.call("editForumTopic", { chat_id, message_thread_id: topicId, icon_custom_emoji_id: other });
+    await api.call("editForumTopic", { chat_id, message_thread_id: topicId, icon_custom_emoji_id: icon });
+  }
+
   async function rename(address) {
     const agent = herd.get(address);
     const known = state.agents[address];
@@ -145,6 +152,9 @@ export function makeSync({
       }));
     } catch (err) {
       if (!NOT_MODIFIED.test(err.message)) throw err;
+      // Telegram can hold an icon its clients never got (an edit it answered
+      // "not modified"). Another icon and back makes a real change they see.
+      if (newIcon && !known.icon_ok) await bounceIcon(known.topic_id, icon);
     }
     known.title = name;
     known.icon = icon;
