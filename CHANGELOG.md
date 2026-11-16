@@ -2,6 +2,10 @@
 
 Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHub release notes.
 
+## 0.1.4
+
+- Updates: a toast says when a new version is out, whichever check found it (at start, every 6 hours, Check now), once per version.
+
 ## 0.1.3
 
 - Updates: a yellow dot on the gear and on the section when a new version is out.
