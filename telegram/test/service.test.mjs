@@ -50,8 +50,16 @@ test("start writes the plist, enables and bootstraps; status reads launchctl pri
   assert.deepEqual(out, { installed: true, loaded: true, running: true, pid: 4242 });
 });
 
+test("start reloads a loaded agent whose plist changed", async () => {
+  const { service, calls } = world({ loaded: true });
+  await service("start");
+  assert.ok(calls.indexOf(`launchctl bootout gui/501/${LABEL}`) < calls.indexOf(`launchctl bootstrap gui/501 ${PLIST}`));
+});
+
 test("start on a loaded agent kickstarts it; restart uses -k", async () => {
   const { service, calls } = world({ loaded: true });
+  await service("start");
+  calls.length = 0;
   await service("start");
   await service("restart");
   assert.ok(calls.includes(`launchctl kickstart gui/501/${LABEL}`));

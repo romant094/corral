@@ -732,7 +732,10 @@ export default class Board extends View {
       this.groupSearch.on("change", (_e, cx) => cx.notify());
       // The bridge writes its state file as it goes; the section follows it.
       cx.spawn(async (cx) => { await this.loadTelegram(); cx.notify(); if (this.tg.settings?.token) this.checkTelegram(cx); });
-      cx.timer.every(2000, (cx) => cx.spawn(async (cx) => { if (await this.loadTelegram()) cx.notify(); })); cx.spawn(async (cx) => { await this.loadService(); cx.notify(); }); cx.timer.every(5000, (cx) => cx.spawn(async (cx) => { if (await this.loadService()) cx.notify(); }));
+      cx.timer.every(2000, (cx) => cx.spawn(async (cx) => { if (await this.loadTelegram()) cx.notify(); }));
+      // launchd's view every 5 s, but not while a Start or Stop is changing it.
+      cx.spawn(async (cx) => { await this.loadService(); cx.notify(); });
+      cx.timer.every(5000, (cx) => cx.spawn(async (cx) => { if (!this.tg.busy && await this.loadService()) cx.notify(); }));
     }
     if (!p?.role || p.role === "header") this.selfFocus = cx.focus_handle();
     if (p?.role === "logfilter") {
@@ -1518,7 +1521,11 @@ export default class Board extends View {
     ];
     // A step opens when the one before it is done.
     // A saved token counts until a check says Telegram refused it.
-    const done = [!!s.token && !(this.tg.check && !bot),!!s.chat_id, s.chat_id != null && "root_topic_id" in s, (s.owner_ids ?? []).length > 0];
+    // Only Telegram refusing the token undoes step 1, not an offline check. A file written by hand
+    // without root_topic_id means General, as the bridge reads it.
+    const rejected = (this.tg.check?.errors ?? []).some(e => e.includes("rejected"));
+    const owners = (s.owner_ids ?? []).length > 0;
+    const done = [!!s.token && !rejected, !!s.chat_id, s.chat_id != null && ("root_topic_id" in s || owners), owners];
     return v_flex().gap(14).child(toggle)
       .children(steps.map((body, i) => this.tgStep(C, i + 1, body, done[i] ?? false, i === 0 || done.slice(0, i).every(Boolean))))
       .when(!!t.busy, el => el.child(div().text_size(12).text_color(C.muted).child(t.busy)))
@@ -1636,8 +1643,9 @@ export default class Board extends View {
     await this.loadTelegram();
   }
   // A changed token, group, topic or owner list reaches a running bridge only through a restart.
+  // A bridge that stopped itself on unfinished settings is still loaded in launchd: it starts again once they are done.
   async restartIfRunning() {
-    if (this.tg.service?.running) await this.service("restart");
+    if (this.tg.service?.loaded) await this.service("restart");
   }
   // Off stops the bridge and takes it out of launchd; the settings stay, so on starts it again.
   async setTelegramEnabled(on) {
@@ -1707,7 +1715,13 @@ export default class Board extends View {
   async writeViewKeys(change) {
     const file = `${appHome()}/keys.json`;
     const text = await readTextFile(file);
-    const all = parseJson(text) ?? {};
+    const all = parseJson(text);
+    // Writing our section into nothing would drop every other key the person has.
+    if (!all || typeof all !== "object") throw new Error(text == null
+      ? "Herdr has no keys.json yet: restart Herdr once, then try again."
+      : "keys.json is not valid JSON right now: fix it by hand (Herdr shows why in keys.error), then try again.");
+    const errorFile = `${appHome()}/keys.error`;
+    const errorBefore = await readTextFile(errorFile).catch(() => null);
     const section = layoutSection();
     const ours = { ...(all[section] ?? {}) };
     for (const [view, chord] of Object.entries(change)) {
@@ -1716,10 +1730,15 @@ export default class Board extends View {
       if (chord) ours[chord] = action;
     }
     all[section] = ours;
-    await writeTextFile(file, JSON.stringify(all, null, 2) + "\n", text);
+    const next = JSON.stringify(all, null, 2) + "\n";
+    await writeTextFile(file, next, text);
     await exec("sleep", ["0.5"]);
-    const error = await readTextFile(`${appHome()}/keys.error`).catch(() => null);
-    if (error?.trim()) throw new Error(`Herdr kept the old keys: ${error.trim()}`);
+    // Only a new complaint counts: an old keys.error may still lie there.
+    const error = await readTextFile(errorFile).catch(() => null);
+    if (error?.trim() && error !== errorBefore) {
+      await writeTextFile(file, text, next).catch(() => {});
+      throw new Error(`Herdr refused the keys, the old ones are back: ${error.trim()}`);
+    }
   }
   keyPressed(e, cx) {
     const ui = this.keysUi;

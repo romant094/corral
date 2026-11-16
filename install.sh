@@ -46,14 +46,12 @@ fi
 # A folder-level symlink from an earlier setup would hide the icons; replace it with a real folder.
 [ -L "$MOD_DIR" ] && rm "$MOD_DIR"
 mkdir -p "$HERDR_HOME/layouts" "$MOD_DIR/icons" "$HERDR_HOME/themes"
-rm -f "$HERDR_HOME/layouts/corral.json" "$MOD_DIR/main.js"
+rm -f "$HERDR_HOME/layouts/corral.json"
 if $link; then
   ln -s "$SRC/layouts/corral.json" "$HERDR_HOME/layouts/corral.json"
-  ln -s "$SRC/mods/corral/main.js" "$MOD_DIR/main.js"
 else
-  # A renamed mod gets its own name in its code and in the layout that shows it.
-  sed "s/^const MOD = \"corral\";/const MOD = \"$name\";/" "$SRC/mods/corral/main.js" > "$MOD_DIR/main.js"
-  sed -e "s/\"mod\": \"corral\"/\"mod\": \"$name\"/" -e "s#mods/corral/#mods/$name/#" "$SRC/layouts/corral.json" > "$HERDR_HOME/layouts/corral.json"
+  # A renamed mod gets its own name in the layout that shows it (and in main.js, below).
+  sed -e "s/\"mod\": \"corral\"/\"mod\": \"$name\"/g" -e "s#mods/corral/#mods/$name/#g" "$SRC/layouts/corral.json" > "$HERDR_HOME/layouts/corral.json"
 fi
 cp "$SRC/mods/corral/mod.json" "$SRC/mods/corral/preview.svg" "$MOD_DIR/"
 cp "$SRC"/mods/corral/icons/*.svg "$MOD_DIR/icons/"
@@ -90,6 +88,10 @@ for section, keys in ours.items():
         # An action already on another key was rebound in Corral's settings: it stays there.
         if action in have.values() and have.get(key) != action:
             continue
+        # Once the person's section has Corral's keys, a view without one was cleared on purpose.
+        view = action.split(".", 1)[1] if "." in action else ""
+        if view in ("board", "files", "log", "changes") and any(v.startswith(name + ".") for v in have.values()):
+            continue
         if key not in have:
             have[key] = action
             added.append(key)
@@ -106,9 +108,17 @@ else
   echo "No keys.json in $HERDR_HOME: add the keys from mods/corral/keys.json to it."
 fi
 
-if command -v herdr-app >/dev/null 2>&1; then
-  herdr-app check "$MOD_DIR"
-  echo "Switch to it: herdr-app do layout.switch --name corral"
+if $with_statusline; then
+  mkdir -p "$STATUSLINE_DIR"
+  cp "$SRC/statusline/corral-statusline.py" "$STATUSLINE_DIR/corral-statusline.py"
+  chmod +x "$STATUSLINE_DIR/corral-statusline.py"
+  if $had_statusline; then
+    echo "Updated $STATUSLINE_DIR/corral-statusline.py."
+  else
+    echo "Installed $STATUSLINE_DIR/corral-statusline.py."
+    echo "Point Claude Code at it in ~/.claude/settings.json:"
+    echo "  \"statusLine\": { \"type\": \"command\", \"command\": \"python3 $STATUSLINE_DIR/corral-statusline.py\" }"
+  fi
 fi
 
 # A bridge running under launchd picks up the new code.
@@ -116,13 +126,17 @@ if [ "$(uname)" = Darwin ] && launchctl print "gui/$(id -u)/dev.corral.telegram"
   launchctl kickstart -k "gui/$(id -u)/dev.corral.telegram" && echo "Restarted the Telegram bridge."
 fi
 
-if $with_statusline; then
-  mkdir -p "$STATUSLINE_DIR"
-  cp "$SRC/statusline/corral-statusline.py" "$STATUSLINE_DIR/corral-statusline.py"
-  chmod +x "$STATUSLINE_DIR/corral-statusline.py"
-  $had_statusline && { echo "Updated $STATUSLINE_DIR/corral-statusline.py."; exit 0; }
-  echo
-  echo "Installed $STATUSLINE_DIR/corral-statusline.py."
-  echo "Point Claude Code at it in ~/.claude/settings.json:"
-  echo "  \"statusLine\": { \"type\": \"command\", \"command\": \"python3 $STATUSLINE_DIR/corral-statusline.py\" }"
+# main.js goes in last and whole (temp file, then rename): Herdr reloads the mod as soon as it changes,
+# and Corral's own update waits in that mod for everything above to be done.
+if $link; then
+  rm -f "$MOD_DIR/main.js"
+  ln -s "$SRC/mods/corral/main.js" "$MOD_DIR/main.js"
+else
+  sed "s/^const MOD = \"corral\";/const MOD = \"$name\";/" "$SRC/mods/corral/main.js" > "$MOD_DIR/.main.js.tmp"
+  mv "$MOD_DIR/.main.js.tmp" "$MOD_DIR/main.js"
+fi
+
+if command -v herdr-app >/dev/null 2>&1; then
+  herdr-app check "$MOD_DIR"
+  echo "Switch to it: herdr-app do layout.switch --name corral"
 fi

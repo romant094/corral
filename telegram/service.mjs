@@ -55,15 +55,20 @@ export function makeService({ run, uid, home, node, bridge, log, env, platform =
   async function loaded() {
     return (await launchctl("print", target)).code === 0;
   }
+  // Writes the plist; true when its text changed.
   async function install() {
+    const text = plistText({ node, bridge, log, env });
+    const before = await fs.readFile(plist, "utf8").catch(() => null);
     await fs.mkdir(dirname(plist), { recursive: true });
-    await fs.writeFile(plist, plistText({ node, bridge, log, env }));
-    return { plist };
+    await fs.writeFile(plist, text);
+    return before !== text;
   }
-  // A fresh plist each start: a moved Node or an updated bridge path takes effect.
+  // A fresh plist each start. launchd keeps the definition it loaded, so a changed one
+  // (Node moved, the bridge moved) is loaded again; an unchanged one is only kicked.
   async function start() {
-    await install();
+    const changed = await install();
     await launchctl("enable", target);
+    if (changed && await loaded()) await launchctl("bootout", target);
     if (await loaded()) {
       const r = await launchctl("kickstart", target);
       if (r.code !== 0) fail("start", r);
@@ -98,7 +103,7 @@ export function makeService({ run, uid, home, node, bridge, log, env, platform =
     return { installed: await installed(), loaded: r.code === 0, running: r.code === 0 && /^\s*state = running/m.test(r.stdout), pid };
   }
 
-  const verbs = { install, start, stop, restart, uninstall, status };
+  const verbs = { install: async () => { await install(); return status(); }, start, stop, restart, uninstall, status };
   return async (verb) => {
     if (platform !== "darwin") throw new Error("the service needs macOS (launchd); run `node bridge.mjs` another way here");
     if (!verbs[verb]) throw new Error(`unknown service verb: ${verb} (install, start, stop, restart, uninstall, status)`);
