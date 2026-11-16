@@ -2,6 +2,7 @@
 // its status as the topic icon, the last reply on done, the screen and option
 // buttons when it waits, and the close/delete path when it ends.
 import { escapeHtml, splitText } from "./telegram.mjs";
+import { richParts } from "./format.mjs";
 import { tailScreen, parseChoices } from "./dialog.mjs";
 
 export const EMOJI = { starting: "🎬", working: "⚡", blocked: "❓", done: "✅", idle: "☕", ended: "🏁" };
@@ -179,7 +180,7 @@ export function makeSync({
   }
 
   // Claude writes Markdown, and a rich message (Bot API 10.x) renders it: headings, bold, code, lists, tables.
-  // Up to 32768 characters each. If Telegram refuses one, the reply goes as plain text, as before.
+  // format.mjs folds a long reply into <details> sections. If Telegram refuses one, it goes as plain text.
   const sendRich = (topicId, markdown) => api.call("sendRichMessage", {
     chat_id, message_thread_id: topicId, rich_message: { markdown, skip_entity_detection: false },
   });
@@ -188,7 +189,7 @@ export function makeSync({
     const reply = await freshReply(agent);
     if (reply) {
       await inTopic(agent, async (id) => {
-        for (const part of splitText(reply, 30000)) {
+        for (const part of richParts(reply)) {
           try { await sendRich(id, part); } catch (err) {
             // A gone or closed topic is inTopic's to handle; anything else about the rich message falls back.
             if (TOPIC_GONE.test(err.message) || TOPIC_CLOSED.test(err.message)) throw err;

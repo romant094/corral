@@ -1,0 +1,101 @@
+// An agent's reply, as Claude writes it (Markdown), made into rich messages (Bot API rich Markdown).
+// Most of Claude's Markdown is rich Markdown already: headings, bold, italics, code, lists, tables, quotes.
+// What changes: "<" outside code is escaped (rich Markdown takes some HTML tags), and a long reply folds:
+// the opening stays in view, each "##" section becomes a <details> block named after it, and a closing question
+// stays in view under them, so the person sees what the agent waits for.
+
+// A reply shorter than this, or with fewer lines, is sent as it is.
+export const FOLD_CHARS = 1200;
+export const FOLD_LINES = 24;
+// Under Telegram's limit of 32768 characters, with room for the folding tags.
+export const PART_CHARS = 30000;
+
+// Code fences and inline code keep their text; elsewhere "<" would open an HTML tag.
+export function escapeText(md) {
+  const out = [];
+  let fence = null;
+  for (const line of md.split("\n")) {
+    const f = /^\s*(```+|~~~+)/.exec(line);
+    if (fence) {
+      out.push(line);
+      if (f && f[1][0] === fence[0] && f[1].length >= fence.length) fence = null;
+      continue;
+    }
+    if (f) { fence = f[1]; out.push(line); continue; }
+    // Split on inline code spans; escape only outside them.
+    out.push(line.split(/(`+[^`]*`+)/).map((part, i) => i % 2 ? part : part.replace(/</g, "\\<")).join(""));
+  }
+  return out.join("\n");
+}
+
+// Blocks of text separated by blank lines, with a code fence always kept whole.
+function paragraphs(md) {
+  const blocks = [];
+  let cur = [], fence = false;
+  for (const line of md.split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+    if (!fence && line.trim() === "" && cur.length) { blocks.push(cur.join("\n")); cur = []; continue; }
+    if (fence || line.trim() !== "") cur.push(line);
+  }
+  if (cur.length) blocks.push(cur.join("\n"));
+  return blocks;
+}
+
+const isHeading = (block) => /^#{1,6}\s+\S/.test(block);
+const headingText = (block) => block.split("\n")[0].replace(/^#{1,6}\s+/, "").replace(/[*_`]/g, "").trim();
+// A last paragraph that asks something: a line ending in "?", not inside code or a table.
+const isQuestion = (block) => !/^\s*(```|\|)/.test(block) && /\?\s*$/.test(block.split("\n").pop());
+
+const details = (summary, body) => `<details><summary>${summary}</summary>\n\n${body}\n</details>`;
+
+// The reply as rich Markdown, folded when long.
+export function foldReply(md) {
+  const text = escapeText(md.trim());
+  if (text.length <= FOLD_CHARS && text.split("\n").length <= FOLD_LINES) return text;
+  const blocks = paragraphs(text);
+  const tail = blocks.length > 1 && isQuestion(blocks.at(-1)) ? blocks.pop() : null;
+  // The opening: everything before the first heading, or the first paragraph when the reply starts with one.
+  let i = blocks.findIndex(isHeading);
+  if (i === -1) i = Math.min(1, blocks.length);
+  if (i === 0) i = 1;
+  const head = blocks.slice(0, i);
+  const rest = blocks.slice(i);
+  const sections = [];
+  for (const b of rest) {
+    if (isHeading(b)) sections.push({ title: headingText(b), body: [b.split("\n").slice(1).join("\n")].filter(Boolean) });
+    else if (sections.length) sections.at(-1).body.push(b);
+    else sections.push({ title: "Details", body: [b] });
+  }
+  const out = [...head];
+  for (const s of sections) {
+    if (s.body.length) out.push(details(s.title, s.body.join("\n\n")));
+    else out.push(`## ${s.title}`);
+  }
+  if (tail) out.push(tail);
+  return out.join("\n\n");
+}
+
+// The parts to send: a reply over Telegram's limit is cut at paragraph ends, each part folded on its own.
+export function richParts(md, limit = PART_CHARS) {
+  const parts = [];
+  let cur = "";
+  for (const b of paragraphs(md.trim())) {
+    if (cur && cur.length + b.length + 2 > limit) { parts.push(cur); cur = ""; }
+    // One paragraph over the limit (a huge code block or log) is cut by lines; a cut code block is closed and
+    // opened again, so the next part is still code.
+    if (b.length > limit) {
+      const open = /^\s*(```+|~~~+)/.exec(b)?.[0].trim() ?? null;
+      for (const line of b.split("\n")) {
+        if (cur && cur.length + line.length + 1 > limit - 8) {
+          parts.push(open ? `${cur}\n${open.replace(/[^`~]/g, "")}` : cur);
+          cur = open ? open : "";
+        }
+        cur = cur ? `${cur}\n${line}` : line;
+      }
+      continue;
+    }
+    cur = cur ? `${cur}\n\n${b}` : b;
+  }
+  if (cur) parts.push(cur);
+  return parts.map(foldReply);
+}
