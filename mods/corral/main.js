@@ -1571,12 +1571,15 @@ export default class Board extends View {
   // bridge checks (a login can change hands); the login is kept beside it to show.
   tgOwnerStep(C, s) {
     const ids = s.owner_ids ?? [];
-    const logins = Object.fromEntries((s.owners ?? []).map(o => [o.id, o.login]));
+    const known = Object.fromEntries((s.owners ?? []).map(o => [o.id, o]));
+    const people = this.tg.state?.people ?? [];
     const save = (next) => this.saveTelegram({
       owner_ids: next.length ? next.map(o => o.id) : undefined,
       owners: next.length ? next : undefined,
     }).then(() => this.restartIfRunning());
-    const list = ids.map(id => ({ id, login: logins[id] ?? null }));
+    // The name as Telegram shows it, from the settings or from what the bridge saw.
+    const list = ids.map(id => ({ id, login: known[id]?.login ?? null,
+      name: known[id]?.name ?? people.find(p => p.id === id)?.name ?? null }));
     const add = (_e, cx) => {
       const login = this.ownerInput.value().trim().replace(/^@/, "").toLowerCase();
       if (!/^[a-z0-9_]{4,32}$/.test(login)) { this.tg.error = "Type a Telegram login, like romant094."; return cx.notify(); }
@@ -1590,12 +1593,13 @@ export default class Board extends View {
         const person = find();
         if (!person) throw new Error(`${login} has not written in the group yet: send any message there from that account, then Add again.`);
         this.ownerInput.set_value("");
-        await save([...list.filter(o => o.id !== person.id), { id: person.id, login: person.username }]);
+        await save([...list.filter(o => o.id !== person.id), { id: person.id, login: person.username, name: person.name }]);
       });
     };
     const body = v_flex().gap(4)
       .children(list.map(o => h_flex().id(`tg-owner-${o.id}`).h(26).gap(10).items_center()
-        .child(div().text_size(13).child(o.login ? `@${o.login}` : "—"))
+        .when(!!o.name, el => el.child(div().text_size(13).child(o.name)))
+        .when(!!o.login, el => el.child(div().text_size(12).text_color(C.muted).child(`@${o.login}`)))
         .child(div().text_size(11).text_color(C.dim).font_family("Geist Mono").child(`id ${o.id}`))
         .child(xButton(C, `tg-owner-rm-${o.id}`, "Remove", (_e, cx) => this.tgAction(cx, "Saving…", () => save(list.filter(x => x.id !== o.id)))))))
       .child(h_flex().gap(8).items_center()
@@ -1603,7 +1607,7 @@ export default class Board extends View {
         .child(field(C, this.ownerInput).w(180))
         .child(smallButton(C, "tg-owner-add", "Add", add)))
       .child(div().text_size(11).text_color(C.dim).child("They control the agents on this Mac. The account must have written in the group once."));
-    return { title: "Owners", body, summary: list.map(o => o.login ? `@${o.login}` : `id ${o.id}`).join(", ") };
+    return { title: "Owners", body, summary: list.map(o => o.name ?? (o.login ? `@${o.login}` : `id ${o.id}`)).join(", ") };
   }
   pickRow(C, id, label, selected, disabledWhy, onClick) {
     return h_flex().id(id).flex_none().h(26).px(6).gap(8).items_center().rounded(5)

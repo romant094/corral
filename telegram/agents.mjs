@@ -31,7 +31,6 @@ export async function loadIcons(api, log = () => {}) {
     const icons = pickIcons(stickers);
     const byId = new Map((stickers ?? []).map(s => [s.custom_emoji_id, s.emoji]));
     log(`topic icons: ${Object.entries(icons).map(([k, id]) => `${k} ${id ? byId.get(id) : "none"}`).join(", ")}`);
-    log(`icon set: ${(stickers ?? []).map(s => s.emoji).join(" ")}`);
     return icons;
   } catch (err) {
     log(`topic icons: ${err.message}`);
