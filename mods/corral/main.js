@@ -1402,9 +1402,10 @@ export default class Board extends View {
   // telegram.json and telegram-state.json as text and parsed; true when either changed.
   async loadTelegram() {
     const f = tgFiles();
-    const [text, stateText] = await Promise.all([readTextFile(f.settings).catch(() => null), readTextFile(f.state).catch(() => null)]);
-    const changed = !this.tg.loaded || text !== this.tg.text || stateText !== this.tg.stateText;
-    Object.assign(this.tg, { loaded: true, text, stateText, settings: parseJson(text), state: parseJson(stateText) });
+    const [text, stateText, bridge] = await Promise.all([readTextFile(f.settings).catch(() => null),
+      readTextFile(f.state).catch(() => null), readTextFile(f.bridge).catch(() => null)]);
+    const changed = !this.tg.loaded || text !== this.tg.text || stateText !== this.tg.stateText || !!bridge !== this.tg.bridge;
+    Object.assign(this.tg, { loaded: true, text, stateText, settings: parseJson(text), state: parseJson(stateText), bridge: !!bridge });
     return changed;
   }
   // Writes telegram.json with `change` on top of what is there, readable by its owner only.
@@ -1493,6 +1494,16 @@ export default class Board extends View {
         .child(div().text_size(12).text_color(C.muted)
           .child("A topic per agent in a Telegram group: statuses, replies and questions, and you answer from your phone.")));
     if (!on) return v_flex().gap(14).child(toggle);
+    if (!t.bridge) {
+      const b = this.bridgeUi ?? {};
+      return v_flex().gap(14).child(toggle)
+        .child(div().text_size(12).text_color(C.muted)
+          .child(`The bridge is not installed yet. Corral ${VERSION} brings it from its GitHub release (needs Node 20 or newer).`))
+        .child(h_flex().gap(10).items_center()
+          .child(settingsButton(C, "tg-install-bridge", "Install the bridge", true, (_e, cx) => this.installBridge(cx)))
+          .when(!!b.busy, el => el.child(div().text_size(12).text_color(C.muted).child(b.busy))))
+        .when(!!b.error, el => el.child(div().text_size(12).text_color(C.danger).child(b.error)));
+    }
     const bot = t.check?.bot;
     const chats = t.state?.chats ?? [];
     const steps = [
@@ -1809,9 +1820,17 @@ export default class Board extends View {
   // Downloads the release, checks it is Corral at that version, and runs its install.sh into this mod's own
   // folder. The install replaces main.js, so Herdr reloads the mod in the middle: the new copy reports success.
   installUpdate(cx) {
-    const ui = this.updUi;
     const u = updatesState();
-    if (ui.busy || !u.tarball) return;
+    if (u.tarball) this.installRelease(cx, this.updUi, u.latest, u.tarball);
+  }
+  // A gallery install copies the layout and the mod only: the bridge comes from this version's release.
+  installBridge(cx) {
+    this.installRelease(cx, (this.bridgeUi ??= { busy: null, error: null }), VERSION,
+      `https://api.github.com/repos/${REPO}/tarball/v${VERSION}`);
+  }
+  installRelease(cx, ui, version, tarball) {
+    if (ui.busy) return;
+    const u = { latest: version, tarball };
     Object.assign(ui, { busy: `Downloading ${u.latest}…`, error: null });
     cx.notify();
     cx.spawn(async (cx) => {
@@ -1832,11 +1851,11 @@ export default class Board extends View {
         if (!main.includes(`const VERSION = "${u.latest}";`)) throw new Error(`the release is not Corral ${u.latest}`);
         ui.busy = `Installing ${u.latest}…`;
         cx.notify();
-        setUpdates({ installing: u.latest });
+        if (u.latest !== VERSION) setUpdates({ installing: u.latest });
         await run("/usr/bin/env", [`HERDR_APP_HOME=${appHome()}`, "/bin/bash", `${src}/install.sh`, "--name", MOD], "install", 300000);
       } catch (err) {
-        setUpdates({ installing: null });
-        ui.error = `Update failed, ${VERSION} stays: ${err?.message ?? err}`;
+        if (u.latest !== VERSION) setUpdates({ installing: null });
+        ui.error = u.latest !== VERSION ? `Update failed, ${VERSION} stays: ${err?.message ?? err}` : `Install failed: ${err?.message ?? err}`;
       }
       if (tmp) await exec("rm", ["-rf", tmp]).catch(() => {});
       ui.busy = null;

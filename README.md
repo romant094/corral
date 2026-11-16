@@ -23,7 +23,7 @@ cd corral
 herdr-app do layout.switch --name corral
 ```
 
-`install.sh` copies `layouts/corral.json`, `mods/corral/` and `themes/` into `~/.config/herdr-app` (or `$HERDR_APP_HOME`), then runs `herdr-app check` on the mod. With `--statusline` it also copies the Claude Code statusline hook into `~/.claude/scripts/`. It also adds Corral's keys (`mods/corral/keys.json`) to your `~/.config/herdr-app/keys.json`; a key you already use keeps its action. Herdr treats an edited `keys.json` as yours and stops adding its new default keys to it. To go back to your own layout, press `ctrl-shift-l` or run `herdr-app do layout.switch --name main`.
+`install.sh` copies `layouts/corral.json`, `mods/corral/`, `themes/` and the Telegram bridge (`telegram/`) into `~/.config/herdr-app` (or `$HERDR_APP_HOME`), then runs `herdr-app check` on the mod. With `--statusline` it also copies the Claude Code statusline hook into `~/.claude/scripts/`; a hook installed before is always updated. `--name <folder>` installs the mod into another folder, for a gallery install that had to rename it. It also adds Corral's keys (`mods/corral/keys.json`) to your `~/.config/herdr-app/keys.json`; a key you already use keeps its action. Herdr treats an edited `keys.json` as yours and stops adding its new default keys to it. To go back to your own layout, press `ctrl-shift-l` or run `herdr-app do layout.switch --name main`.
 
 ### Connect the session data
 
@@ -44,9 +44,18 @@ Herdr mods are trusted JavaScript. Corral:
 - runs `git` in the folders of your agents (read commands every few seconds; the branch actions you click also write: checkout, push, delete and so on);
 - runs `hc` (herdr-core) to find a terminal's foreground pid and to send `/compact` when you ask for it;
 - runs `osascript` on macOS for the multi-folder picker, and `open` for "Open in the default app";
-- reads `~/.cache/corral/sessions/` and the files of the folder you browse in Files.
+- reads `~/.cache/corral/sessions/` and the files of the folder you browse in Files;
+- from the settings: runs `node` with the Telegram bridge, `launchctl` for the bridge's service, writes `telegram.json` and the `layout:corral` section of `keys.json`.
 
-It does not use the network itself. `git fetch`, `pull` and `push` reach your git remotes when you click them.
+Network: Corral asks `api.github.com` for its latest release at start and every 6 hours (turn it off in Settings → Updates), and downloads a release from GitHub when you press Update. The Telegram bridge talks to `api.telegram.org` once you turn it on. `git fetch`, `pull` and `push` reach your git remotes when you click them.
+
+## Settings
+
+The gear right of the plan limits (or `herdr-app do corral.settings`) opens the settings:
+
+- **Telegram:** "Work through Telegram" and a wizard: the bot token, the group, the root topic, who may give commands, and the bridge itself: Start, Stop, Restart, its log.
+- **Keys:** the keys for Board, Files, Log and Changes (`cmd-alt-1…4` by default). Click a key and press the new one. A key Herdr uses elsewhere, like `cmd-1` for tabs, is taken over while the Corral layout shows; other layouts keep it. Only the `layout:corral` section of `keys.json` changes.
+- **Updates:** your version, the latest release and its notes, Update, Check now, and "Check automatically". When a new release is out, the gear shows a dot and a toast says so. Update downloads the release and runs its `install.sh` into this mod's folder. A `--link` install is never updated from here: use `git pull`.
 
 ## Board
 
@@ -119,25 +128,10 @@ The bridge is a small Node program (`telegram/`, Node 20+, no dependencies) next
 ### Set it up
 
 1. In [@BotFather](https://t.me/BotFather), send `/newbot` and keep the token.
-2. Make a Telegram group, turn on Topics, add the bot and make it an admin with **Manage topics**, **Delete messages** and **Pin messages**.
-3. Write `~/.config/herdr-app/corral/telegram.json` (the Corral settings window will write it for you later):
+2. Make a Telegram group, turn on Topics, add the bot and make it an admin with **Manage topics**, **Delete messages** and **Pin messages**. Send any message there.
+3. Open Settings → Telegram, turn on "Work through Telegram" and follow the steps: paste the token, pick the group, the root topic and yourself, press Start. The bridge runs under launchd (`~/Library/LaunchAgents/dev.corral.telegram.plist`): it starts again after a restart of the Mac until you stop it. Its log is `~/.config/herdr-app/corral/telegram.log`.
 
-   ```json
-   {
-     "token": "123456:ABC…",
-     "chat_id": -1001234567890,
-     "root_topic_id": null,
-     "owner_ids": [123456789]
-   }
-   ```
-
-   `chat_id` is the group's id, `owner_ids` your own Telegram user id: only these users can control the bot. `root_topic_id: null` means General.
-4. Check it, then run it:
-
-   ```sh
-   node ~/.config/herdr-app/corral/telegram/bridge.mjs --check
-   node ~/.config/herdr-app/corral/telegram/bridge.mjs
-   ```
+By hand, without the settings: write `~/.config/herdr-app/corral/telegram.json` (`token`, `chat_id` — the group's negative id, `root_topic_id` — `null` for General, `owner_ids` — your Telegram user id), then `node ~/.config/herdr-app/corral/telegram/bridge.mjs --check` and `--service start` (or run it in the foreground without flags). The bridge needs Node 20 or newer.
 
 Keep the group to yourself and the bot: everyone in it reads the agents' screens and replies. Once the bot is in your group, turn off **Allow Groups** for it in BotFather, so nobody can add it elsewhere.
 
@@ -181,6 +175,8 @@ mods/corral/keys.json            the view keys, merged into keys.json by install
 themes/one-dark.json, one-light.json
 statusline/corral-statusline.py  Claude Code statusline hook
 telegram/                        the Telegram bridge; tests: node --test telegram/test/
+scripts/release.sh               a release: VERSION, tag, GitHub release with the CHANGELOG.md notes
+CHANGELOG.md                     one section per release
 RECIPE.md                        the brief to rebuild it from scratch
 preview.png                      the screenshot herdr.dev shows
 ```
