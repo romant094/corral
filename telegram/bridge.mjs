@@ -4,7 +4,7 @@
 //   node bridge.mjs --check   check settings, bot, group and hc; sends nothing
 import { readFile, writeFile, unlink, mkdir } from "node:fs/promises";
 import { writeFileSync, unlinkSync } from "node:fs";
-import { paths, loadSettings, loadState, saveState } from "./config.mjs";
+import { paths, loadSettings, loadState, saveState, trimLog } from "./config.mjs";
 import { makeApi } from "./telegram.mjs";
 import { makeHc, makeHerd } from "./herdr.mjs";
 import { makeSync, loadIcons } from "./agents.mjs";
@@ -65,12 +65,15 @@ async function lock() {
   try { if (pid) { process.kill(pid, 0); alive = true; } } catch {}
   if (alive && pid !== process.pid) {
     console.error(`The bridge already runs (pid ${pid}).`);
-    process.exit(1);
+    process.exit(0);
   }
   await writeFile(P.lock, String(process.pid));
 }
 
+// launchd starts the bridge again after an exit that is not 0. So a problem only the person can fix (settings,
+// a bad token, another bridge) exits 0 with the reason in the state file, and only a crash exits non-zero.
 async function run() {
+  await trimLog(P.log).catch(() => {});
   await lock();
   const state = await loadState(P.state);
   // Every write goes through one chain: two writes of the same temp file at
@@ -93,7 +96,7 @@ async function run() {
   } catch (err) {
     await fail(err.message);
     await unlink(P.lock).catch(() => {});
-    process.exit(1);
+    process.exit(0);
   }
 
   // TG_API_BASE points the bridge at a stand-in server for a smoke test. Only
@@ -102,7 +105,7 @@ async function run() {
   if (base && !/^(http:\/\/(127\.0\.0\.1|localhost)(:\d+)?|https:\/\/api\.telegram\.org)\/?$/.test(base)) {
     await fail("TG_API_BASE must be http://127.0.0.1:<port>, http://localhost:<port> or https://api.telegram.org");
     await unlink(P.lock).catch(() => {});
-    process.exit(1);
+    process.exit(0);
   }
   if (base) log(`using the Bot API at ${base}`);
   const api = makeApi(settings.token, base ? { base: base.replace(/\/$/, "") } : {});
@@ -110,9 +113,10 @@ async function run() {
   try {
     me = await api.call("getMe");
   } catch (err) {
-    await fail(`bot: ${err.message}`);
+    // A rejected token waits for the person; no network is worth another try.
+    await fail(err.code === 401 ? "bot token was rejected" : `bot: ${err.message}`);
     await unlink(P.lock).catch(() => {});
-    process.exit(1);
+    process.exit(err.code === 401 ? 0 : 1);
   }
 
   state.daemon = { pid: process.pid, started_at: new Date().toISOString(), heartbeat_at: new Date().toISOString(), status: "running", error: null, bot: me.username };
@@ -170,7 +174,7 @@ async function run() {
       updates = await api.raw("getUpdates", { offset: state.offset, timeout: 50, allowed_updates: ["message", "callback_query", "my_chat_member"] });
       wait = 1000;
     } catch (err) {
-      if (err.code === 401) { await fail("bot token was revoked"); await unlink(P.lock).catch(() => {}); process.exit(1); }
+      if (err.code === 401) { await fail("bot token was revoked"); await unlink(P.lock).catch(() => {}); process.exit(0); }
       log(`getUpdates: ${err.message}`);
       await sleep(err.code === 429 ? (err.retryAfter ?? 5) * 1000 : wait);
       wait = Math.min(wait * 2, 60000);

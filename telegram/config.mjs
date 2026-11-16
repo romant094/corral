@@ -14,6 +14,7 @@ export function paths(env = process.env) {
     state: join(dir, "telegram-state.json"),
     lock: join(dir, "telegram.lock"),
     inbox: join(dir, "inbox"),
+    log: join(dir, "telegram.log"),
   };
 }
 
@@ -24,26 +25,39 @@ export class ConfigError extends Error {
   }
 }
 
+// The wizard in Corral saves the token first and the group and owners later.
+// The daemon does not run on such a file; it says what is left to do.
+export class IncompleteError extends ConfigError {
+  constructor(missing) {
+    super("(setup)", "");
+    this.message = "Finish the Telegram settings in Corral";
+    this.missing = missing;
+  }
+}
+
 // Every field is checked here, so the rest of the bridge can trust the object.
-export function validateSettings(raw) {
+// `partial`: only the token is needed (the wizard's checks); fields that are set must still be valid.
+export function validateSettings(raw, { partial = false } = {}) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new ConfigError("(root)", "must be an object");
-  const { token, chat_id, root_topic_id = null, owner_ids } = raw;
+  const { token, chat_id = null, root_topic_id = null, owner_ids = null } = raw;
   if (typeof token !== "string" || !/^\d+:[A-Za-z0-9_-]{20,}$/.test(token)) {
     throw new ConfigError("token", "must be a bot token from @BotFather (123456:ABC…)");
   }
-  if (!Number.isSafeInteger(chat_id) || chat_id >= 0) {
+  if (chat_id !== null && (!Number.isSafeInteger(chat_id) || chat_id >= 0)) {
     throw new ConfigError("chat_id", "must be the group's negative id (-100…)");
   }
   if (root_topic_id !== null && !(Number.isSafeInteger(root_topic_id) && root_topic_id > 0)) {
     throw new ConfigError("root_topic_id", "must be null (General) or a topic id");
   }
-  if (!Array.isArray(owner_ids) || owner_ids.length === 0 || !owner_ids.every(id => Number.isSafeInteger(id) && id > 0)) {
+  if (owner_ids !== null && (!Array.isArray(owner_ids) || owner_ids.length === 0 || !owner_ids.every(id => Number.isSafeInteger(id) && id > 0))) {
     throw new ConfigError("owner_ids", "must list at least one Telegram user id");
   }
+  const missing = [chat_id === null && "chat_id", owner_ids === null && "owner_ids"].filter(Boolean);
+  if (missing.length && !partial) throw new IncompleteError(missing);
   return { token, chat_id, root_topic_id, owner_ids };
 }
 
-export async function loadSettings(file) {
+export async function loadSettings(file, options) {
   let text;
   try {
     text = await readFile(file, "utf8");
@@ -56,7 +70,20 @@ export async function loadSettings(file) {
   } catch {
     throw new ConfigError("(file)", "is not valid JSON");
   }
-  return validateSettings(raw);
+  return validateSettings(raw, options);
+}
+
+// launchd appends the bridge's output to one file; each start keeps only its last `max` bytes.
+export const LOG_MAX = 1024 * 1024;
+export async function trimLog(file, max = LOG_MAX) {
+  let text;
+  try { text = await readFile(file); } catch { return false; }
+  if (text.length <= max) return false;
+  const tail = text.subarray(text.length - max);
+  // Start at a whole line.
+  const nl = tail.indexOf(10);
+  await writeFile(file, nl >= 0 ? tail.subarray(nl + 1) : tail);
+  return true;
 }
 
 export const emptyState = () => ({

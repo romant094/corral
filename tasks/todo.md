@@ -26,7 +26,7 @@ Checks: `node --test telegram/test/` for the bridge; `herdr-app check mods/corra
 
 ## Phase 2: Telegram
 
-- [ ] **Task 3: Bridge accepts partial settings and exits cleanly for launchd**
+- [x] **Task 3: Bridge accepts partial settings and exits cleanly for launchd**
   - Acceptance:
     - [ ] `{ token }` alone loads; the daemon writes "Finish the Telegram settings in Corral" to the state file and exits 0
     - [ ] A bad or revoked token: error in the state file, exit 0; a crash exits non-zero

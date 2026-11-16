@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  paths, validateSettings, loadSettings, loadState, saveState, emptyState, ConfigError, rememberChat, rememberTopic,
+  paths, validateSettings, loadSettings, loadState, saveState, emptyState, ConfigError, IncompleteError,
+  rememberChat, rememberTopic, trimLog,
 } from "../config.mjs";
 
 const good = { token: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ_-abc", chat_id: -1001234567890, root_topic_id: null, owner_ids: [42] };
@@ -58,6 +59,24 @@ test("rememberChat skips private chats and updates titles", () => {
   assert.equal(rememberChat(s, { id: -5, type: "supergroup", title: "A", is_forum: true }), false);
   assert.equal(rememberChat(s, { id: -5, type: "supergroup", title: "B", is_forum: true }), true);
   assert.deepEqual(s.chats, [{ id: -5, title: "B", forum: true }]);
+});
+
+test("a token alone is a draft: fine for the wizard, unfinished for the daemon", () => {
+  const draft = { token: good.token };
+  assert.deepEqual(validateSettings(draft, { partial: true }), { token: good.token, chat_id: null, root_topic_id: null, owner_ids: null });
+  assert.throws(() => validateSettings(draft), (err) => err instanceof IncompleteError
+    && err.message === "Finish the Telegram settings in Corral" && err.missing.join() === "chat_id,owner_ids");
+  assert.throws(() => validateSettings({ ...draft, chat_id: 5 }, { partial: true }), (err) => err.field === "chat_id");
+});
+
+test("trimLog keeps the last whole lines under the limit", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "tg-"));
+  const file = join(dir, "telegram.log");
+  assert.equal(await trimLog(file, 10), false);
+  await writeFile(file, "aaaa\nbbbb\ncccc\n");
+  assert.equal(await trimLog(file, 100), false);
+  assert.equal(await trimLog(file, 8), true);
+  assert.equal(await readFile(file, "utf8"), "cccc\n");
 });
 
 test("rememberTopic adds and renames", () => {
