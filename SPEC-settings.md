@@ -2,7 +2,7 @@
 
 Status: approved
 
-Modules: `settings-form`, `tg-settings`, `keys-settings`, `auto-update` (see [CAPABILITY-MAP.md](CAPABILITY-MAP.md)).
+Modules: `settings-form`, `tg-settings`, `auto-update` (`keys-settings` was removed after the pilot) (see [CAPABILITY-MAP.md](CAPABILITY-MAP.md)).
 One form, so one spec; each module has its own part and its own success criteria.
 
 ## Objective
@@ -165,6 +165,10 @@ The token is in `telegram.json` in plain text, mode 0600, as decided for the pil
 with a "Show" button. Keychain is deferred.
 
 ## Part 3: keys-settings
+
+**Removed after the pilot (2026-11-16), at the owner's word.** Herdr runs a chord it already binds (`cmd-1`) before
+the dialog sees the press, so such a key could not be recorded. The section and its code are gone; the view keys stay
+in `mods/corral/keys.json` and can be changed in `keys.json` by hand. The text below is kept as the record.
 
 - The section lists four rows: Board, Files, Log, Changes, each with its chord as keycaps (`⌘⌥1`).
 - A press on a chord starts recording: "Press the new keys…". The next chord with at least one modifier is

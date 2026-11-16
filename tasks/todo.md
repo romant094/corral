@@ -71,7 +71,7 @@ Checks: `node --test telegram/test/` for the bridge; `herdr-app check mods/corra
 
 ## Phase 3: Keys
 
-- [x] **Task 8: Keys section**
+- [x] **Task 8: Keys section** — built, then removed after the pilot at the owner's word
   - Acceptance:
     - [ ] Four rows with keycaps; a press records the next chord with a modifier; Esc cancels; Backspace clears
     - [ ] A `global` chord shows "Replaces <action> in Corral"; a `terminal` chord shows its warning; `cmd-tab`, `cmd-space`, `cmd-shift-3/4/5` are refused

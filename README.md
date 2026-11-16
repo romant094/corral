@@ -45,7 +45,7 @@ Herdr mods are trusted JavaScript. Corral:
 - runs `hc` (herdr-core) to find a terminal's foreground pid and to send `/compact` when you ask for it;
 - runs `osascript` on macOS for the multi-folder picker, and `open` for "Open in the default app";
 - reads `~/.cache/corral/sessions/` and the files of the folder you browse in Files;
-- from the settings: runs `node` with the Telegram bridge, `launchctl` for the bridge's service, writes `telegram.json` and the `layout:corral` section of `keys.json`.
+- from the settings: runs `node` with the Telegram bridge, `launchctl` for the bridge's service and writes `telegram.json`.
 
 Network: Corral asks `api.github.com` for its latest release at start and every 6 hours (turn it off in Settings → Updates), and downloads a release from GitHub when you press Update. The Telegram bridge talks to `api.telegram.org` once you turn it on. `git fetch`, `pull` and `push` reach your git remotes when you click them.
 
@@ -54,7 +54,6 @@ Network: Corral asks `api.github.com` for its latest release at start and every 
 The gear right of the plan limits (or `herdr-app do corral.settings`) opens the settings:
 
 - **Telegram:** "Work through Telegram" and a wizard: the bot token, the group, the root topic, who may give commands, and the bridge itself: Start, Stop, Restart, its log.
-- **Keys:** the keys for Board, Files, Log and Changes (`cmd-alt-1…4` by default). Click a key and press the new one. A key Herdr uses elsewhere, like `cmd-1` for tabs, is taken over while the Corral layout shows; other layouts keep it. Only the `layout:corral` section of `keys.json` changes.
 - **Updates:** your version, the latest release and its notes, Update, Check now, and "Check automatically". When a new release is out, the gear shows a dot and a toast says so. Update downloads the release and runs its `install.sh` into this mod's folder. A `--link` install is never updated from here: use `git pull`.
 
 ## Board

@@ -1,7 +1,7 @@
 import { View, div, svg, image, uniform_list, PathBuilder } from "gpui-kit";
 import { h_flex, v_flex, Input, InputState, Editor, EditorState, h_resizable, resizable_panel, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import {
-  agents, spaces, panes, props, run, setAgentOrder, theme, shared, setShared, pickFolder, keys as keyBindings,
+  agents, spaces, panes, props, run, setAgentOrder, theme, shared, setShared, pickFolder,
   home, appHome, hc, exec, readTextFile, writeTextFile, checking, openOverlay, closeOverlay, notify, window as appWindow, layout, nextCommand,
 } from "herdr";
 import * as fs from "fs/promises";
@@ -44,7 +44,6 @@ const setSettings = (change) => setShared(SETTINGS_KEY, { ...settingsState(), ..
 // `badge`: something there wants the person; the gear shows a dot then.
 const SECTIONS = [
   { id: "telegram", title: "Telegram", badge: () => false, render: "telegramSection" },
-  { id: "keys", title: "Keys", badge: () => false, render: "keysSection" },
   { id: "updates", title: "Updates", badge: () => updateReady(), render: "updatesSection" },
 ];
 // Telegram: the bridge (telegram/, installed by install.sh) does all talking to Telegram and launchd;
@@ -95,36 +94,6 @@ const bridgeJson = async (args, timeout = 60000) => {
   }
 };
 const parseJson = (text) => { try { return text ? JSON.parse(text) : null; } catch { return null; } };
-// Keys: the view keys live in keys.json under the layout's own section, which wins over `global`
-// while the layout shows; `terminal` still wins while a terminal has focus.
-const DEFAULT_KEYS = { board: "cmd-alt-1", files: "cmd-alt-2", log: "cmd-alt-3", changes: "cmd-alt-4" };
-const VIEW_NAMES = { board: "Board", files: "Files", log: "Log", changes: "Changes" };
-// macOS takes these before any app.
-const SYSTEM_KEYS = ["cmd-tab", "cmd-space", "cmd-shift-3", "cmd-shift-4", "cmd-shift-5", "ctrl-space"];
-const MODS_ORDER = ["cmd", "ctrl", "alt", "shift", "fn"];
-// "alt-cmd-1" and "cmd-alt-1" are one chord.
-const normChord = (chord) => {
-  const parts = chord.toLowerCase().split("-");
-  // A "-" key itself ("cmd--") leaves an empty part at the end.
-  const key = chord.endsWith("--") ? "-" : parts.pop();
-  const mods = parts.filter(Boolean).map(m => ({ control: "ctrl", option: "alt", super: "cmd", platform: "cmd" }[m] ?? m));
-  return [...MODS_ORDER.filter(m => mods.includes(m)), key].join("-");
-};
-const chordOf = (e) => {
-  const m = e.modifiers ?? {};
-  const key = (e.key ?? "").toLowerCase();
-  if (!key || ["shift", "control", "alt", "platform", "function", "cmd", "ctrl"].includes(key)) return null;
-  return [m.platform && "cmd", m.control && "ctrl", m.alt && "alt", m.shift && "shift", m.function && "fn", key].filter(Boolean).join("-");
-};
-const KEY_GLYPHS = { cmd: "⌘", ctrl: "⌃", alt: "⌥", shift: "⇧", fn: "fn", left: "←", right: "→", up: "↑", down: "↓",
-  enter: "↩", escape: "⎋", backspace: "⌫", tab: "⇥", space: "Space" };
-const keyCaps = (chord) => {
-  const parts = normChord(chord).split("-");
-  const key = parts.pop();
-  return [...parts, key].map(p => KEY_GLYPHS[p] ?? p.toUpperCase());
-};
-// The Corral layout's section: its name follows the layout, which a gallery install may have renamed.
-const layoutSection = () => `layout:${shared("layout") || "corral"}`;
 // Updates: GitHub's latest release (never a draft or a pre-release) against VERSION.
 const REPO = "romant094/corral";
 const UPDATE_EVERY_MS = 6 * 3600 * 1000;
@@ -160,8 +129,8 @@ async function checkUpdates() {
   }
 }
 // The gear and `herdr-app do corral.settings` open it.
-// A window, not a dialog: it can be dragged aside while you look at the board, and opens where it was left.
-const openSettings = () => openOverlay({ mod: MOD, kind: "window", key: "corral-settings", width: 720, height: 560, props: { role: "settings" } });
+// A modal dialog: it dims the window, and only Esc or its × closes it, not a click beside it.
+const openSettings = () => openOverlay({ mod: MOD, kind: "dialog", modal: true, width: 720, height: 560, props: { role: "settings" } });
 // Changes as a folder tree (the default) or a flat list, per repository: { [root]: boolean }.
 const CHANGE_TREE_KEY = "corral.changeTree";
 const changeTree = () => {
@@ -726,13 +695,8 @@ export default class Board extends View {
     }
     if (p?.role === "settings") {
       this.tg = { loaded: false, busy: null, error: null, check: null, editToken: false };
-      this.settingsFocus = cx.focus_handle();
-      this.settingsFocus.focus();
-      this.keysFocus = cx.focus_handle();
-      this.keysUi = { recording: null, error: null, warn: null };
       this.tokenInput = InputState.new({ placeholder: "123456789:AAH…" });
-      this.ownerInput = InputState.new({ placeholder: "User id" });
-      this.keyInput = InputState.new({ placeholder: "cmd-1" });
+      this.ownerInput = InputState.new({ placeholder: "@login" });
       this.groupSearch = InputState.new({ placeholder: "Filter groups" });
       this.groupSearch.on("change", (_e, cx) => cx.notify());
       // The bridge writes its state file as it goes; the section follows it.
@@ -1391,9 +1355,7 @@ export default class Board extends View {
   settingsDialog(C) {
     const { overlay } = props();
     const current = SECTIONS.find(s => s.id === settingsState().section) ?? SECTIONS[0];
-    // A window gets no Esc from Herdr: the dialog closes itself, unless a key is being recorded.
-    return h_flex().size_full().bg(C.bg).text_color(C.ink).track_focus(this.settingsFocus)
-      .on_key_down((e, cx) => { if (e.key === "escape" && !this.keysUi?.recording) { cx.stop_propagation(); closeOverlay(overlay); } })
+    return h_flex().size_full().bg(C.bg).text_color(C.ink)
       .child(v_flex().w(180).h_full().flex_none().p(10).gap(2).bg(C.bar)
         .child(div().px(10).pt(6).pb(10).text_size(14).font_semibold().child("Settings"))
         .children(SECTIONS.map(s => h_flex().id(`section-${s.id}`).h(32).px(10).gap(8).items_center().rounded(6)
@@ -1616,17 +1578,28 @@ export default class Board extends View {
     const unknown = [...seen].filter(id => !people.some(p => p.id === id)).map(id => ({ id, name: `User ${id}`, username: null }));
     const save = (next) => this.saveTelegram({ owner_ids: next.length ? next : undefined }).then(() => this.restartIfRunning());
     const toggle = (id) => (_e, cx) => this.tgAction(cx, "Saving…", () => save(owners.includes(id) ? owners.filter(o => o !== id) : [...owners, id]));
-    // By id, for when the bridge has not seen the person write yet.
+    // By login. Telegram does not turn a login into a user for a bot: the person must have written in the group,
+    // so the bridge saw their id next to it. The id is what is saved; a login can change hands.
     const add = (_e, cx) => {
-      const id = Number(this.ownerInput.value().trim());
-      if (!Number.isSafeInteger(id) || id <= 0) { this.tg.error = "A Telegram user id is a number, like 218155526 (@userinfobot tells yours)."; return cx.notify(); }
-      this.ownerInput.set_value("");
-      this.tgAction(cx, "Saving…", () => save(owners.includes(id) ? owners : [...owners, id]));
+      const login = this.ownerInput.value().trim().replace(/^@/, "").toLowerCase();
+      if (!/^[a-z0-9_]{4,32}$/.test(login)) { this.tg.error = "Type a Telegram login, like @romant094."; return cx.notify(); }
+      this.tgAction(cx, `Looking for @${login}…`, async () => {
+        const find = () => (this.tg.state?.people ?? []).find(p => p.username?.toLowerCase() === login && p.chat_id === s.chat_id);
+        if (!find()) {
+          const r = await bridgeJson(["--discover", "--json"]);
+          if (!r.ok) throw new Error(r.error);
+          await this.loadTelegram();
+        }
+        const person = find();
+        if (!person) throw new Error(`@${login} has not written in the group yet: send any message there from that account, then Add again.`);
+        this.ownerInput.set_value("");
+        await save(owners.includes(person.id) ? owners : [...owners, person.id]);
+      });
     };
     const body = v_flex().gap(2)
       .child(div().pb(4).text_size(12).text_color(C.muted)
-        .child("Only these people can start, answer and stop agents: they run code on this Mac. Write in the group and press Refresh "
-          + "to see yourself here, and check the id: anyone can copy a name."))
+        .child("Only these people can start, answer and stop agents: they run code on this Mac. Type a login and press Add; "
+          + "that account must have written in the group once."))
       .when(!people.length && !unknown.length, el => el.child(div().py(6).text_size(12).text_color(C.dim).child("Nobody wrote in the group yet.")))
       .children([...unknown, ...people].map(p => h_flex().id(`tg-owner-${p.id}`).h(30).px(8).gap(10).items_center().rounded(6)
         .cursor_pointer().hover(st => st.bg(C.selected)).on_click(toggle(p.id))
@@ -1725,126 +1698,6 @@ export default class Board extends View {
       .child(div().text_size(12).text_color(C.dim)
         .child("The bridge runs under launchd: it starts again after a restart of the Mac until you stop it. Keep the Mac awake."));
     return { title: "Bridge", body };
-  }
-  // The chord bound to a view in the layout's section, or null.
-  viewKey(view) {
-    const action = `${MOD}.${view}`;
-    return keyBindings().find(b => b.section === layoutSection() && b.action === action)?.keys ?? null;
-  }
-  // What else uses a chord: Herdr's global keys (the layout's section wins over them) and terminal keys (they win).
-  keyUses(chord, view) {
-    const n = normChord(chord);
-    return keyBindings().filter(b => normChord(b.keys) === n && !(b.section === layoutSection() && b.action === `${MOD}.${view}`));
-  }
-  // Rewrites only the layout's section of keys.json; Herdr applies it at once, or keeps the last good file
-  // and says why in keys.error.
-  async writeViewKeys(change) {
-    const file = `${appHome()}/keys.json`;
-    const text = await readTextFile(file);
-    const all = parseJson(text);
-    // Writing our section into nothing would drop every other key the person has.
-    if (!all || typeof all !== "object") throw new Error(text == null
-      ? "Herdr has no keys.json yet: restart Herdr once, then try again."
-      : "keys.json is not valid JSON right now: fix it by hand (Herdr shows why in keys.error), then try again.");
-    const errorFile = `${appHome()}/keys.error`;
-    const errorBefore = await readTextFile(errorFile).catch(() => null);
-    const section = layoutSection();
-    const ours = { ...(all[section] ?? {}) };
-    for (const [view, chord] of Object.entries(change)) {
-      const action = `${MOD}.${view}`;
-      for (const k of Object.keys(ours)) if (ours[k] === action || (chord && normChord(k) === normChord(chord))) delete ours[k];
-      if (chord) ours[chord] = action;
-    }
-    all[section] = ours;
-    const next = JSON.stringify(all, null, 2) + "\n";
-    await writeTextFile(file, next, text);
-    await exec("sleep", ["0.5"]);
-    // Only a new complaint counts: an old keys.error may still lie there.
-    const error = await readTextFile(errorFile).catch(() => null);
-    if (error?.trim() && error !== errorBefore) {
-      await writeTextFile(file, text, next).catch(() => {});
-      throw new Error(`Herdr refused the keys, the old ones are back: ${error.trim()}`);
-    }
-  }
-  keyPressed(e, cx) {
-    const ui = this.keysUi;
-    if (!ui.recording) return;
-    cx.stop_propagation();
-    const view = ui.recording;
-    const m = e.modifiers ?? {};
-    const plain = !m.platform && !m.control && !m.alt && !m.function;
-    if (plain && e.key === "escape") { ui.recording = null; return cx.notify(); }
-    // Plain keys are typing into the "or type it" field; they also reach here.
-    if (plain) return;
-    const chord = chordOf(e);
-    if (chord) this.applyChord(cx, view, chord);
-  }
-  // A pressed or typed chord: at least one of cmd, ctrl, alt, and not one macOS keeps.
-  applyChord(cx, view, chord) {
-    const ui = this.keysUi;
-    const n = normChord(chord);
-    const parts = n.split("-");
-    if (!parts.pop() || !parts.some(m => ["cmd", "ctrl", "alt"].includes(m))) {
-      ui.error = "Use at least one of ⌘, ⌃ or ⌥: plain keys are typing.";
-      return cx.notify();
-    }
-    if (SYSTEM_KEYS.includes(n)) { ui.error = `${keyCaps(chord).join("")} belongs to macOS.`; return cx.notify(); }
-    this.saveViewKey(cx, view, n);
-  }
-  saveViewKey(cx, view, chord) {
-    const ui = this.keysUi;
-    Object.assign(ui, { recording: null, error: null, warn: null });
-    cx.notify();
-    cx.spawn(async (cx) => {
-      try { await this.writeViewKeys({ [view]: chord }); } catch (err) { ui.error = String(err?.message ?? err); }
-      cx.notify();
-    });
-  }
-  keysSection(C) {
-    const ui = this.keysUi;
-    const row = (view) => {
-      const chord = this.viewKey(view);
-      const recording = ui.recording === view;
-      const uses = chord ? this.keyUses(chord, view) : [];
-      const note = uses.map(u => u.section === "terminal" ? `While a terminal has focus, this key stays ${u.action}`
-        : u.section === "global" ? `Replaces ${u.action} in Corral` : `Also ${u.action} (${u.section})`).join(" · ");
-      return v_flex().gap(4)
-        .child(h_flex().h(36).gap(12).items_center()
-          .child(div().w(90).flex_none().text_size(13).child(VIEW_NAMES[view]))
-          .child(h_flex().id(`key-${view}`).h(30).min_w(140).px(8).gap(4).items_center().rounded(6).cursor_pointer()
-            .border(1).border_color(recording ? C.accent : C.line).bg(recording ? C.selected : C.card)
-            .hover(s => s.border_color(C.input))
-            .on_click((_e, cx) => { Object.assign(ui, { recording: view, error: null }); this.keysFocus.focus(); cx.notify(); })
-            .when(recording, el => el.child(div().text_size(12).text_color(C.accent).child("Press the new keys…")))
-            .when(!recording && !chord, el => el.child(div().text_size(12).text_color(C.dim).child("No key")))
-            .when(!recording && !!chord, el => el.children(keyCaps(chord).map(cap => div().px(6).h(20).flex().items_center().rounded(4)
-              .bg(C.bg).border(1).border_color(C.line).font_family("Geist Mono").text_size(11).child(cap)))))
-          .when(recording, el => el
-            .child(div().text_size(11).text_color(C.dim).child("Esc cancels"))
-            .child(settingsButton(C, `key-clear-${view}`, "No key", false, (_e, cx) => this.saveViewKey(cx, view, null)))))
-        // Herdr runs a key it already binds (cmd-1 switches tabs) before this window sees it: such a key is typed.
-        .when(recording, el => el.child(h_flex().pl(102).gap(8).items_center()
-          .child(div().text_size(11).text_color(C.dim).child("or type it:"))
-          .child(div().w(140).h(28).px(8).flex().items_center().rounded(6).bg(C.card).border(1).border_color(C.input).text_size(12)
-            .font_family("Geist Mono").on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.keyInput)))
-          .child(settingsButton(C, `key-set-${view}`, "Set", false, (_e, cx) => {
-            const typed = this.keyInput.value().trim().toLowerCase().replace(/\s+/g, "");
-            if (typed) { this.keyInput.set_value(""); this.applyChord(cx, view, typed); }
-          }))))
-        .when(!!note, el => el.child(div().pl(102).text_size(11).text_color(theme().blocked).child(note)));
-    };
-    return v_flex().gap(10).track_focus(this.keysFocus).on_key_down((e, cx) => this.keyPressed(e, cx))
-      .child(div().text_size(12).text_color(C.muted)
-        .child("Keys that switch the top area while the Corral layout shows. Click a key and press the new one; a key Herdr uses elsewhere is taken over in Corral only."))
-      .children(VIEWS.map(row))
-      .when(!!ui.error, el => el.child(div().text_size(12).text_color(C.danger).child(ui.error)))
-      .child(h_flex().pt(6).child(settingsButton(C, "keys-reset", "Reset to defaults", false, (_e, cx) => {
-        Object.assign(ui, { recording: null, error: null });
-        cx.spawn(async (cx) => {
-          try { await this.writeViewKeys(DEFAULT_KEYS); } catch (err) { ui.error = String(err?.message ?? err); }
-          cx.notify();
-        });
-      })));
   }
   // One toast per new version and run; "Later" in the section silences that version.
   announceUpdate() {
