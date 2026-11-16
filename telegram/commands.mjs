@@ -5,7 +5,7 @@ import { renderStatus, renderAgent } from "./dashboard.mjs";
 import { parseChoices } from "./dialog.mjs";
 import { dialogKey } from "./agents.mjs";
 import { projectOf } from "./herdr.mjs";
-import { handleFile } from "./files.mjs";
+import { handleFile, deliverFile, fileOf, repliedTo, replyContext, MAX_BYTES } from "./files.mjs";
 
 // The bot's "≡" menu. Telegram has no per-topic menu, so each command says where it works.
 export const COMMANDS = [
@@ -199,8 +199,14 @@ export function makeCommands({
     }
 
     try {
+      // A reply to another message says so first. A file in that message goes along, so a
+      // photo refused at a dialog reaches the agent when a later message answers it.
+      const answered = agent.state === "blocked" ? null : repliedTo(msg);
+      const answeredFile = answered && fileOf(answered);
+      const quote = answered && replyContext(msg, answeredFile && answeredFile.size <= MAX_BYTES
+        ? await deliverFile({ file: answeredFile, agent, api, hc, inbox }) : null);
       if (msg.photo || msg.document) {
-        const answer = await handleFile({ msg, agent, api, hc, inbox });
+        const answer = await handleFile({ msg, agent, api, hc, inbox, quote });
         if (answer) await reply(msg, answer);
         return;
       }
@@ -208,7 +214,7 @@ export function makeCommands({
       const route = routeText(agent.state, msg.text);
       if (route.refuse) return reply(msg, route.refuse);
       if (route.keys) return await hc.keys(agent.address, ...route.keys);
-      return await hc.send(agent.address, route.send);
+      return await hc.send(agent.address, quote ? `${quote}\n${route.send}` : route.send);
     } catch (err) {
       log(`deliver to ${agent.address}: ${err.message}`);
       return reply(msg, `⚠️ Not delivered: ${escapeHtml(err.message)}`);

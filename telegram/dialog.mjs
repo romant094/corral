@@ -10,27 +10,37 @@ export function tailScreen(text, n) {
   return lines.slice(-n).join("\n");
 }
 
-// Options Claude Code shows but that want typed text, not a key: no button.
-const TEXT_ONLY = /^(Type something|Chat about this)/i;
+// An option Claude Code shows but that wants typed text, not a key: no button.
+const TEXT_ONLY = /^Type something/i;
+// A question with previews lists "Chat about this" without a number, under the options.
+const CHAT = /^\s*(?:[❯›>]\s*)?Chat about this\s*$/i;
 
 const OPTION = /^\s*(?:[❯›>]\s*)?(\d)\.\s+(\S.*?)\s*$/;
 
 // The last run of options numbered 1, 2, 3… on the screen, 2 to 9 long.
 // Description lines between options are allowed; a number out of order starts over.
 export function parseDialog(text) {
-  let best = null, cur = null;
+  let best = null, cur = null, chat = false;
   for (const line of String(text).split("\n")) {
+    if (best && CHAT.test(line)) { chat = true; continue; }
     const m = OPTION.exec(line);
     if (!m) continue;
     const n = Number(m[1]);
-    if (n === 1) cur = [{ n, label: m[2] }];
-    else if (cur && n === cur.at(-1).n + 1) cur.push({ n, label: m[2] });
+    // A question with previews draws them right of the options: the box is not the label.
+    m[2] = m[2].replace(/\s{2,}[│┌└├┐┘|].*$/, "").trim();
+    if (n === 1) cur = [{ n, label: m[2], at: /^\s*[❯›>]/.test(line) }];
+    else if (cur && n === cur.at(-1).n + 1) cur.push({ n, label: m[2], at: /^\s*[❯›>]/.test(line) });
     else { cur = null; continue; }
-    if (cur.length >= 2) best = cur;
+    if (cur.length >= 2) { best = cur; chat = false; }
   }
   if (!best || best.length > 9) return null;
-  const buttons = best.filter(o => !TEXT_ONLY.test(o.label));
-  return buttons.length ? buttons.map(o => ({ ...o, keys: [String(o.n)] })) : null;
+  const buttons = best.filter(o => !TEXT_ONLY.test(o.label)).map(({ at, ...o }) => ({ ...o, keys: [String(o.n)] }));
+  // No number to press: down from the chosen option, past the last one, then enter.
+  if (chat) {
+    const from = best.find(o => o.at)?.n ?? 1;
+    buttons.push({ n: best.length + 1, label: "Chat about this", keys: [...Array(best.length - from + 1).fill("down"), "enter"] });
+  }
+  return buttons.length ? buttons : null;
 }
 
 // A menu without numbers, moved through with arrows ("Do you trust this

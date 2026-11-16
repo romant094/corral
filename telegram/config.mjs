@@ -57,9 +57,12 @@ export function validateSettings(raw, { partial = false } = {}) {
   if (!(Number.isSafeInteger(fold_chars) && fold_chars >= 0 && fold_chars <= 30000)) {
     throw new ConfigError("fold_chars", "must be a whole number from 0 (never fold) to 30000");
   }
+  // reply_format: "rich" (a rich message, folded by fold_chars) or "markdown" (Claude's Markdown as plain text).
+  const { reply_format = "rich" } = raw;
+  if (reply_format !== "rich" && reply_format !== "markdown") throw new ConfigError("reply_format", 'must be "rich" or "markdown"');
   const missing = [chat_id === null && "chat_id", owner_ids === null && "owner_ids"].filter(Boolean);
   if (missing.length && !partial) throw new IncompleteError(missing);
-  return { token, chat_id, root_topic_id, owner_ids, fold_chars };
+  return { token, chat_id, root_topic_id, owner_ids, fold_chars, reply_format };
 }
 
 export async function loadSettings(file, options) {

@@ -46,7 +46,7 @@ test("a deleted topic is not made again for an agent that has ended", async () =
 });
 
 test("a topic closed by hand is reopened, not replaced", async () => {
-  const s = await setup();
+  const s = await setup({ terminals: [term("t1", "done")] });
   let once = false;
   failing(s.api, (m, p) => m === "sendMessage" && p.message_thread_id === s.topic && !once && (once = true), "sendMessage: 400 Bad Request: TOPIC_CLOSED");
   await s.sync.handle({ kind: "state", agent: { ...s.herd.get("t1"), state: "done" } });

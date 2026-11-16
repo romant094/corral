@@ -1553,7 +1553,24 @@ export default class Board extends View {
       .when(done[3], el => el
         .child(div().h(1).my(6).bg(C.line))
         .child(div().pt(2).pb(2).text_size(11).font_semibold().text_color(C.muted).child("FORMATTER OPTIONS"))
+        .child(this.tgFormatRow(C, s))
         .child(this.tgFoldRow(C, s))));
+  }
+  // Two tabs: a rich message (rendered Markdown, long replies folded) or Claude's Markdown as plain text.
+  tgFormatRow(C, s) {
+    const current = s.reply_format === "markdown" ? "markdown" : "rich";
+    const tab = (key, label) => h_flex().id(`tg-format-${key}`).h(24).px(12).items_center().rounded(4).text_size(12)
+      .when(key === current, el => el.bg(C.card).text_color(C.ink).font_semibold())
+      .when(key !== current, el => el.text_color(C.muted).cursor_pointer().hover(st => st.text_color(C.ink))
+        .on_click((_e, cx) => this.tgAction(cx, "Saving…", async () => { await this.saveTelegram({ reply_format: key }); await this.restartIfRunning(); })))
+      .child(label);
+    return h_flex().h(30).gap(10).items_center()
+      .child(div().w(14).flex_none())
+      .child(div().w(110).flex_none().text_size(13).child("Format"))
+      .child(div().flex_1())
+      .child(h_flex().flex_none().p(2).gap(2).rounded(6).bg(C.bg).border(1).border_color(C.line)
+        .child(tab("rich", "Rich message"))
+        .child(tab("markdown", "Markdown")));
   }
   // How long a reply may be before the bridge folds it into sections; 0 never folds.
   saveFold(cx) {
@@ -1572,14 +1589,18 @@ export default class Board extends View {
   }
   tgFoldRow(C, s) {
     const current = s.fold_chars ?? 1200;
+    // Markdown goes as plain text and never folds: the row stays, locked.
+    const locked = s.reply_format === "markdown";
     // The saved value fills the field, unless the person is typing a new one.
     if (!this.foldEdited && this.foldInput.value() !== String(current)) this.foldInput.set_value(String(current));
     return h_flex().h(30).gap(10).items_center()
       .child(div().w(14).flex_none())
-      .child(div().w(110).flex_none().text_size(13).child("Long replies"))
-      .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(C.muted)
-        .child(current ? "fold after this many characters (0: never)" : "never fold"))
-      .child(field(C, this.foldInput).w(80));
+      .child(div().w(110).flex_none().text_size(13).text_color(locked ? C.dim : C.ink).child("Long replies"))
+      .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(locked ? C.dim : C.muted)
+        .child(locked ? "only for rich messages" : current ? "fold after this many characters (0: never)" : "never fold"))
+      .child(locked
+        ? div().w(80).h(26).px(8).flex().items_center().rounded(5).border(1).border_color(C.line).text_size(12).text_color(C.dim).child(String(current))
+        : field(C, this.foldInput).w(80));
   }
   // One line per setting: status, name, value, Change; the editor opens under it.
   tgRow(C, n, { title, body, summary, fixed, action }, done, open) {
@@ -1761,7 +1782,7 @@ export default class Board extends View {
     const c = await exec("cat", [path]);
     const imported = parseJson(c.stdout);
     if (!imported || typeof imported.token !== "string") throw new Error("That file is not a Corral Telegram settings file.");
-    const keep = ["token", "chat_id", "owner_ids", "owners", "enabled", "fold_chars"];
+    const keep = ["token", "chat_id", "owner_ids", "owners", "enabled", "fold_chars", "reply_format"];
     const f = tgFiles();
     await fs.mkdir(f.dir, { recursive: true }).catch(() => {});
     await exec("chmod", ["700", f.dir]).catch(() => {});

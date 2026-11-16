@@ -19,7 +19,7 @@ test("paths follow HERDR_APP_HOME", () => {
 
 test("valid settings pass and root_topic_id defaults to null", () => {
   const { root_topic_id, ...rest } = good;
-  assert.deepEqual(validateSettings(rest), { ...good, fold_chars: 1200 });
+  assert.deepEqual(validateSettings(rest), { ...good, fold_chars: 1200, reply_format: "rich" });
 });
 
 for (const [field, value] of [
@@ -63,7 +63,7 @@ test("rememberChat skips private chats and updates titles", () => {
 
 test("a token alone is a draft: fine for the wizard, unfinished for the daemon", () => {
   const draft = { token: good.token };
-  assert.deepEqual(validateSettings(draft, { partial: true }), { token: good.token, chat_id: null, root_topic_id: null, owner_ids: null, fold_chars: 1200 });
+  assert.deepEqual(validateSettings(draft, { partial: true }), { token: good.token, chat_id: null, root_topic_id: null, owner_ids: null, fold_chars: 1200, reply_format: "rich" });
   assert.throws(() => validateSettings(draft), (err) => err instanceof IncompleteError
     && err.message === "Finish the Telegram settings in Corral" && err.missing.join() === "chat_id,owner_ids");
   assert.throws(() => validateSettings({ ...draft, chat_id: 5 }, { partial: true }), (err) => err.field === "chat_id");

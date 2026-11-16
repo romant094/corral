@@ -19,9 +19,25 @@ test("permission prompt gives its three options", () => {
   assert.equal(parseDialog(fixture("screens/permission.txt"))[0].label, "Yes");
 });
 
-test("question dialog skips the typed-text options", () => {
+test("question dialog skips the typed-text option and keeps Chat about this", () => {
   const opts = parseDialog(fixture("screens/question.txt"));
-  assert.deepEqual(opts.map(o => `${o.n}:${o.label}`), ["1:Daemon", "2:Mod only"]);
+  assert.deepEqual(opts.map(o => `${o.n}:${o.label}:${o.keys.join(" ")}`), ["1:Daemon:1", "2:Mod only:2", "4:Chat about this:4"]);
+});
+
+test("a question with previews: labels without the box, Chat about this by arrows", () => {
+  const screen = [
+    " ❯ 1. Buttons          │ Agents (8)   │",
+    "   2. Keyboard         │ done         │",
+    "   3. Both             │              │",
+    "",
+    "   Notes: press n to add notes",
+    "",
+    "   Chat about this",
+    "",
+    " Enter to select · ↑/↓ to navigate · Esc to cancel",
+  ].join("\n");
+  assert.deepEqual(parseDialog(screen).map(o => `${o.label}:${o.keys.join(" ")}`),
+    ["Buttons:1", "Keyboard:2", "Both:3", "Chat about this:down down down enter"]);
 });
 
 test("a numbered list in prose earlier on screen does not win over the dialog", () => {
@@ -68,6 +84,18 @@ test("tailScreen drops rules and trailing blanks", () => {
 
 test("last reply is the last main-thread assistant text", () => {
   assert.equal(lastReplyFrom(fixture("transcript.jsonl")), "Done. All 12 tests pass.");
+});
+
+test("mid-turn there is no reply yet: a text between tool calls is not the reply", () => {
+  const line = (type, content) => JSON.stringify({ type, isSidechain: false, message: { role: type, content } });
+  const head = [line("user", "fix it"), line("assistant", [{ type: "text", text: "Looking." }])];
+  const call = line("assistant", [{ type: "tool_use", id: "a", name: "Bash", input: {} }]);
+  const result = line("user", [{ type: "tool_result", tool_use_id: "a", content: "ok" }]);
+  assert.equal(lastReplyFrom([...head, call].join("\n")), null);
+  assert.equal(lastReplyFrom([...head, call, result].join("\n")), null);
+  // The closing text in two lines is one reply; bookkeeping lines after it do not count.
+  const end = [line("assistant", [{ type: "text", text: "Fixed." }]), line("assistant", [{ type: "text", text: "Tests pass." }]), '{"type":"system"}'];
+  assert.equal(lastReplyFrom([...head, call, result, ...end].join("\n")), "Fixed.\n\nTests pass.");
 });
 
 test("lastReply follows the statusline cache to the transcript", async () => {

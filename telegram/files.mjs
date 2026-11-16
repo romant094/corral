@@ -26,19 +26,46 @@ export function fileOf(msg) {
   return null;
 }
 
-// Returns the reply to post in the topic.
-export async function handleFile({ msg, agent, api, hc, inbox, now = Date.now() }) {
-  const file = fileOf(msg);
-  if (!file) return null;
-  if (file.size > MAX_BYTES) return "⚠️ Files over 20 MB cannot be received by a bot.";
-  if (agent.state === "blocked") return "⚠️ The agent is waiting at a dialog. Answer it first, then send the file again.";
+// Saves the file in the inbox and hands it to the agent's machine; returns the path the agent sees.
+export async function deliverFile({ file, agent, api, hc, inbox, now = Date.now() }) {
   const { bytes } = await api.download(file.id);
   const local = inboxPath(inbox, agent.address, file.name, now);
   // Screenshots and documents are private: owner-only, like the rest of the bridge's files.
   await mkdir(join(local, ".."), { recursive: true, mode: 0o700 });
   await writeFile(local, bytes, { mode: 0o600 });
   const put = await hc.put(agent.address, local);
-  const prompt = [msg.caption?.trim(), put.path ?? local].filter(Boolean).join(" ");
-  await hc.send(agent.address, prompt);
+  return put.path ?? local;
+}
+
+// Returns the reply to post in the topic. `quote`: the reply line to put first (see replyContext).
+export async function handleFile({ msg, agent, api, hc, inbox, now = Date.now(), quote = null }) {
+  const file = fileOf(msg);
+  if (!file) return null;
+  if (file.size > MAX_BYTES) return "⚠️ Files over 20 MB cannot be received by a bot.";
+  if (agent.state === "blocked") return "⚠️ The agent is waiting at a dialog. Answer it first, then send the file again.";
+  const path = await deliverFile({ file, agent, api, hc, inbox, now });
+  const prompt = [msg.caption?.trim(), path].filter(Boolean).join(" ");
+  await hc.send(agent.address, quote ? `${quote}\n${prompt}` : prompt);
   return null;
+}
+
+// A message that answers another one. Every message in a topic answers the
+// topic's first one; that is not a reply.
+export function repliedTo(msg) {
+  const r = msg.reply_to_message;
+  if (!r || r.forum_topic_created || r.message_id === msg.message_thread_id) return null;
+  return r;
+}
+
+// The line the agent gets before such a message: whose message it answers, its
+// text (or the quoted part), and its file when it had one (`filePath`, delivered by the caller).
+export function replyContext(msg, filePath = null) {
+  const r = repliedTo(msg);
+  if (!r) return null;
+  const name = [r.from?.first_name, r.from?.last_name].filter(Boolean).join(" ") || "someone";
+  const who = r.from?.is_bot ? "your earlier message" : `${name}'s message`;
+  let text = String(msg.quote?.text ?? r.text ?? r.caption ?? "").replace(/\s+/g, " ").trim();
+  if (text.length > 300) text = `${text.slice(0, 300)}…`;
+  const parts = [text && `"${text}"`, filePath && `(with file ${filePath})`].filter(Boolean);
+  return `[In reply to ${who}${parts.length ? `: ${parts.join(" ")}` : ""}]`;
 }

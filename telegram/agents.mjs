@@ -187,6 +187,10 @@ export function makeSync({
 
   async function postDone(agent) {
     const reply = await freshReply(agent);
+    if (reply && settings.reply_format === "markdown") {
+      await inTopic(agent, async (id) => { for (const c of splitText(reply)) await send(id, escapeHtml(c) || "(empty)"); });
+      return;
+    }
     if (reply) {
       await inTopic(agent, async (id) => {
         for (const part of richParts(reply, { fold: settings.fold_chars ?? 1200 })) {
@@ -200,6 +204,8 @@ export function makeSync({
       });
       return;
     }
+    // Done for a moment mid-turn (a dialog closing, say): the turn goes on and its reply comes with the next done.
+    if (herd.get(agent.address)?.state !== "done") return;
     const chunks = splitText(tailScreen(await hc.read(agent.address), 20)).map(c => `<pre>${escapeHtml(c)}</pre>`);
     await inTopic(agent, async (id) => { for (const c of chunks) await send(id, c || "(empty)"); });
   }

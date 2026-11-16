@@ -22,21 +22,27 @@ async function readTail(file, bytes = 2 * 1024 * 1024) {
   }
 }
 
-// Text blocks of the last main-thread assistant line that has text.
+// The text that closes the last turn: the main-thread assistant lines after the
+// last tool call or user line. A transcript that ends in a tool call or a tool
+// result is mid-turn (the reply is not written yet): null, so a text Claude wrote
+// between tool calls is never posted as the reply.
 export function lastReplyFrom(jsonl) {
   const lines = jsonl.split("\n");
+  const parts = [];
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (!lines[i].includes('"assistant"')) continue;
+    if (!lines[i].includes('"assistant"') && !lines[i].includes('"user"')) continue;
     let d;
     try { d = JSON.parse(lines[i]); } catch { continue; }
-    if (d.type !== "assistant" || d.isSidechain) continue;
+    if ((d.type !== "assistant" && d.type !== "user") || d.isSidechain || d.isMeta) continue;
+    if (d.type === "user") break;
     const content = d.message?.content;
+    if (Array.isArray(content) && content.some(b => b?.type === "tool_use")) break;
     const text = Array.isArray(content)
       ? content.filter(b => b?.type === "text" && b.text?.trim()).map(b => b.text.trim()).join("\n\n")
       : typeof content === "string" ? content.trim() : "";
-    if (text) return text;
+    if (text) parts.unshift(text);
   }
-  return null;
+  return parts.length ? parts.join("\n\n") : null;
 }
 
 // The statusline JSON the Corral cards read: model, context, cost, session name.

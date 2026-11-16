@@ -52,6 +52,17 @@ test("text in an agent topic goes to the agent as one argv element", async () =>
   assert.deepEqual(s.hc.calls.at(-1), ["send", "t1", "refactor $(rm -rf ~)"]);
 });
 
+test("a reply says which message it answers; the topic's first message does not count", async () => {
+  const s = await setup();
+  const answered = { message_id: 5, from: { id: 99, is_bot: true }, text: "Pick one:\n1. Buttons" };
+  await s.commands.handle(s.msg("the first", { more: { reply_to_message: answered } }));
+  assert.deepEqual(s.hc.calls.at(-1), ["send", "t1", '[In reply to your earlier message: "Pick one: 1. Buttons"]\nthe first']);
+  await s.commands.handle(s.msg("just this", { more: { reply_to_message: { message_id: s.topic, forum_topic_created: { name: "x" } } } }));
+  assert.deepEqual(s.hc.calls.at(-1), ["send", "t1", "just this"]);
+  await s.commands.handle(s.msg("this part", { more: { reply_to_message: answered, quote: { text: "1. Buttons" } } }));
+  assert.deepEqual(s.hc.calls.at(-1), ["send", "t1", '[In reply to your earlier message: "1. Buttons"]\nthis part']);
+});
+
 test("messages from other users or chats change nothing", async () => {
   const s = await setup();
   const m = s.msg("hi");
