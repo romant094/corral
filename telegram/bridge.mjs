@@ -14,7 +14,7 @@ import { makeHc, makeHerd } from "./herdr.mjs";
 import { makeSync, loadIcons } from "./agents.mjs";
 import { makeButtons } from "./buttons.mjs";
 import { makeDashboard } from "./dashboard.mjs";
-import { makeCommands, COMMANDS } from "./commands.mjs";
+import { makeCommands, COMMANDS, KEYBOARD, KEYBOARD_VERSION, KEYBOARD_NOTE } from "./commands.mjs";
 import { lastReply, session } from "./transcript.mjs";
 import * as setup from "./setup.mjs";
 import { makeService } from "./service.mjs";
@@ -185,6 +185,12 @@ async function run() {
 
   await api.call("setMyCommands", { commands: COMMANDS, scope: { type: "chat", chat_id: settings.chat_id } })
     .catch(err => log(`set commands: ${err.message}`));
+  if (state.keyboard_version !== KEYBOARD_VERSION) {
+    await api.call("sendMessage", {
+      chat_id: settings.chat_id, text: KEYBOARD_NOTE, reply_markup: KEYBOARD, disable_notification: true,
+      ...(settings.root_topic_id ? { message_thread_id: settings.root_topic_id } : {}),
+    }).then(() => { state.keyboard_version = KEYBOARD_VERSION; save(); }).catch(err => log(`keyboard: ${err.message}`));
+  }
 
   const hc = makeHc();
   const herd = makeHerd(Date.now, (address) => !!state.agents[address]);

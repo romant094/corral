@@ -17,6 +17,20 @@ export const COMMANDS = [
   { command: "help", description: "What the bot can do here" },
 ];
 
+// The group's command keyboard: Telegram shows the "≡ Menu" button only in private chats,
+// so a persistent reply keyboard is the group's one-tap menu. A button sends its text.
+// A change to the buttons bumps the version: the bridge posts the new keyboard once.
+export const KEYBOARD_VERSION = 1;
+export const KEYBOARD = {
+  keyboard: [
+    [{ text: "/new" }, { text: "/status" }, { text: "/clear" }],
+    [{ text: "/stop" }, { text: "/close" }, { text: "/help" }],
+  ],
+  is_persistent: true,
+  resize_keyboard: true,
+};
+export const KEYBOARD_NOTE = "⌨️ Commands are on the keyboard: the keyboard icon in the message field opens it. /help brings it back.";
+
 const ROOT_ONLY = new Set(["new", "clear"]);
 const AGENT_ONLY = new Set(["stop", "close"]);
 
@@ -178,7 +192,7 @@ export function makeCommands({
         if (agent) return reply(msg, await renderAgent(agent, await sync.nameOf(agent), session));
         return reply(msg, renderStatus(herd.list(), state, chat_id));
       }
-      if (cmd.name === "help") return reply(msg, agent ? HELP_AGENT : HELP_ROOT);
+      if (cmd.name === "help") return reply(msg, agent ? HELP_AGENT : HELP_ROOT, { reply_markup: KEYBOARD });
       // /init is the setup command (Corral's settings pair the group with it); here the group is connected already.
       if (cmd.name === "init" || cmd.name === "start") return reply(msg, "Already set up: this group is connected to Corral. /help lists the commands.");
       if (ROOT_ONLY.has(cmd.name)) return isRoot ? onRootCommand(msg, cmd) : reply(msg, where(cmd.name));

@@ -809,14 +809,21 @@ export default class Board extends View {
           const since = Date.now() - (u.checked_at ?? 0);
           return !u.checked_at || u.checked_for !== VERSION || since >= (u.error ? 600000 : start ? 3600000 : UPDATE_EVERY_MS);
         };
-        const auto = async (start) => {
-          if (!due(start)) return start && announceUpdate();
-          checkingNow = true;
-          try { await checkUpdates(); } finally { checkingNow = false; }
+        const auto = async (start, cx) => {
+          if (due(start)) {
+            checkingNow = true;
+            try { await checkUpdates(); } finally { checkingNow = false; }
+          } else if (start) announceUpdate();
+          // "Install automatically": a found release goes in at once. Another copy installing it already
+          // (the shared `installing`) is left to finish; a failed install waits for the next check.
+          const u = updatesState();
+          if (u.auto && u.install && updateReady() && !u.installing && !(await linkedTo())) {
+            this.installRelease(cx, (this.autoUi ??= { busy: null, error: null }), u.latest);
+          }
         };
-        cx.spawn(() => auto(true));
+        cx.spawn((cx) => auto(true, cx));
         // A look every 5 seconds is a clock read; GitHub is asked only when a check is due.
-        cx.timer.every(5000, (cx) => { if (due(false)) cx.spawn(() => auto(false)); });
+        cx.timer.every(5000, (cx) => { if (due(false)) cx.spawn((cx) => auto(false, cx)); });
       }
       // Saved projects from the Board layout this grew out of come along once.
       if (shared(PROJECTS_KEY) == null && shared("board.projects")) setShared(PROJECTS_KEY, shared("board.projects"));
@@ -1912,7 +1919,13 @@ export default class Board extends View {
           .on_click(() => setUpdates({ auto: !u.auto }))
           .child(checkBox(C, u.auto))
           .child(div().text_size(13).child("Check automatically"))
-          .child(div().text_size(12).text_color(C.muted).child("at start and every 6 hours; off sends nothing"))))
+          .child(div().text_size(12).text_color(C.muted).child("at start and every 6 hours; off sends nothing")))
+        // Installing needs the checks: with them off, the box is locked.
+        .child(h_flex().id("update-install").gap(10).items_center()
+          .when(u.auto, el => el.cursor_pointer().on_click(() => setUpdates({ install: !u.install })))
+          .child(div().when(!u.auto, el => el.opacity(0.4)).child(checkBox(C, u.auto && !!u.install)))
+          .child(div().text_size(13).text_color(u.auto ? C.ink : C.dim).child("Install automatically"))
+          .child(div().text_size(12).text_color(C.muted).child(u.auto ? "a new release goes in as soon as it is found" : "needs Check automatically"))))
       .when(!!u.error, el => el.child(div().text_size(12).text_color(C.danger).child(`Last check failed: ${u.error}`)))
       .when(!!ui.error, el => el.child(div().text_size(12).text_color(C.danger).child(ui.error)));
   }
