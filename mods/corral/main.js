@@ -1479,8 +1479,6 @@ export default class Board extends View {
         : smallButton(C, "tg-enabled", on ? "Turn off" : "Turn on",
           act(on ? "Turning off…" : "Turning on…", () => this.setTelegramEnabled(!on)), on ? null : C.accent))
       .child(div().flex_1())
-      // TEMP for the pilot: one click back to nothing, on or off. Remove before the release.
-      .when(!t.busy, el => el.child(smallButton(C, "tg-reset-test", "Reset (test)", act("Resetting…", () => this.clearTelegram()), C.danger)))
       .when(on, el => el.child(smallButton(C, "tg-import", "Import", act("Importing…", () => this.importTelegram()))))
       .when(on && !!t.text, el => el
         .child(smallButton(C, "tg-export", "Export", act("Exporting…", () => this.exportTelegram())))
