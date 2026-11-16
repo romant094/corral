@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { emptyState, rememberMessage } from "../config.mjs";
 import { TelegramError } from "../telegram.mjs";
-import { check, discover, createTopic, listing, restoreGeneral, pair, pairLink, botGroups } from "../setup.mjs";
+import { check, discover, createTopic, listing, restoreGeneral, pair, pairLink } from "../setup.mjs";
 import { fakeApi, settings } from "./helpers.mjs";
 
 const hc = { ls: async () => ({ terminals: [{ agent: "claude-code" }, { agent: null }] }) };
@@ -93,13 +93,11 @@ test("listing leaves out the agents' own topics", () => {
 });
 
 // A Bot API that answers getUpdates from a script, one batch per call.
-function pairApi(batches, chats, admins = false) {
+function pairApi(batches, chats) {
   const a = api({
     getMe: { id: 9, username: "corral_bot" },
     getChat: (p) => chats[p.chat_id],
-    // The bot (9) is an admin with its rights; 7 created the group; everyone else is a member.
-    getChatMember: (p) => p.user_id === 9 ? { status: "administrator", can_manage_topics: true, can_delete_messages: true, can_pin_messages: true }
-      : { status: p.user_id === 7 && admins ? "creator" : "member" },
+    getChatMember: { status: "administrator", can_manage_topics: true, can_delete_messages: true, can_pin_messages: true },
     sendMessage: { message_id: 1 },
   });
   const call = a.call;
@@ -159,31 +157,6 @@ test("pair: a group the bot was added to without the link is told to send /init,
   assert.equal(prompts.length, 1);
   // Short polls until the prompt went out.
   assert.equal(a.of("getUpdates")[1].params.timeout, 2);
-});
-
-test("pair: a group the bot is in already is asked for /init at once, and its creator may send it", async () => {
-  const a = pairApi([[
-    { update_id: 1, message: { chat: herd, from: { id: 8, first_name: "X" }, text: "/init" } },
-    { update_id: 2, message: { chat: herd, from: anton, text: "/init" } },
-  ]], { [-1001]: herd }, true);
-  const out = await pair({ api: a, state: emptyState(), code: "K7Q2", seconds: 60, prompt: -1001 });
-  assert.equal(out.owner.id, 7);
-  assert.equal(a.of("sendMessage")[0].params.chat_id, -1001);
-  assert.match(a.of("sendMessage")[0].params.text, /Send \/init/);
-});
-
-test("botGroups: only groups the bot is in now, with Topics and admin flags", async () => {
-  const state = emptyState();
-  state.chats = [{ id: -1001, title: "Herd", forum: true }, { id: -2, title: "Gone", forum: true }, { id: -3, title: "Plain", forum: false }];
-  const a = api({
-    getMe: { id: 9, username: "b" },
-    getChatMember: (p) => p.chat_id === -2 ? { status: "kicked" } : { status: p.chat_id === -1001 ? "administrator" : "member" },
-    getChat: (p) => ({ [-1001]: herd, [-3]: { id: -3, type: "group", title: "Plain" } })[p.chat_id],
-  });
-  assert.deepEqual(await botGroups({ api: a, state }), [
-    { id: -1001, title: "Herd", forum: true, admin: true },
-    { id: -3, title: "Plain", forum: false, admin: false },
-  ]);
 });
 
 test("pair: nothing in time is an error", async () => {

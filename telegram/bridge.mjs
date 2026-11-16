@@ -4,9 +4,7 @@
 //   node bridge.mjs --check [--json]          check settings, bot, group and hc; sends nothing
 //   node bridge.mjs --discover --json         groups, topics and people the bot sees (for Corral's wizard)
 //   node bridge.mjs --create-topic <name> --json
-//   node bridge.mjs --pair <code> [--prompt <group id>] [--seconds 290] --json   wait for the bot to be added to a
-//                                             group with that code, or for /init in a group (--prompt asks one for it)
-//   node bridge.mjs --groups --json           the known groups the bot is in now
+//   node bridge.mjs --pair <code> [--seconds 290] --json   wait for the bot to be added to a group with that code
 //   node bridge.mjs --restore-general --json  show and reopen General, the root topic, after it was hidden//   node bridge.mjs --service install|start|stop|restart|uninstall|status   the bridge under launchd
 import { readFile, writeFile, unlink, mkdir, chmod } from "node:fs/promises";
 import { writeFileSync, unlinkSync } from "node:fs";
@@ -87,20 +85,10 @@ async function wizard(mode) {
       const code = arg("--pair");
       if (!/^[A-Za-z0-9]{4,32}$/.test(code ?? "")) throw new Error("--pair needs a code of 4 to 32 letters and digits");
       try {
-        const prompt = arg("--prompt") ? Number(arg("--prompt")) : null;
-        if (prompt !== null && !Number.isSafeInteger(prompt)) throw new Error("--prompt needs a group id");
-        return print({ ok: true, ...(await setup.pair({ api, state, code, prompt, seconds: Number(arg("--seconds")) || 290 })) });
+        return print({ ok: true, ...(await setup.pair({ api, state, code, seconds: Number(arg("--seconds")) || 290 })) });
       } finally {
         await saveState(P.state, state);
       }
-    }
-    if (mode === "groups") {
-      // New updates first (unless the daemon reads them), then a live check of each known group.
-      if (!running) {
-        const { changed } = await setup.discover({ api, state });
-        if (changed) await saveState(P.state, state);
-      }
-      return print({ ok: true, groups: await setup.botGroups({ api, state }) });
     }
     if (mode === "restore-general") return print({ ok: true, ...(await setup.restoreGeneral({ api, settings })) });
     const name = arg("--create-topic");
@@ -273,5 +261,4 @@ else if (process.argv.includes("--service")) serviceCommand(arg("--service"));
 else if (process.argv.includes("--discover")) wizard("discover");
 else if (process.argv.includes("--create-topic")) wizard("create-topic");
 else if (process.argv.includes("--restore-general")) wizard("restore-general");
-else if (process.argv.includes("--pair")) wizard("pair");
-else if (process.argv.includes("--groups")) wizard("groups");else run().catch(err => { log(err.stack ?? err.message); process.exit(1); });
+else if (process.argv.includes("--pair")) wizard("pair");else run().catch(err => { log(err.stack ?? err.message); process.exit(1); });
