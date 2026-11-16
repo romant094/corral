@@ -1364,7 +1364,7 @@ export default class Board extends View {
       .hover(s => s.border_color(C.input).text_color(C.ink)).tooltip("Settings")
       .on_click(() => openSettings())
       .child(svg(`mods/${MOD}/icons/settings.svg`).size(16))
-      .when(flagged, el => el.child(div().absolute().top(5).right(5).child(dot(C.accent, 7))));
+      .when(flagged, el => el.child(div().absolute().top(5).right(5).child(dot(theme().blocked, 8))));
   }
   // The settings dialog: sections on the left, the chosen one on the right. Each section saves as it changes.
   settingsDialog(C) {
@@ -1378,7 +1378,7 @@ export default class Board extends View {
           .text_color(s === current ? C.ink : C.muted).hover(st => st.bg(C.selected))
           .on_click(() => setSettings({ section: s.id }))
           .child(div().flex_1().child(s.title))
-          .when(s.badge(), el => el.child(dot(C.accent, 7))))))
+          .when(s.badge(), el => el.child(dot(theme().blocked, 8))))))
       .child(div().w(1).h_full().flex_none().bg(C.line))
       .child(v_flex().flex_1().min_w(0).h_full()
         .child(h_flex().h(52).flex_none().px(20).items_center().border_b(1).border_color(C.line)
