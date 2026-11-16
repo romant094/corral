@@ -57,7 +57,7 @@ test("done waits for a reply that is new, not the previous turn's", async () => 
   await s.feed(status("t1", "done"));
   await s.feed(status("t1", "working"));
   await s.feed(status("t1", "done"));
-  const texts = s.api.of("sendMessage").map(c => c.params.text).filter(t => /answer/.test(t));
+  const texts = s.api.of("sendRichMessage").map(c => c.params.rich_message.markdown).filter(t => /answer/.test(t));
   assert.deepEqual(texts, ["Old answer.", "New answer."]);
 });
 
@@ -100,8 +100,20 @@ test("status change renames; done posts the last reply", async () => {
   await tick();
   const icons = s.api.of("editForumTopic").map(c => c.params.icon_custom_emoji_id);
   assert.ok(icons.includes("i-done") || icons.includes("i-working"));
-  const texts = s.api.of("sendMessage").map(c => c.params.text);
+  const texts = s.api.of("sendRichMessage").map(c => c.params.rich_message.markdown);
   assert.ok(texts.includes("All tests pass."));
+});
+
+test("a rich message Telegram refuses goes as plain text; a long reply is split", async () => {
+  const s = setup({ reply: "# Done\n\n**All** good." });
+  const call = s.api.call;
+  s.api.call = async (m, p) => {
+    if (m === "sendRichMessage") throw new Error("sendRichMessage: 400 Bad Request: can't parse rich message");
+    return call(m, p);
+  };
+  await s.feed({ terminals: [term("t1", "working")] });
+  await s.feed(status("t1", "done"));
+  assert.ok(s.api.of("sendMessage").some(c => c.params.text === "# Done\n\n**All** good."));
 });
 
 test("done without a transcript posts the screen tail", async () => {
@@ -167,7 +179,7 @@ test("a topic deleted by hand is made again", async () => {
   const call = s.api.call;
   let failed = false;
   s.api.call = async (m, p) => {
-    if (m === "sendMessage" && p.message_thread_id === 55 && !failed) { failed = true; throw new Error("sendMessage: 400 Bad Request: message thread not found"); }
+    if (m === "sendRichMessage" && p.message_thread_id === 55 && !failed) { failed = true; throw new Error("sendMessage: 400 Bad Request: message thread not found"); }
     return call(m, p);
   };
   await s.feed(status("t1", "done"));

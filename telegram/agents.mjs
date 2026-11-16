@@ -178,11 +178,28 @@ export function makeSync({
     return null;
   }
 
+  // Claude writes Markdown, and a rich message (Bot API 10.x) renders it: headings, bold, code, lists, tables.
+  // Up to 32768 characters each. If Telegram refuses one, the reply goes as plain text, as before.
+  const sendRich = (topicId, markdown) => api.call("sendRichMessage", {
+    chat_id, message_thread_id: topicId, rich_message: { markdown, skip_entity_detection: false },
+  });
+
   async function postDone(agent) {
     const reply = await freshReply(agent);
-    const chunks = reply
-      ? splitText(reply).map(escapeHtml)
-      : splitText(tailScreen(await hc.read(agent.address), 20)).map(c => `<pre>${escapeHtml(c)}</pre>`);
+    if (reply) {
+      await inTopic(agent, async (id) => {
+        for (const part of splitText(reply, 30000)) {
+          try { await sendRich(id, part); } catch (err) {
+            // A gone or closed topic is inTopic's to handle; anything else about the rich message falls back.
+            if (TOPIC_GONE.test(err.message) || TOPIC_CLOSED.test(err.message)) throw err;
+            log(`rich message refused (${err.message}); sent as plain text`);
+            for (const c of splitText(part)) await send(id, escapeHtml(c) || "(empty)");
+          }
+        }
+      });
+      return;
+    }
+    const chunks = splitText(tailScreen(await hc.read(agent.address), 20)).map(c => `<pre>${escapeHtml(c)}</pre>`);
     await inTopic(agent, async (id) => { for (const c of chunks) await send(id, c || "(empty)"); });
   }
 
