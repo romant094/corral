@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { emptyState, rememberMessage } from "../config.mjs";
 import { TelegramError } from "../telegram.mjs";
-import { check, discover, createTopic, listing, restoreGeneral } from "../setup.mjs";
+import { check, discover, createTopic, listing, restoreGeneral, pair, pairLink } from "../setup.mjs";
 import { fakeApi, settings } from "./helpers.mjs";
 
 const hc = { ls: async () => ({ terminals: [{ agent: "claude-code" }, { agent: null }] }) };
@@ -84,6 +84,52 @@ test("listing leaves out the agents' own topics", () => {
   state.agents.t1 = { topic_id: 5 };
   state.ended.push({ topic_id: 6 });
   assert.deepEqual(listing(state).topics[-1001], [{ id: 3, name: "Corral" }]);
+});
+
+// A Bot API that answers getUpdates from a script, one batch per call.
+function pairApi(batches, chats) {
+  const a = api({
+    getMe: { id: 9, username: "corral_bot" },
+    getChat: (p) => chats[p.chat_id],
+    getChatMember: { status: "administrator", can_manage_topics: true, can_delete_messages: true, can_pin_messages: true },
+    sendMessage: { message_id: 1 },
+  });
+  const call = a.call;
+  a.raw = a.call = async (m, p) => m === "getUpdates" ? (a.calls.push({ method: m, params: p }), batches.shift() ?? []) : call(m, p);
+  return a;
+}
+const herd = { id: -1001, type: "supergroup", title: "Herd", is_forum: true };
+const anton = { id: 7, first_name: "Anton", last_name: "R", username: "anton" };
+
+test("pair: /start with the code names the group and the owner", async () => {
+  const state = emptyState();
+  const a = pairApi([[
+    { update_id: 5, message: { chat: herd, from: { id: 8, first_name: "X" }, text: "/start WRONG" } },
+    { update_id: 6, message: { chat: herd, from: anton, text: "/start@corral_bot K7Q2" } },
+  ]], { [-1001]: herd });
+  const out = await pair({ api: a, state, code: "K7Q2", seconds: 60 });
+  assert.deepEqual(out, { chat: { id: -1001, title: "Herd" }, owner: { id: 7, login: "anton", name: "Anton R" }, missing: [] });
+  assert.equal(state.offset, 7);
+  assert.match(a.of("sendMessage")[0].params.text, /Connected to Corral/);
+  assert.equal(pairLink("corral_bot", "K7Q2"), "https://t.me/corral_bot?startgroup=K7Q2&admin=manage_topics+delete_messages+pin_messages");
+});
+
+test("pair: a group without Topics is asked once and followed to its supergroup", async () => {
+  const plain = { id: -546, type: "group", title: "Herd" };
+  const a = pairApi([
+    [{ update_id: 1, message: { chat: plain, from: anton, text: "/start K7Q2" } }],
+    [],
+    [{ update_id: 2, message: { chat: plain, migrate_to_chat_id: -1001 } }],
+  ], { [-546]: { ...plain, is_forum: false }, [-1001]: herd });
+  const out = await pair({ api: a, state: emptyState(), code: "K7Q2", seconds: 60 });
+  assert.equal(out.chat.id, -1001);
+  assert.equal(a.of("sendMessage").filter(c => /turn on Topics/.test(c.params.text)).length, 1);
+});
+
+test("pair: nothing in time is an error", async () => {
+  let t = 0;
+  const a = pairApi([], {});
+  await assert.rejects(pair({ api: a, state: emptyState(), code: "K7Q2", seconds: 10, now: () => (t += 6000) }), /in time/);
 });
 
 test("restoreGeneral shows and opens General, takes 'not modified' as done, and posts a line there", async () => {

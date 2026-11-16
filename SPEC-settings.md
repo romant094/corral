@@ -159,6 +159,28 @@ and the token never goes on a command line.
 - Discovery while the daemon runs: the daemon already fills `chats` and `topics`; the mod reads the state file.
 - New in the state file: `people` — `{ id, name, username, chat_id }`, the last 50 people who wrote in a known group.
 
+### Pairing and what the pilot changed (2026-11-16)
+
+The pilot replaced the group list and the owner list as the main path with pairing:
+
+1. The person pastes the token (a link to @BotFather is in the row).
+2. "Add to a group" opens `t.me/<bot>?startgroup=<code>&admin=manage_topics+delete_messages+pin_messages`.
+   Telegram lets them pick a group and grants those rights in one step, then posts `/start <code>` there from them.
+3. Corral stops a running bridge (one reader per bot) and runs `bridge.mjs --pair <code> --json` (up to 290 s).
+   The bridge reads updates until that message comes: the group is the chat, the owner is the sender (id, login,
+   name). Without Topics, it asks once in the group to turn them on and follows the group to its new supergroup id.
+4. Corral saves `chat_id`, `owner_ids`, `owners: [{ id, login, name }]`, turns the toggle on and starts the bridge.
+
+The 8-character code is shown only in Corral, so nobody else becomes owner by adding the bot to their own group.
+Cancel kills the waiting bridge. Other changes from the pilot:
+
+- The root topic is always the group's built-in General (Telegram cannot list topics or say one was deleted);
+  "Restore" unhides and reopens it and posts a line, which brings it back to a client's list.
+- Owners are added by login (the account must have written in the group) and saved with id, login and name;
+  × asks ✓ / ⊘ before removing.
+- Export / Import of `telegram.json` (token included) and Clear all (stop, leave launchd, delete settings and state).
+- The settings are a modal dialog; the Keys section was removed.
+
 ### Token handling (MVP)
 
 The token is in `telegram.json` in plain text, mode 0600, as decided for the pilot. The form shows it masked

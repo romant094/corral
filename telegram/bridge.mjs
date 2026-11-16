@@ -4,6 +4,7 @@
 //   node bridge.mjs --check [--json]          check settings, bot, group and hc; sends nothing
 //   node bridge.mjs --discover --json         groups, topics and people the bot sees (for Corral's wizard)
 //   node bridge.mjs --create-topic <name> --json
+//   node bridge.mjs --pair <code> [--seconds 290] --json   wait for the bot to be added to a group with that code
 //   node bridge.mjs --restore-general --json  show and reopen General, the root topic, after it was hidden//   node bridge.mjs --service install|start|stop|restart|uninstall|status   the bridge under launchd
 import { readFile, writeFile, unlink, mkdir, chmod } from "node:fs/promises";
 import { writeFileSync, unlinkSync } from "node:fs";
@@ -77,6 +78,17 @@ async function wizard(mode) {
       const { changed, found } = await setup.discover({ api, state });
       if (changed) await saveState(P.state, state);
       return print({ ok: true, ...found });
+    }
+    if (mode === "pair") {
+      // Two readers of one bot get 409 Conflict: Corral stops the daemon first.
+      if (running) throw new Error("stop the bridge first");
+      const code = arg("--pair");
+      if (!/^[A-Za-z0-9]{4,32}$/.test(code ?? "")) throw new Error("--pair needs a code of 4 to 32 letters and digits");
+      try {
+        return print({ ok: true, ...(await setup.pair({ api, state, code, seconds: Number(arg("--seconds")) || 290 })) });
+      } finally {
+        await saveState(P.state, state);
+      }
     }
     if (mode === "restore-general") return print({ ok: true, ...(await setup.restoreGeneral({ api, settings })) });
     const name = arg("--create-topic");
@@ -248,4 +260,5 @@ if (process.argv.includes("--check")) check(process.argv.includes("--json"));
 else if (process.argv.includes("--service")) serviceCommand(arg("--service"));
 else if (process.argv.includes("--discover")) wizard("discover");
 else if (process.argv.includes("--create-topic")) wizard("create-topic");
-else if (process.argv.includes("--restore-general")) wizard("restore-general");else run().catch(err => { log(err.stack ?? err.message); process.exit(1); });
+else if (process.argv.includes("--restore-general")) wizard("restore-general");
+else if (process.argv.includes("--pair")) wizard("pair");else run().catch(err => { log(err.stack ?? err.message); process.exit(1); });

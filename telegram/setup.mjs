@@ -58,6 +58,57 @@ export function listing(state) {
   return { chats: state.chats, topics, people: state.people ?? [] };
 }
 
+// Pairing: Corral opens t.me/<bot>?startgroup=<code>&admin=…; Telegram lets the person pick a group and grants the
+// rights, then sends "/start <code>" there from that person. That message names the group and the owner, and only
+// someone with the code (shown in Corral) can send it. Groups without Topics are asked to turn them on and waited for.
+// Updates are read and confirmed here: pairing runs while the daemon is stopped.
+export const PAIR_RIGHTS = "manage_topics+delete_messages+pin_messages";
+export const pairLink = (bot, code) => `https://t.me/${bot}?startgroup=${code}&admin=${PAIR_RIGHTS}`;
+
+export async function pair({ api, state, code, seconds = 290, now = Date.now, wait = 25 }) {
+  const me = await api.call("getMe", {}, { tries: 1 });
+  const deadline = now() + seconds * 1000;
+  const start = new RegExp(`^/start(@${me.username})?\\s+${code}$`, "i");
+  let found = null, asked = null;
+  while (now() < deadline) {
+    const timeout = Math.max(0, Math.min(wait, Math.floor((deadline - now()) / 1000)));
+    const updates = await api.raw("getUpdates", { offset: state.offset, timeout, allowed_updates: ["message", "my_chat_member"] });
+    for (const u of updates) {
+      state.offset = u.update_id + 1;
+      if (u.my_chat_member) rememberChat(state, u.my_chat_member.chat);
+      const m = u.message;
+      if (!m) continue;
+      rememberMessage(state, m);
+      if (m.chat?.type !== "private" && start.test((m.text ?? "").trim()) && m.from && !m.from.is_bot) {
+        found = { chat: m.chat, from: m.from };
+      }
+      // Turning Topics on moves a plain group to a supergroup with a new id.
+      if (found && m.migrate_to_chat_id && m.chat?.id === found.chat.id) found.chat = { ...found.chat, id: m.migrate_to_chat_id };
+    }
+    if (!found) continue;
+    const chat = await api.call("getChat", { chat_id: found.chat.id }, { tries: 1 });
+    if (!chat.is_forum) {
+      if (asked !== chat.id) {
+        asked = chat.id;
+        await api.call("sendMessage", { chat_id: chat.id,
+          text: "Almost there: turn on Topics in this group (group settings → Topics). Corral finishes by itself then." }, { tries: 1 })
+          .catch(() => {});
+      }
+      continue;
+    }
+    rememberChat(state, chat);
+    const member = await api.call("getChatMember", { chat_id: chat.id, user_id: me.id }, { tries: 1 });
+    const missing = member.status === "creator" ? [] : RIGHTS.filter(r => !member[r]);
+    const f = found.from;
+    const name = [f.first_name, f.last_name].filter(Boolean).join(" ") || f.username || String(f.id);
+    await api.call("sendMessage", { chat_id: chat.id, disable_notification: true,
+      text: missing.length ? `Connected to Corral, but the bot still needs: ${missing.join(", ")}.` : "Connected to Corral. /new starts an agent." },
+      { tries: 1 }).catch(() => {});
+    return { chat: { id: chat.id, title: chat.title }, owner: { id: f.id, login: f.username ?? null, name }, missing };
+  }
+  throw new Error(found ? "Topics are still off in that group" : "no group was connected in time");
+}
+
 // Brings the group's General topic back: shown, open, and with a fresh message, which is what makes a client
 // that dropped it list it again. "Not modified" means it already was shown or open.
 export async function restoreGeneral({ api, settings }) {

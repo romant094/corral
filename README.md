@@ -53,7 +53,7 @@ Network: Corral asks `api.github.com` for its latest release at start and every 
 
 The gear right of the plan limits (or `herdr-app do corral.settings`) opens the settings:
 
-- **Telegram:** "Work through Telegram" and one line per setting: the bot token, the group, the root topic (always the group's first topic, General by any name), the owners by login (the account must have written in the group once; the id is what counts), and the bridge: Start, Stop, Restart, its log. Export and Import move the settings, token included, to another Mac; Clear all stops the bridge and forgets the settings, so you can set it up again.
+- **Telegram:** "Work through Telegram", then two steps: paste the bot token (the row links to @BotFather), and press "Add to a group". Telegram opens, you pick a group with Topics on and confirm; the bot gets its admin rights, you become its owner, and Corral starts the bridge. The root topic is the group's built-in General ("Restore" brings it back if it was hidden). More owners can be added by login; Export and Import move the settings, token included, to another Mac; Clear all stops the bridge and forgets the settings.
 - **Updates:** your version, the latest release and its notes, Update, Check now, and "Check automatically". When a new release is out, the gear shows a dot and a toast says so. Update downloads the release and runs its `install.sh` into this mod's folder. A `--link` install is never updated from here: use `git pull`.
 
 ## Board
