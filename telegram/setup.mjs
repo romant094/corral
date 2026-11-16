@@ -54,6 +54,22 @@ export async function discover({ api, state }) {
   return { changed, found: listing(state) };
 }
 
+// Which of the known groups the bot is in now (a member or an admin) and whether they have Topics: Telegram lists no
+// bot's groups, so each known one is asked. A group the bot was removed from, or that is gone, is left out.
+export async function botGroups({ api, state }) {
+  const me = await api.call("getMe", {}, { tries: 3 });
+  const out = [];
+  for (const c of state.chats) {
+    try {
+      const member = await api.call("getChatMember", { chat_id: c.id, user_id: me.id }, { tries: 2 });
+      if (!["member", "administrator", "creator"].includes(member.status)) continue;
+      const chat = await api.call("getChat", { chat_id: c.id }, { tries: 2 });
+      out.push({ id: c.id, title: chat.title ?? c.title, forum: !!chat.is_forum, admin: member.status !== "member" });
+    } catch {}
+  }
+  return out;
+}
+
 // Topics the bridge made for agents are not offered as the root topic.
 export function listing(state) {
   const own = new Set([...Object.values(state.agents ?? {}).map(a => a.topic_id), ...(state.ended ?? []).map(e => e.topic_id)]);
@@ -72,18 +88,20 @@ export const pairLink = (bot, code) => `https://t.me/${bot}?startgroup=${code}&a
 // window can send it there instead of following the link. It leaves the menu when pairing ends; the bridge then
 // sets the group's own menu.
 const INIT_SCOPE = { type: "all_group_chats" };
-export async function pair({ api, state, code, seconds = 290, now = Date.now, wait = 25 }) {
+// prompt: a group the bot is in already; it is asked to send /init at once.
+export async function pair({ api, state, code, seconds = 290, now = Date.now, wait = 25, prompt = null }) {
   const me = await api.call("getMe", {}, { tries: 3 });
   await api.call("setMyCommands", { commands: [{ command: "init", description: "Connect this group to Corral" }], scope: INIT_SCOPE },
     { tries: 1 }).catch(() => {});
   try {
-    return await pairLoop({ api, state, code, seconds, now, wait, me });
+    return await pairLoop({ api, state, code, seconds, now, wait, me, prompt });
   } finally {
     await api.call("deleteMyCommands", { scope: INIT_SCOPE }, { tries: 1 }).catch(() => {});
   }
 }
 
-async function pairLoop({ api, state, code, seconds, now, wait, me }) {
+const INIT_PROMPT = "Send /init here to connect this group to Corral.";
+async function pairLoop({ api, state, code, seconds, now, wait, me, prompt }) {
   const deadline = now() + seconds * 1000;
   const start = new RegExp(`^/start(@${me.username})?\\s+${code}$`, "i");
   const init = new RegExp(`^/init(@${me.username})?$`, "i");
@@ -91,6 +109,16 @@ async function pairLoop({ api, state, code, seconds, now, wait, me }) {
   const addedBy = new Map();
   // Added without the link: the group is told to send /init, once, if no /start with the code follows soon.
   const invited = new Map(), prompted = new Set();
+  if (prompt) {
+    prompted.add(prompt);
+    await api.call("sendMessage", { chat_id: prompt, text: INIT_PROMPT }, { tries: 3 });
+  }
+  // /init without the link: from whoever added the bot in this window, or from an admin of a group it was in already.
+  const mayInit = async (chat, from) => {
+    if (addedBy.get(chat) === from) return true;
+    const m = await api.call("getChatMember", { chat_id: chat, user_id: from }, { tries: 2 }).catch(() => null);
+    return m?.status === "creator" || m?.status === "administrator";
+  };
   let found = null, asked = null;
   while (now() < deadline) {
     // Long waits for the /start; once it came, every few seconds, because turning Topics on in a supergroup
@@ -116,7 +144,7 @@ async function pairLoop({ api, state, code, seconds, now, wait, me }) {
       if (m.new_chat_members?.some(x => x.id === me.id) && m.from) addedBy.set(m.chat.id, m.from.id);
       const text = (m.text ?? "").trim();
       const fromPerson = m.chat?.type !== "private" && m.from && !m.from.is_bot;
-      if (fromPerson && (start.test(text) || (init.test(text) && addedBy.get(m.chat.id) === m.from.id))) {
+      if (fromPerson && (start.test(text) || (init.test(text) && await mayInit(m.chat.id, m.from.id)))) {
         found = { chat: m.chat, from: m.from };
       }
       // Turning Topics on moves a plain group to a supergroup with a new id.
@@ -126,7 +154,7 @@ async function pairLoop({ api, state, code, seconds, now, wait, me }) {
       for (const [chat, at] of invited) {
         if (prompted.has(chat) || now() - at < 3000) continue;
         prompted.add(chat);
-        await api.call("sendMessage", { chat_id: chat, text: "Send /init here to connect this group to Corral." }, { tries: 1 }).catch(() => {});
+        await api.call("sendMessage", { chat_id: chat, text: INIT_PROMPT }, { tries: 1 }).catch(() => {});
       }
       continue;
     }

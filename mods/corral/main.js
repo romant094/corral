@@ -1425,6 +1425,8 @@ export default class Board extends View {
   }
   checkTelegram(cx) {
     return this.tgAction(cx, "Checking…", async () => {
+      // No group yet: the groups the bot is in already are found as the dialog opens.
+      if (!this.tg.settings?.chat_id) this.tg.groups = (await bridgeJson(["--groups", "--json"])).groups ?? [];
       // The root topic is the first topic now; a topic picked by an earlier build goes back to it.
       if (this.tg.settings?.root_topic_id != null) {
         await this.saveTelegram({ root_topic_id: undefined, root_topic_name: undefined });
@@ -1460,7 +1462,9 @@ export default class Board extends View {
         throw new Error((r.errors ?? []).join("; ") || r.error || "Telegram did not take the token");
       }
       this.tg.check = r;
-      this.tg.editToken = false; await this.restartIfRunning();
+      this.tg.editToken = false;
+      await this.restartIfRunning();
+      if (!this.tg.settings?.chat_id) this.tg.groups = (await bridgeJson(["--groups", "--json"])).groups ?? [];
       this.tokenInput.set_value("");
     });
   }
@@ -1558,20 +1562,24 @@ export default class Board extends View {
   }
   // Pairing: the link adds the bot to a group the person picks, as an admin with the rights it needs, and posts
   // "/start <code>" there; the bridge waits for that and fills in the group and the owner.
-  pairTelegram(cx) {
+  // group: a group the bot is in already. The bridge asks it for /init instead of Telegram opening the link.
+  pairTelegram(cx, group = null) {
     const bot = this.tg.check?.bot?.username;
     if (!bot) { this.tg.error = "Check the token first."; return cx.notify(); }
     const code = Array.from({ length: 8 }, () => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Math.floor(Math.random() * 32)]).join("");
     const link = `https://t.me/${bot}?startgroup=${code}&admin=manage_topics+delete_messages+pin_messages`;
-    return this.tgAction(cx, "Waiting for the group (5 minutes): pick it in Telegram and confirm…", async (cx) => {
+    const waiting = group ? `Waiting for /init in ${group.title} (5 minutes): the bot asked for it there…`
+      : "Waiting for the group (5 minutes): pick it in Telegram and confirm…";
+    return this.tgAction(cx, waiting, async (cx) => {
       // One bot, one reader: a running bridge pauses while the code is waited for.
       const wasRunning = !!this.tg.service?.running;
       if (wasRunning) await this.service("stop");
       this.tg.pairing = { code, link };
       cx.notify();
-      await exec("open", [link]).catch(() => {});
+      if (!group) await exec("open", [link]).catch(() => {});
       let r;
-      try { r = await bridgeJson(["--pair", code, "--json"], 300000); } finally { this.tg.pairing = null; }
+      try { r = await bridgeJson(["--pair", code, ...(group ? ["--prompt", String(group.id)] : []), "--json"], 300000); }
+      finally { this.tg.pairing = null; }
       if (!r.ok) {
         if (wasRunning) await this.service("start").catch(() => {});
         throw new Error(r.error === "no group was connected in time" ? "No group was connected in 5 minutes." : r.error);
@@ -1593,6 +1601,15 @@ export default class Board extends View {
       this.tg.check = await bridgeJson(["--check", "--json"]);
     });
   }
+  // The groups the bot is in now. Not while a bridge runs: it reads the updates, and the list comes from them.
+  findGroups(cx) {
+    return this.tgAction(cx, "Looking for groups…", async () => {
+      const r = await bridgeJson(["--groups", "--json"]);
+      if (!r.ok) throw new Error(r.error);
+      this.tg.groups = r.groups;
+      await this.loadTelegram();
+    });
+  }
   cancelPairing(cx) {
     const p = this.tg.pairing;
     if (p) exec("pkill", ["-f", `--pair ${p.code}`]).catch(() => {});
@@ -1603,8 +1620,6 @@ export default class Board extends View {
     // same group under its old, dead id.
     const all = this.tg.state?.chats ?? [];
     const chats = all.filter(c => c.forum);
-    const q = this.groupSearch.value().trim().toLowerCase();
-    const shown = chats.filter(c => !q || c.title.toLowerCase().includes(q));
     const missing = s.chat_id && this.tg.check?.group?.id === s.chat_id ? this.tg.check.rights?.missing ?? [] : [];
     const RIGHT_NAMES = { can_manage_topics: "Manage topics", can_delete_messages: "Delete messages", can_pin_messages: "Pin messages" };
     const p = this.tg.pairing;
@@ -1618,12 +1633,18 @@ export default class Board extends View {
         .when(!!p, el => el
           .child(smallButton(C, "tg-pair-cancel", "Cancel", (_e, cx) => this.cancelPairing(cx)))
           .child(linkText(C, "tg-pair-link", "Open the link again", p.link))))
-      .when(chats.length > 0, el => el
-        .child(div().pt(4).text_size(11).text_color(C.dim).child("Or a group the bot is in already:"))
-        .when(chats.length > 5, el => el.child(field(C, this.groupSearch)))
-        .child(v_flex().id("tg-groups").max_h(120).overflow_y_scrollbar()
-          .children(shown.map(c => this.pickRow(C, `tg-group-${c.id}`, c.title, c.id === s.chat_id, null, (_e, cx) => this.pickGroup(cx, c)))))
-        .child(h_flex().child(smallButton(C, "tg-refresh", "Refresh", (_e, cx) => this.discoverTelegram(cx)))));
+      // The groups the bot is in now, asked of Telegram when this step opens: Connect asks one for /init.
+      .when(!p, el => el
+        .child(div().pt(4).text_size(11).text_color(C.dim)
+          .child(this.tg.groups == null ? "Looking for groups the bot is in already…"
+            : this.tg.groups.length ? "The bot is in these groups already:" : "The bot is in no group it knows of yet."))
+        .children((this.tg.groups ?? []).map(g => h_flex().id(`tg-group-${g.id}`).h(28).gap(10).items_center()
+          .child(div().flex_1().min_w(0).truncate().text_size(13).child(g.title))
+          .when(!g.forum, el => el.child(div().text_size(11).text_color(C.dim).child("no Topics: turn them on first")))
+          .when(g.forum, el => el.child(smallButton(C, `tg-connect-${g.id}`, "Connect", (_e, cx) => this.pairTelegram(cx, g))))))
+        .child(h_flex().gap(8).items_center()
+          .child(smallButton(C, "tg-refresh", "Refresh", (_e, cx) => this.findGroups(cx)))
+          .child(div().text_size(11).text_color(C.dim).child("A group is missing? Send any message there, then Refresh."))));
     const title = chats.find(c => c.id === s.chat_id)?.title ?? all.find(c => c.id === s.chat_id)?.title ?? String(s.chat_id);
     return { title: "Group", body,
       summary: missing.length ? `${title} — needs ${missing.map(r => RIGHT_NAMES[r] ?? r).join(", ")}` : title };
