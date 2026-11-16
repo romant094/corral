@@ -3,8 +3,7 @@
 //   node bridge.mjs           run in the foreground (launchd runs it the same way)
 //   node bridge.mjs --check [--json]          check settings, bot, group and hc; sends nothing
 //   node bridge.mjs --discover --json         groups, topics and people the bot sees (for Corral's wizard)
-//   node bridge.mjs --create-topic <name> --json
-//   node bridge.mjs --service install|start|stop|restart|uninstall|status   the bridge under launchd
+//   node bridge.mjs --create-topic <name> --json//   node bridge.mjs --service install|start|stop|restart|uninstall|status   the bridge under launchd
 import { readFile, writeFile, unlink, mkdir, chmod } from "node:fs/promises";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { paths, loadSettings, loadState, saveState, trimLog } from "./config.mjs";
@@ -246,5 +245,4 @@ async function serviceCommand(verb) {
 if (process.argv.includes("--check")) check(process.argv.includes("--json"));
 else if (process.argv.includes("--service")) serviceCommand(arg("--service"));
 else if (process.argv.includes("--discover")) wizard("discover");
-else if (process.argv.includes("--create-topic")) wizard("create-topic");
-else run().catch(err => { log(err.stack ?? err.message); process.exit(1); });
+else if (process.argv.includes("--create-topic")) wizard("create-topic");else run().catch(err => { log(err.stack ?? err.message); process.exit(1); });

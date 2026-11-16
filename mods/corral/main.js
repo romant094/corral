@@ -708,6 +708,7 @@ export default class Board extends View {
       this.tg = { loaded: false, busy: null, error: null, check: null, editToken: false };
       this.tokenInput = InputState.new({ placeholder: "123456789:AAH…" });
       this.ownerInput = InputState.new({ placeholder: "login" });
+      this.topicInput = InputState.new({ placeholder: "Corral" });
       this.groupSearch = InputState.new({ placeholder: "Filter groups" });
       this.groupSearch.on("change", (_e, cx) => cx.notify());
       // The bridge writes its state file as it goes; the section follows it.
@@ -1458,11 +1459,11 @@ export default class Board extends View {
       await this.loadTelegram();
     });
   }
-  createRootTopic(cx) {
-    return this.tgAction(cx, "Creating the topic…", async () => {
-      const r = await bridgeJson(["--create-topic", "Corral", "--json"]);
+  createRootTopic(cx, name) {
+    return this.tgAction(cx, `Creating "${name}"…`, async () => {
+      const r = await bridgeJson(["--create-topic", name, "--json"]);
       if (!r.ok) throw new Error(r.error);
-      await this.saveTelegram({ root_topic_id: r.topic.id }); await this.restartIfRunning();
+      await this.saveTelegram({ root_topic_id: r.topic.id, root_topic_name: r.topic.name }); await this.restartIfRunning();
       await this.loadTelegram();
     });
   }
@@ -1553,23 +1554,42 @@ export default class Board extends View {
     return { title: "Group", body,
       summary: missing.length ? `${title} — needs ${missing.map(r => RIGHT_NAMES[r] ?? r).join(", ")}` : title };
   }
-  // General or one topic of the bridge's own making. Telegram cannot list a group's topics, and the names the
-  // bridge once saw may be long gone, so no list of old topics is offered.
+  // General or a topic of the group. Telegram cannot list a group's topics or say that one was deleted: the list
+  // holds the topics the bridge saw a message in, less the agents' own and those hidden here with ×.
   tgTopicStep(C, s) {
     const general = (this.tg.state?.general_names ?? {})[s.chat_id] ?? "General";
     const set = "root_topic_id" in s || (s.owner_ids ?? []).length > 0;
-    const topicName = s.root_topic_id == null ? null
-      : ((this.tg.state?.topics ?? {})[s.chat_id] ?? []).find(tp => tp.id === s.root_topic_id)?.name ?? `Topic #${s.root_topic_id}`;
+    const hidden = (settingsState().hiddenTopics ?? {})[s.chat_id] ?? [];
+    const own = new Set([...Object.values(this.tg.state?.agents ?? {}).map(a => a.topic_id), ...(this.tg.state?.ended ?? []).map(e => e.topic_id)]);
+    const all = ((this.tg.state?.topics ?? {})[s.chat_id] ?? []).filter(tp => !own.has(tp.id));
+    const topics = all.filter(tp => !hidden.includes(tp.id) || tp.id === s.root_topic_id);
+    const hide = (id) => setSettings({ hiddenTopics: { ...(settingsState().hiddenTopics ?? {}), [s.chat_id]: [...hidden, id] } });
     const pick = (id) => (_e, cx) => this.tgAction(cx, "Saving…", async () => {
-      await this.saveTelegram({ root_topic_id: id });
+      await this.saveTelegram({ root_topic_id: id, root_topic_name: id == null ? undefined : all.find(tp => tp.id === id)?.name });
       this.tg.unfold = { ...this.tg.unfold, 3: false };
       await this.restartIfRunning();
     });
-    const body = v_flex()
+    // A new topic only when no known one has that name: a second "Corral" is never what is meant.
+    const create = (_e, cx) => {
+      const name = this.topicInput.value().trim() || "Corral";
+      const same = all.find(tp => tp.name.toLowerCase() === name.toLowerCase());
+      if (same) { this.tg.error = `There is a topic "${same.name}" already: pick it above.`; return cx.notify(); }
+      this.topicInput.set_value("");
+      this.createRootTopic(cx, name);
+    };
+    const body = v_flex().gap(2)
       .child(this.pickRow(C, "tg-topic-general", `${general} (the group's first topic)`, set && s.root_topic_id == null, null, pick(null)))
-      .when(!!topicName, el => el.child(this.pickRow(C, `tg-topic-${s.root_topic_id}`, topicName, true, null, () => {})))
-      .child(h_flex().pt(4).child(smallButton(C, "tg-topic-new", "New topic 'Corral'", (_e, cx) => this.createRootTopic(cx))));
-    return { title: "Root topic", body, summary: topicName ?? general };
+      .child(v_flex().id("tg-topics").max_h(150).overflow_y_scrollbar()
+        .children(topics.map(tp => h_flex().gap(4).items_center()
+          .child(div().flex_1().min_w(0).child(this.pickRow(C, `tg-topic-${tp.id}`, tp.name, s.root_topic_id === tp.id, null, pick(tp.id))))
+          .when(tp.id !== s.root_topic_id, el => el.child(xButton(C, `tg-topic-hide-${tp.id}`, "Hide from this list", () => hide(tp.id)))))))
+      .child(h_flex().pt(4).gap(8).items_center()
+        .child(field(C, this.topicInput).w(180))
+        .child(smallButton(C, "tg-topic-new", "New topic", create)))
+      .child(div().text_size(11).text_color(C.dim)
+        .child("A topic shows here once someone writes in it. × hides a topic that is gone; Telegram does not tell bots."));
+    const current = s.root_topic_id == null ? general : all.find(tp => tp.id === s.root_topic_id)?.name ?? s.root_topic_name ?? `Topic #${s.root_topic_id}`;
+    return { title: "Root topic", body, summary: current };
   }
   // Owners by login: the bridge learns a login's id when that account writes in the group. The id is what the
   // bridge checks (a login can change hands); the login is kept beside it to show.
@@ -1645,7 +1665,7 @@ export default class Board extends View {
     const c = await exec("cat", [path]);
     const imported = parseJson(c.stdout);
     if (!imported || typeof imported.token !== "string") throw new Error("That file is not a Corral Telegram settings file.");
-    const keep = ["token", "chat_id", "root_topic_id", "owner_ids", "owners", "enabled"];
+    const keep = ["token", "chat_id", "root_topic_id", "root_topic_name", "owner_ids", "owners", "enabled"];
     const f = tgFiles();
     await fs.mkdir(f.dir, { recursive: true }).catch(() => {});
     await exec("chmod", ["700", f.dir]).catch(() => {});
