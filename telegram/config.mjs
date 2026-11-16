@@ -143,6 +143,11 @@ export function rememberMessage(state, msg) {
   const created = msg.forum_topic_created ?? msg.reply_to_message?.forum_topic_created;
   if (thread && created) changed = rememberTopic(state, msg.chat.id, thread, created.name) || changed;
   if (thread && msg.forum_topic_edited?.name) changed = rememberTopic(state, msg.chat.id, thread, msg.forum_topic_edited.name) || changed;
+  // General has no thread id: a rename there is the group's first topic getting a new name.
+  if (!thread && msg.forum_topic_edited?.name && msg.chat?.is_forum) {
+    const names = (state.general_names ??= {});
+    if (names[msg.chat.id] !== msg.forum_topic_edited.name) { names[msg.chat.id] = msg.forum_topic_edited.name; changed = true; }
+  }
   if (msg.chat) changed = rememberPerson(state, msg.from, msg.chat.id) || changed;
   return changed;
 }

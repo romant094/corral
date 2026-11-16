@@ -622,6 +622,13 @@ const settingsButton = (C, id, label, primary, onClick) => h_flex().id(id).h(30)
   .bg(primary ? C.accent : C.card).text_color(primary ? C.card : C.ink)
   .when(!primary, el => el.border(1).border_color(C.line))
   .hover(s => s.opacity(0.85)).on_click((e, cx) => { cx.stop_propagation(); onClick(e, cx); }).child(label);
+// The compact buttons and fields of the Telegram section. `color` fills the button (accent, danger).
+const smallButton = (C, id, label, onClick, color = null) => h_flex().id(id).h(26).px(10).flex_none().items_center().rounded(5)
+  .cursor_pointer().text_size(12).font_semibold()
+  .bg(color ?? C.card).text_color(color ? C.card : C.ink).when(!color, el => el.border(1).border_color(C.line))
+  .hover(s => s.opacity(0.85)).on_click((e, cx) => { cx.stop_propagation(); onClick(e, cx); }).child(label);
+const field = (C, state) => div().h(26).px(8).flex().items_center().rounded(5).bg(C.card).border(1).border_color(C.input).text_size(12)
+  .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(state));
 // A small monospaced figure, as in "+12 −3".
 const monoNum = (text, color) => div().font_family("Geist Mono").text_size(11).text_color(color).flex_none().child(text);
 // A thin vertical line between groups of controls.
@@ -696,7 +703,7 @@ export default class Board extends View {
     if (p?.role === "settings") {
       this.tg = { loaded: false, busy: null, error: null, check: null, editToken: false };
       this.tokenInput = InputState.new({ placeholder: "123456789:AAH…" });
-      this.ownerInput = InputState.new({ placeholder: "@login" });
+      this.ownerInput = InputState.new({ placeholder: "login" });
       this.groupSearch = InputState.new({ placeholder: "Filter groups" });
       this.groupSearch.on("change", (_e, cx) => cx.notify());
       // The bridge writes its state file as it goes; the section follows it.
@@ -1435,7 +1442,7 @@ export default class Board extends View {
   pickGroup(cx, chat) {
     return this.tgAction(cx, "Checking the group…", async () => {
       // Another group's topic and owners do not carry over.
-      await this.saveTelegram({ chat_id: chat.id, root_topic_id: undefined, owner_ids: undefined });
+      await this.saveTelegram({ chat_id: chat.id, root_topic_id: undefined, owner_ids: undefined, owners: undefined });
       this.tg.unfold = {}; await this.restartIfRunning();
       this.tg.check = await bridgeJson(["--check", "--json"]);
     });
@@ -1461,129 +1468,119 @@ export default class Board extends View {
     const s = t.settings ?? {};
     // A file set up by hand before the toggle existed counts as on.
     const on = s.enabled ?? !!(s.token && s.chat_id);
-    const toggle = h_flex().id("tg-enabled").gap(10).items_center().cursor_pointer()
-      .on_click((_e, cx) => this.tgAction(cx, on ? "Turning off…" : "Turning on…", () => this.setTelegramEnabled(!on)))
-      .child(checkBox(C, on))
-      .child(v_flex().flex_1().min_w(0).gap(2)
-        .child(div().text_size(13).font_semibold().child("Work through Telegram"))
-        .child(div().text_size(12).text_color(C.muted)
-          .child("A topic per agent in a Telegram group: statuses, replies and questions, and you answer from your phone.")));
-    if (!on) return v_flex().gap(14).child(toggle);
-    if (!t.bridge) {
-      const b = this.bridgeUi ?? {};
-      return v_flex().gap(14).child(toggle)
-        .child(div().text_size(12).text_color(C.muted)
-          .child(`The bridge is not installed yet. Corral ${VERSION} brings it from its GitHub release (needs Node 20 or newer).`))
-        .child(h_flex().gap(10).items_center()
-          .child(settingsButton(C, "tg-install-bridge", "Install the bridge", true, (_e, cx) => this.installBridge(cx)))
-          .when(!!b.busy, el => el.child(div().text_size(12).text_color(C.muted).child(b.busy))))
-        .when(!!b.error, el => el.child(div().text_size(12).text_color(C.danger).child(b.error)));
-    }
-    const bot = t.check?.bot;
-    const chats = t.state?.chats ?? [];
-    const steps = [
-      this.tgTokenStep(C, s, bot),
-      this.tgGroupStep(C, s, bot, chats),
-      this.tgTopicStep(C, s),
-      this.tgOwnerStep(C, s),
-      this.tgDaemonStep(C, s),
-    ];
-    // A step opens when the one before it is done.
-    // A saved token counts until a check says Telegram refused it.
-    // Only Telegram refusing the token undoes step 1, not an offline check. A file written by hand
-    // without root_topic_id means General, as the bridge reads it.
-    const rejected = (this.tg.check?.errors ?? []).some(e => e.includes("rejected"));
-    const owners = (s.owner_ids ?? []).length > 0;
-    const done = [!!s.token && !rejected, !!s.chat_id, s.chat_id != null && ("root_topic_id" in s || owners), owners];
-    return v_flex().gap(14).child(toggle)
-      // The bridge step is always open: its status and Stop matter even while a step above is being changed.
-      .children(steps.map((body, i) => this.tgStep(C, i + 1, body, done[i] ?? false,
-        i === 0 || i === steps.length - 1 || done.slice(0, i).every(Boolean))))
+    const act = (label, work) => (_e, cx) => this.tgAction(cx, label, work);
+    const head = h_flex().gap(8).items_center()
+      .child(h_flex().id("tg-enabled").flex_1().gap(10).items_center().cursor_pointer()
+        .on_click(act(on ? "Turning off…" : "Turning on…", () => this.setTelegramEnabled(!on)))
+        .child(checkBox(C, on))
+        .child(div().text_size(13).font_semibold().child("Work through Telegram")))
+      .child(smallButton(C, "tg-import", "Import", act("Importing…", () => this.importTelegram())))
+      .when(!!t.text, el => el
+        .child(smallButton(C, "tg-export", "Export", act("Exporting…", () => this.exportTelegram())))
+        .child(t.confirmClear
+          ? smallButton(C, "tg-clear-yes", "Clear: sure?", act("Clearing…", () => this.clearTelegram()), C.danger)
+          : smallButton(C, "tg-clear", "Clear all", (_e, cx) => { t.confirmClear = true; cx.notify(); })));
+    const foot = (el) => el
       .when(!!t.busy, el => el.child(div().text_size(12).text_color(C.muted).child(t.busy)))
       .when(!!t.error, el => el.child(div().text_size(12).text_color(C.danger).child(t.error)));
+    if (!on) return foot(v_flex().gap(10).child(head)
+      .child(div().text_size(12).text_color(C.muted).child("A topic per agent in a Telegram group: statuses, replies, questions; you answer from your phone.")));
+    if (!t.bridge) {
+      const b = this.bridgeUi ?? {};
+      return foot(v_flex().gap(10).child(head)
+        .child(div().text_size(12).text_color(C.muted).child(`The bridge is not installed yet: it comes with Corral ${VERSION}'s release (Node 20+).`))
+        .child(h_flex().gap(10).items_center()
+          .child(smallButton(C, "tg-install-bridge", "Install the bridge", (_e, cx) => this.installBridge(cx), C.accent))
+          .when(!!b.busy, el => el.child(div().text_size(12).text_color(C.muted).child(b.busy))))
+        .when(!!b.error, el => el.child(div().text_size(12).text_color(C.danger).child(b.error))));
+    }
+    const bot = t.check?.bot;
+    // Only Telegram refusing the token undoes it, not an offline check. A file written by hand
+    // without root_topic_id means General, as the bridge reads it.
+    const rejected = (t.check?.errors ?? []).some(e => e.includes("rejected"));
+    const owners = (s.owner_ids ?? []).length > 0;
+    const done = [!!s.token && !rejected, !!s.chat_id, s.chat_id != null && ("root_topic_id" in s || owners), owners];
+    const rows = [this.tgTokenStep(C, s, bot), this.tgGroupStep(C, s, bot), this.tgTopicStep(C, s), this.tgOwnerStep(C, s)];
+    return foot(v_flex().gap(4).child(head).child(div().h(6))
+      // A row opens when the one before it is done; the bridge row is always there.
+      .children(rows.map((row, i) => this.tgRow(C, i + 1, row, done[i], done.slice(0, i).every(Boolean))))
+      .child(div().h(1).my(6).bg(C.line))
+      .child(this.tgDaemonStep(C, s)));
   }
-  tgStep(C, n, { title, body, summary }, done, open) {
-    // A done step folds to one line until "Change"; the token step draws its own line.
-    const folded = done && summary != null && !this.tg.unfold?.[n];
-    if (folded) body = h_flex().gap(10).items_center()
-      .child(div().flex_1().min_w(0).truncate().text_size(13).child(summary))
-      .child(settingsButton(C, `tg-change-${n}`, "Change", false, (_e, cx) => { this.tg.unfold = { ...this.tg.unfold, [n]: true }; cx.notify(); }));
-    return h_flex().items_start().gap(12)
-      .child(div().size(22).mt(1).flex().flex_none().items_center().justify_center().rounded(11).text_size(11).font_semibold()
-        .bg(done ? theme().done : open ? C.selected : C.bg).text_color(done ? C.card : open ? C.ink : C.dim)
-        .border(1).border_color(done ? theme().done : C.line).child(done ? "✓" : String(n)))
-      .child(v_flex().flex_1().min_w(0).gap(8)
-        .child(div().text_size(13).font_semibold().text_color(open ? C.ink : C.dim).child(title))
-        .when(open, el => el.child(body)));
+  // One line per setting: status, name, value, Change; the editor opens under it.
+  tgRow(C, n, { title, body, summary }, done, open) {
+    const editing = open && (!done || !!this.tg.unfold?.[n]);
+    return v_flex().gap(6)
+      .child(h_flex().h(30).gap(10).items_center()
+        .child(div().w(14).flex_none().text_size(12).text_color(done ? theme().done : C.dim).child(done ? "✓" : "•"))
+        .child(div().w(110).flex_none().text_size(13).text_color(open ? C.ink : C.dim).child(title))
+        .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(C.muted).child(done ? summary ?? "" : ""))
+        .when(done && !editing, el => el.child(smallButton(C, `tg-change-${n}`, "Change",
+          (_e, cx) => { this.tg.unfold = { ...this.tg.unfold, [n]: true }; cx.notify(); })))
+        .when(done && editing, el => el.child(smallButton(C, `tg-done-${n}`, "Done",
+          (_e, cx) => { this.tg.unfold = { ...this.tg.unfold, [n]: false }; cx.notify(); }))))
+      .when(editing, el => el.child(div().pl(24).pb(6).child(body)));
   }
   tgTokenStep(C, s, bot) {
-    const editing = !s.token || this.tg.editToken;
-    const body = editing
-      ? v_flex().gap(8)
-        .child(div().text_size(12).text_color(C.muted)
-          .child("Make a bot with @BotFather (/newbot) and paste its token. In BotFather's Bot Settings: Allow Groups on, Group Privacy off. "
-            + "Once the bot is in your group, turn Allow Groups off, so nobody adds it elsewhere."))
-        .child(h_flex().gap(8)
-          .child(div().flex_1().h(32).px(10).flex().items_center().rounded(6).bg(C.card).border(1).border_color(C.input).text_size(13)
-            .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.tokenInput)))
-          .child(settingsButton(C, "tg-token-check", "Check", true, (_e, cx) => this.saveToken(cx))))
-      : h_flex().gap(10).items_center()
-        .child(div().text_size(13).child(bot ? `@${bot.username}` : "Token saved"))
-        .child(div().text_size(12).text_color(C.muted).font_family("Geist Mono").child(`…${s.token.slice(-4)}`))
-        .child(div().flex_1())
-        .child(settingsButton(C, "tg-token-change", "Change", false, (_e, cx) => { this.tg.editToken = true; this.tokenInput.focus(); cx.notify(); }));
-    return { title: "Bot token", body };
+    const body = v_flex().gap(6)
+      .child(div().text_size(12).text_color(C.muted).child("From @BotFather (/newbot). In its Bot Settings: Allow Groups on, Group Privacy off."))
+      .child(h_flex().gap(8)
+        .child(field(C, this.tokenInput).flex_1())
+        .child(smallButton(C, "tg-token-check", "Check", (_e, cx) => this.saveToken(cx), C.accent)));
+    return { title: "Bot", body, summary: s.token ? `${bot ? `@${bot.username}` : "token saved"}  …${s.token.slice(-4)}` : "" };
   }
-  tgGroupStep(C, s, bot, chats) {
+  tgGroupStep(C, s, bot) {
+    const chats = this.tg.state?.chats ?? [];
     const q = this.groupSearch.value().trim().toLowerCase();
     const shown = chats.filter(c => !q || c.title.toLowerCase().includes(q));
     const missing = s.chat_id && this.tg.check?.group?.id === s.chat_id ? this.tg.check.rights?.missing ?? [] : [];
     const RIGHT_NAMES = { can_manage_topics: "Manage topics", can_delete_messages: "Delete messages", can_pin_messages: "Pin messages" };
-    const body = v_flex().gap(8)
-      .child(div().text_size(12).text_color(C.muted).child(`Turn on Topics in the group, add @${bot?.username ?? "your bot"} as an admin with `
-        + `Manage topics, Delete messages and Pin messages, then send any message there and press Refresh.`))
+    const body = v_flex().gap(6)
+      .child(div().text_size(12).text_color(C.muted)
+        .child(`Topics on; @${bot?.username ?? "the bot"} an admin (manage topics, delete and pin messages); write there; Refresh.`))
       .child(h_flex().gap(8)
-        .child(div().flex_1().h(30).px(10).flex().items_center().rounded(6).bg(C.card).border(1).border_color(C.input).text_size(12)
-          .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.groupSearch)))
-        .child(settingsButton(C, "tg-refresh", "Refresh", false, (_e, cx) => this.discoverTelegram(cx))))
-      .child(v_flex().gap(2).max_h(160).id("tg-groups").overflow_y_scrollbar()
-        .when(!shown.length, el => el.child(div().py(6).text_size(12).text_color(C.dim).child("No groups yet.")))
+        .child(field(C, this.groupSearch).flex_1())
+        .child(smallButton(C, "tg-refresh", "Refresh", (_e, cx) => this.discoverTelegram(cx))))
+      .child(v_flex().id("tg-groups").max_h(120).overflow_y_scrollbar()
+        .when(!shown.length, el => el.child(div().py(4).text_size(12).text_color(C.dim).child("No groups yet.")))
         .children(shown.map(c => this.pickRow(C, `tg-group-${c.id}`, c.title, c.id === s.chat_id, c.forum ? null : "Topics are off",
-          (_e, cx) => this.pickGroup(cx, c)))))
-      .when(missing.length > 0, el => el.child(div().text_size(12).text_color(C.danger)
-        .child(`The bot needs: ${missing.map(r => RIGHT_NAMES[r] ?? r).join(", ")}.`)));
-    return { title: "Group", body, summary: chats.find(c => c.id === s.chat_id)?.title ?? String(s.chat_id) };
+          (_e, cx) => this.pickGroup(cx, c)))));
+    const title = chats.find(c => c.id === s.chat_id)?.title ?? String(s.chat_id);
+    return { title: "Group", body,
+      summary: missing.length ? `${title} — needs ${missing.map(r => RIGHT_NAMES[r] ?? r).join(", ")}` : title };
   }
+  // General or one topic of the bridge's own making. Telegram cannot list a group's topics, and the names the
+  // bridge once saw may be long gone, so no list of old topics is offered.
   tgTopicStep(C, s) {
-    const topics = (this.tg.state?.topics ?? {})[s.chat_id] ?? [];
-    const set = "root_topic_id" in s;
+    const general = (this.tg.state?.general_names ?? {})[s.chat_id] ?? "General";
+    const set = "root_topic_id" in s || (s.owner_ids ?? []).length > 0;
+    const topicName = s.root_topic_id == null ? null
+      : ((this.tg.state?.topics ?? {})[s.chat_id] ?? []).find(tp => tp.id === s.root_topic_id)?.name ?? `Topic #${s.root_topic_id}`;
     const pick = (id) => (_e, cx) => this.tgAction(cx, "Saving…", async () => {
       await this.saveTelegram({ root_topic_id: id });
-      this.tg.unfold = { ...this.tg.unfold, 3: false }; await this.restartIfRunning();
+      this.tg.unfold = { ...this.tg.unfold, 3: false };
+      await this.restartIfRunning();
     });
-    const body = v_flex().gap(2)
-      .child(div().pb(4).text_size(12).text_color(C.muted).child("Where /new, /clear and the list of agents live."))
-      .child(this.pickRow(C, "tg-topic-general", "General", set && s.root_topic_id == null, null, pick(null)))
-      .children(topics.map(tp => this.pickRow(C, `tg-topic-${tp.id}`, tp.name, s.root_topic_id === tp.id, null, pick(tp.id))))
-      .child(h_flex().pt(6).child(settingsButton(C, "tg-topic-new", "Create 'Corral' topic", false, (_e, cx) => this.createRootTopic(cx))));
-    return { title: "Root topic", body,
-      summary: s.root_topic_id == null ? "General" : topics.find(tp => tp.id === s.root_topic_id)?.name ?? `Topic ${s.root_topic_id}` };
+    const body = v_flex()
+      .child(this.pickRow(C, "tg-topic-general", `${general} (the group's first topic)`, set && s.root_topic_id == null, null, pick(null)))
+      .when(!!topicName, el => el.child(this.pickRow(C, `tg-topic-${s.root_topic_id}`, topicName, true, null, () => {})))
+      .child(h_flex().pt(4).child(smallButton(C, "tg-topic-new", "New topic 'Corral'", (_e, cx) => this.createRootTopic(cx))));
+    return { title: "Root topic", body, summary: topicName ?? general };
   }
+  // Owners by login: the bridge learns a login's id when that account writes in the group. The id is what the
+  // bridge checks (a login can change hands); the login is kept beside it to show.
   tgOwnerStep(C, s) {
-    const owners = s.owner_ids ?? [];
-    const people = (this.tg.state?.people ?? []).filter(p => p.chat_id === s.chat_id);
-    // An owner unticked here stays in the list until the dialog closes, so a slip is one click to undo.
-    const seen = (this.tg.ownersSeen ??= new Set());
-    owners.forEach(id => seen.add(id));
-    const unknown = [...seen].filter(id => !people.some(p => p.id === id)).map(id => ({ id, name: `User ${id}`, username: null }));
-    const save = (next) => this.saveTelegram({ owner_ids: next.length ? next : undefined }).then(() => this.restartIfRunning());
-    const toggle = (id) => (_e, cx) => this.tgAction(cx, "Saving…", () => save(owners.includes(id) ? owners.filter(o => o !== id) : [...owners, id]));
-    // By login. Telegram does not turn a login into a user for a bot: the person must have written in the group,
-    // so the bridge saw their id next to it. The id is what is saved; a login can change hands.
+    const ids = s.owner_ids ?? [];
+    const logins = Object.fromEntries((s.owners ?? []).map(o => [o.id, o.login]));
+    const save = (next) => this.saveTelegram({
+      owner_ids: next.length ? next.map(o => o.id) : undefined,
+      owners: next.length ? next : undefined,
+    }).then(() => this.restartIfRunning());
+    const list = ids.map(id => ({ id, login: logins[id] ?? null }));
     const add = (_e, cx) => {
       const login = this.ownerInput.value().trim().replace(/^@/, "").toLowerCase();
-      if (!/^[a-z0-9_]{4,32}$/.test(login)) { this.tg.error = "Type a Telegram login, like @romant094."; return cx.notify(); }
-      this.tgAction(cx, `Looking for @${login}…`, async () => {
+      if (!/^[a-z0-9_]{4,32}$/.test(login)) { this.tg.error = "Type a Telegram login, like romant094."; return cx.notify(); }
+      this.tgAction(cx, `Looking for ${login}…`, async () => {
         const find = () => (this.tg.state?.people ?? []).find(p => p.username?.toLowerCase() === login && p.chat_id === s.chat_id);
         if (!find()) {
           const r = await bridgeJson(["--discover", "--json"]);
@@ -1591,38 +1588,68 @@ export default class Board extends View {
           await this.loadTelegram();
         }
         const person = find();
-        if (!person) throw new Error(`@${login} has not written in the group yet: send any message there from that account, then Add again.`);
+        if (!person) throw new Error(`${login} has not written in the group yet: send any message there from that account, then Add again.`);
         this.ownerInput.set_value("");
-        await save(owners.includes(person.id) ? owners : [...owners, person.id]);
+        await save([...list.filter(o => o.id !== person.id), { id: person.id, login: person.username }]);
       });
     };
-    const body = v_flex().gap(2)
-      .child(div().pb(4).text_size(12).text_color(C.muted)
-        .child("Only these people can start, answer and stop agents: they run code on this Mac. Type a login and press Add; "
-          + "that account must have written in the group once."))
-      .when(!people.length && !unknown.length, el => el.child(div().py(6).text_size(12).text_color(C.dim).child("Nobody wrote in the group yet.")))
-      .children([...unknown, ...people].map(p => h_flex().id(`tg-owner-${p.id}`).h(30).px(8).gap(10).items_center().rounded(6)
-        .cursor_pointer().hover(st => st.bg(C.selected)).on_click(toggle(p.id))
-        .child(checkBox(C, owners.includes(p.id)))
-        .child(div().text_size(13).child(p.name))
-        .when(!!p.username, el => el.child(div().text_size(12).text_color(C.muted).child(`@${p.username}`)))
-        // Names can be copied; the id cannot. Yours is in Telegram's settings or from @userinfobot.
-        .child(div().text_size(11).text_color(C.dim).font_family("Geist Mono").child(`id ${p.id}`))))
-      .child(h_flex().pt(6).gap(8)
-        .child(div().w(200).h(30).px(10).flex().items_center().rounded(6).bg(C.card).border(1).border_color(C.input).text_size(12)
-          .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.ownerInput)))
-        .child(settingsButton(C, "tg-owner-add", "Add", false, add))
-        .child(settingsButton(C, "tg-owner-refresh", "Refresh", false, (_e, cx) => this.discoverTelegram(cx))));
-    return { title: "Who may give commands", body,
-      summary: [...unknown, ...people].filter(p => owners.includes(p.id)).map(p => p.username ? `@${p.username}` : p.name).join(", ") };
+    const body = v_flex().gap(4)
+      .children(list.map(o => h_flex().id(`tg-owner-${o.id}`).h(26).gap(10).items_center()
+        .child(div().text_size(13).child(o.login ? `@${o.login}` : "—"))
+        .child(div().text_size(11).text_color(C.dim).font_family("Geist Mono").child(`id ${o.id}`))
+        .child(xButton(C, `tg-owner-rm-${o.id}`, "Remove", (_e, cx) => this.tgAction(cx, "Saving…", () => save(list.filter(x => x.id !== o.id)))))))
+      .child(h_flex().gap(8).items_center()
+        .child(div().text_size(13).text_color(C.muted).child("@"))
+        .child(field(C, this.ownerInput).w(180))
+        .child(smallButton(C, "tg-owner-add", "Add", add)))
+      .child(div().text_size(11).text_color(C.dim).child("They control the agents on this Mac. The account must have written in the group once."));
+    return { title: "Owners", body, summary: list.map(o => o.login ? `@${o.login}` : `id ${o.id}`).join(", ") };
   }
   pickRow(C, id, label, selected, disabledWhy, onClick) {
-    return h_flex().id(id).flex_none().h(30).px(8).gap(10).items_center().rounded(6)
+    return h_flex().id(id).flex_none().h(26).px(6).gap(8).items_center().rounded(5)
       .when(selected, el => el.bg(C.selected))
       .when(!disabledWhy, el => el.cursor_pointer().hover(st => st.bg(C.selected)).on_click(onClick))
-      .child(div().size(14).flex_none().rounded(7).border(selected ? 4 : 1).border_color(selected ? C.accent : C.input))
+      .child(div().size(12).flex_none().rounded(6).border(selected ? 4 : 1).border_color(selected ? C.accent : C.input))
       .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(disabledWhy ? C.dim : C.ink).child(label))
       .when(!!disabledWhy, el => el.child(div().text_size(11).text_color(C.dim).child(disabledWhy)));
+  }
+  // Export: telegram.json as it is, token included, to a file the person picks. Import: the same file back.
+  async exportTelegram() {
+    const r = await exec("osascript", ["-e", 'POSIX path of (choose file name with prompt "Export the Telegram settings (they hold the bot token)" default name "corral-telegram.json")'], { timeout: 600000 });
+    const path = r.stdout.trim();
+    if (r.code !== 0 || !path) return;
+    const c = await exec("cp", [tgFiles().settings, path]);
+    if (c.code !== 0) throw new Error(`Export failed: ${c.stderr.trim()}`);
+    await exec("chmod", ["600", path]).catch(() => {});
+    notify({ title: "Telegram settings exported", body: `${tilde(path)} — it holds the bot token, keep it to yourself.`, level: "success" });
+  }
+  async importTelegram() {
+    const r = await exec("osascript", ["-e", 'POSIX path of (choose file with prompt "Import Telegram settings" of type {"public.json"})'], { timeout: 600000 });
+    const path = r.stdout.trim();
+    if (r.code !== 0 || !path) return;
+    const c = await exec("cat", [path]);
+    const imported = parseJson(c.stdout);
+    if (!imported || typeof imported.token !== "string") throw new Error("That file is not a Corral Telegram settings file.");
+    const keep = ["token", "chat_id", "root_topic_id", "owner_ids", "owners", "enabled"];
+    const f = tgFiles();
+    await fs.mkdir(f.dir, { recursive: true }).catch(() => {});
+    await exec("chmod", ["700", f.dir]).catch(() => {});
+    const next = JSON.stringify(Object.fromEntries(keep.filter(k => k in imported).map(k => [k, imported[k]])), null, 2) + "\n";
+    await writeTextFile(f.settings, next, this.tg.text ?? null);
+    await exec("chmod", ["600", f.settings]).catch(() => {});
+    Object.assign(this.tg, { text: next, settings: parseJson(next), check: null, unfold: {} });
+    this.tg.check = await bridgeJson(["--check", "--json"]);
+    await this.restartIfRunning();
+  }
+  // Clear all: the bridge stops and leaves launchd, and the settings and what it learned go. Topics in Telegram stay.
+  async clearTelegram() {
+    this.tg.confirmClear = false;
+    await this.service("uninstall").catch(() => {});
+    const f = tgFiles();
+    await fs.unlink(f.settings).catch(() => {});
+    await fs.unlink(f.state).catch(() => {});
+    Object.assign(this.tg, { check: null, unfold: {}, text: null, settings: null });
+    await this.loadTelegram();
   }
   // launchd's view of the bridge; null until the first answer.
   async loadService() {
@@ -1666,7 +1693,7 @@ export default class Board extends View {
   tgDaemonStep(C, s) {
     const t = this.tg;
     // The bridge refuses to run without these; Start says what is missing instead.
-    const missing = [!s.token && "the token", !s.chat_id && "the group", !(s.owner_ids ?? []).length && "who may give commands"].filter(Boolean);
+    const missing = [!s.token && "the token", !s.chat_id && "the group", !(s.owner_ids ?? []).length && "the owners"].filter(Boolean);
     const d = t.state?.daemon ?? {};
     const svc = t.service;
     const fresh = d.heartbeat_at && Date.now() - Date.parse(d.heartbeat_at) < 90000;
@@ -1683,21 +1710,20 @@ export default class Board extends View {
     const known = !!svc && !svc.error;
     const outside = known && !svc.running && d.status === "running" && fresh;
     const act = (label, work) => (_e, cx) => this.tgAction(cx, label, work);
-    const body = v_flex().gap(10)
-      .child(h_flex().gap(8).items_center().child(dot(color, 8)).child(div().text_size(13).text_color(color).child(line)))
-      .when(known, el => el.child(h_flex().gap(8)
-        .when(outside, el => el.child(settingsButton(C, "tg-takeover", "Run it from Corral", true, act("Moving the bridge…", () => this.takeOver()))))
-        .when(!outside && !svc?.running && !missing.length, el => el.child(settingsButton(C, "tg-start", "Start", true, act("Starting…", () => this.service("start")))))
-        .when(!outside && !svc?.running && missing.length > 0, el => el.child(div().text_size(12).text_color(C.muted)
-          .child(`To start, set ${missing.join(", ")}.`)))
-        .when(!!svc?.running, el => el
-          .child(settingsButton(C, "tg-stop", "Stop", false, act("Stopping…", () => this.service("stop"))))
-          .child(settingsButton(C, "tg-restart", "Restart", false, act("Restarting…", () => this.service("restart")))))
-        .child(div().flex_1())
-        .child(settingsButton(C, "tg-log", "Show log", false, () => run("tab.new", { name: "Telegram log", argv: ["tail", "-n", "200", "-f", tgFiles().log] })))))
-      .child(div().text_size(12).text_color(C.dim)
-        .child("The bridge runs under launchd: it starts again after a restart of the Mac until you stop it. Keep the Mac awake."));
-    return { title: "Bridge", body };
+    // One line: status, then what can be done; launchd starts it again after a restart of the Mac until it is stopped.
+    return v_flex().gap(4)
+      .child(h_flex().h(30).gap(10).items_center()
+        .child(div().w(14).flex_none().child(dot(color, 8)))
+        .child(div().w(110).flex_none().text_size(13).child("Bridge"))
+        .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(color).child(line))
+        .when(known && outside, el => el.child(smallButton(C, "tg-takeover", "Run it from Corral", act("Moving the bridge…", () => this.takeOver()), C.accent)))
+        .when(known && !outside && !svc.running && !missing.length, el => el.child(smallButton(C, "tg-start", "Start", act("Starting…", () => this.service("start")), C.accent)))
+        .when(known && !!svc.running, el => el
+          .child(smallButton(C, "tg-stop", "Stop", act("Stopping…", () => this.service("stop"))))
+          .child(smallButton(C, "tg-restart", "Restart", act("Restarting…", () => this.service("restart")))))
+        .child(smallButton(C, "tg-log", "Log", () => run("tab.new", { name: "Telegram log", argv: ["tail", "-n", "200", "-f", tgFiles().log] }))))
+      .when(known && !outside && !svc.running && missing.length > 0, el => el.child(div().pl(24).text_size(12).text_color(C.muted)
+        .child(`To start, set ${missing.join(", ")}.`)));
   }
   // One toast per new version and run; "Later" in the section silences that version.
   announceUpdate() {

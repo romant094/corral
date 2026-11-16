@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { emptyState } from "../config.mjs";
+import { emptyState, rememberMessage } from "../config.mjs";
 import { TelegramError } from "../telegram.mjs";
 import { check, discover, createTopic, listing } from "../setup.mjs";
 import { fakeApi, settings } from "./helpers.mjs";
@@ -59,6 +59,13 @@ test("discover: reads without confirming and learns groups, topics and people", 
   assert.deepEqual(found.chats.map(c => c.id), [-1002, -1001]);
   assert.deepEqual(found.topics[-1001], [{ id: 3, name: "Corral" }, { id: 5, name: "#5" }]);
   assert.deepEqual(found.people, [{ id: 7, name: "Anton", username: "anton", chat_id: -1001 }]);
+});
+
+test("a rename of General is remembered by group", () => {
+  const state = emptyState();
+  rememberMessage(state, { chat: { id: -1001, type: "supergroup", title: "Herd", is_forum: true }, from: { id: 7, first_name: "A" },
+    forum_topic_edited: { name: "Session Manager" } });
+  assert.deepEqual(state.general_names, { "-1001": "Session Manager" });
 });
 
 test("listing leaves out the agents' own topics", () => {
