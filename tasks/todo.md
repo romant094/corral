@@ -1,161 +1,127 @@
-# Tasks: tg-bridge
+# Tasks: Corral Settings
 
-Plan: [plan.md](plan.md). Spec: [SPEC-tg-bridge.md](../SPEC-tg-bridge.md).
-Test command for every task: `node --test telegram/test/`.
+Plan: [plan.md](plan.md). Spec: [SPEC-settings.md](../SPEC-settings.md).
+Checks: `node --test telegram/test/` for the bridge; `herdr-app check mods/corral` and a look in the app for the mod.
 
 ## Phase 1: Foundation
 
-- [x] **Task 1: Verify that Herdr.app adopts a labelled `hc run` terminal as a tab**
-  - Description: Run `hc run --bg --cwd <space folder> --label herdr.space=<id> --label herdr.tab=<new id> claude` against one existing space while Herdr.app runs, and again while it is closed. Record the result in the spec's Facts section, then end the test agent.
+- [ ] **Task 1: Spike the facts the code depends on**
   - Acceptance:
-    - [ ] The spec says whether the terminal appears as a new tab in that space, with and without the app window
-    - [ ] If it does not, the spec names the chosen fallback for `/new`
-  - Verify: manual check in Herdr.app; `hc ls` shows the terminal with the labels
-  - Dependencies: None
-  - Files: `SPEC-tg-bridge.md`
-  - Scope: XS
+    - [ ] The spec says where `exec` finds Node 20+ (plain PATH or a login shell)
+    - [ ] The spec says if a second Herdr runs with another `HERDR_APP_HOME`, and how to start it
+    - [ ] The spec says how the mod tells a `--link` install
+  - Verify: the facts are in `SPEC-settings.md` with the commands that showed them
+  - Dependencies: None. Files: `SPEC-settings.md`. Scope: XS
 
-- [x] **Task 2: Config, state file and Bot API client with `--check`**
-  - Description: `config.mjs` reads and validates `telegram.json` and reads/writes `telegram-state.json` atomically. `telegram.mjs` wraps Bot API calls with errors that carry no token, and backoff for 429 and network errors. `bridge.mjs --check` validates config, calls `getMe` and `getChat`, runs `hc ls`, and prints one line per check.
+- [ ] **Task 2: Gear button and the settings popup (settings-form)**
   - Acceptance:
-    - [ ] Invalid or missing fields in `telegram.json` give a clear error naming the field
-    - [ ] State writes are atomic (temp file + rename) and survive a missing file
-    - [ ] `--check` prints OK/FAIL for config, token, chat (forum, bot rights), `hc`; sends no message
-  - Verify: tests pass; `node telegram/bridge.mjs --check` with a real bot
-  - Dependencies: None
-  - Files: `telegram/config.mjs`, `telegram/telegram.mjs`, `telegram/bridge.mjs`, `telegram/test/config.test.mjs`, `telegram/test/telegram.test.mjs`
-  - Scope: M
+    - [ ] The gear sits right of the limit pills in all four views; a press opens a dialog with "Telegram", "Keys", "Updates"
+    - [ ] The last section opens next time (`corral.settings.section`); Esc closes the dialog
+    - [ ] A section is one `SECTIONS` entry; a badge on an entry shows a dot on the gear
+  - Verify: `herdr-app check`; open, switch, close in the app
+  - Dependencies: 1. Files: `mods/corral/main.js`, `mods/corral/icons/settings.svg`. Scope: S
 
-- [x] **Task 3: `hc` wrapper and the agent model from `hc events`**
-  - Description: `herdr.mjs` runs `hc` subcommands by argv (`ls`, `run`, `send`, `keys`, `read`, `kill`, `put`), streams `hc events --json` with restart on exit, and calls `doc.get herdr-app` through `hc connect`. It turns the snapshot and events into an agent model: live terminals with `status.app == "claude-code"` and no parent, with `state`, `where`, `cwd`, `pid`.
+### Checkpoint: Foundation
+- [ ] Bridge tests pass, the mod check passes, the gear works in all four views
+
+## Phase 2: Telegram
+
+- [ ] **Task 3: Bridge accepts partial settings and exits cleanly for launchd**
   - Acceptance:
-    - [ ] A recorded `hc events` sample yields the expected agents and state changes
-    - [ ] Helpers (with a parent) and non-Claude terminals are not agents
-    - [ ] The stream restarts after `hc` exits, with a 5 s delay
-  - Verify: tests pass with recorded fixtures; a short manual run prints agents of this Mac
-  - Dependencies: None
-  - Files: `telegram/herdr.mjs`, `telegram/test/herdr.test.mjs`, `telegram/test/fixtures/events.jsonl`
-  - Scope: S
+    - [ ] `{ token }` alone loads; the daemon writes "Finish the Telegram settings in Corral" to the state file and exits 0
+    - [ ] A bad or revoked token: error in the state file, exit 0; a crash exits non-zero
+    - [ ] The log file is cut to its last 1 MB at start
+  - Verify: `node --test telegram/test/`
+  - Dependencies: None. Files: `telegram/config.mjs`, `telegram/bridge.mjs`, `telegram/test/config.test.mjs`. Scope: S
 
-### Checkpoint 1: Foundation
-- [ ] Tests pass
-- [ ] `--check` is green on this Mac
-- [ ] Review with the user
-
-## Phase 2: Core slices
-
-- [x] **Task 4: A topic per agent with the status in its name**
-  - Description: `agents.mjs` maps agent changes to actions: create a topic `<emoji> <where>` for a new agent, rename on a state change (10 s throttle, last wins), on end rename 🏁, post `Agent ended`, close the topic and move it to `ended`. `bridge.mjs` runs loop A, the lock file, the debounced state writer and the reconcile on start.
+- [ ] **Task 4: Bridge `--check --json`, `--discover --json`, `--create-topic`**
   - Acceptance:
-    - [ ] A new agent gets one topic within 5 s; a restart of the daemon creates no duplicate
-    - [ ] Status changes rename the topic, throttled
-    - [ ] An ended agent's topic gets 🏁 and is closed
-  - Verify: tests pass; manual: start and end an agent at the desk, watch the group
-  - Dependencies: 2, 3
-  - Files: `telegram/agents.mjs`, `telegram/bridge.mjs`, `telegram/test/agents.test.mjs`
-  - Scope: M
+    - [ ] `--check --json` prints one object: bot, group, rights.missing, hc, errors
+    - [ ] `--discover --json` (daemon stopped) stores and prints groups, topics and `people`; it does not move the offset past unhandled updates
+    - [ ] `--create-topic <name> --json` prints the new topic id
+  - Verify: `node --test telegram/test/` with the fake Bot API
+  - Dependencies: 3. Files: `telegram/bridge.mjs`, `telegram/setup.mjs` (new), `telegram/config.mjs`, `telegram/test/setup.test.mjs`. Scope: M
 
-- [x] **Task 5: Text from a topic to its agent, `/screen`, `/stop`**
-  - Description: Loop B long-polls `getUpdates`, drops updates outside `chat_id` and `owner_ids`, records seen chats and topics in the state, and routes messages in agent topics: short keys while `blocked` → `hc keys`, other text → `hc send`, refused while `blocked`; `/screen` → `hc read`; `/stop` → `esc`. Commands in the wrong topic answer where they work.
+- [ ] **Task 5: Bridge `--service install|start|stop|restart|uninstall|status`**
   - Acceptance:
-    - [ ] Routing table of the spec is covered by tests, including the refusals
-    - [ ] Updates from other users or chats change nothing and are logged
-    - [ ] The update offset survives a restart
-  - Verify: tests pass; manual: prompt an agent from the phone, `/screen`, `/stop`
-  - Dependencies: 4
-  - Files: `telegram/commands.mjs`, `telegram/bridge.mjs`, `telegram/test/commands.test.mjs`
-  - Scope: M
+    - [ ] The plist text has Node's absolute path, the bridge path, PATH, `HERDR_APP_HOME` when set, the log path, `KeepAlive.SuccessfulExit=false`, `ThrottleInterval` 10
+    - [ ] Each verb runs the right `launchctl` call (injected runner in tests); `status` prints `{ installed, running, pid }`
+    - [ ] Not macOS: a clear error, exit 1
+  - Verify: `node --test telegram/test/`; by hand once: install, status, uninstall (with a stopped bridge)
+  - Dependencies: 3. Files: `telegram/service.mjs` (new), `telegram/bridge.mjs`, `telegram/test/service.test.mjs`. Scope: M
 
-- [x] **Task 6: `done` and `blocked` posts**
-  - Description: On `done`, post the last assistant message from the transcript (`~/.cache/corral/sessions/<pid>.json` → `transcript_path`), else the last 20 screen lines. On `blocked`, wait 1.5 s and post the last 25 screen lines with sound. Split text over 3500 characters.
+- [ ] **Task 6: Telegram section — toggle and wizard steps 1–4**
   - Acceptance:
-    - [ ] The last reply is read from a fixture transcript; missing transcript falls back to the screen
-    - [ ] `blocked` posts notify with sound; `done` posts use the default notification
-    - [ ] Long text is split without breaking a code block
-  - Verify: tests pass; manual: finish a turn and trigger a permission prompt
-  - Dependencies: 4
-  - Files: `telegram/agents.mjs`, `telegram/transcript.mjs`, `telegram/test/transcript.test.mjs`, `telegram/test/fixtures/transcript.jsonl`
-  - Scope: M
+    - [ ] Toggle off shows one line; on shows the steps, each open when the one before is done
+    - [ ] Token: masked field, "Check" runs `--check --json`; good saves `telegram.json` (0600 via the bridge), bad saves nothing
+    - [ ] Group, root topic and owner dropdowns read `telegram-state.json`; "Refresh" runs `--discover`; "Create 'Corral' topic" works
+  - Verify: `herdr-app check`; the wizard against the owner's bot with the bridge stopped
+  - Dependencies: 2, 4. Files: `mods/corral/main.js`. Scope: M
 
-### Checkpoint 2: Agent topics end to end
-- [ ] Tests pass
-- [ ] User stories 2, 3, 4, 5 (text replies), 6 work with a real bot
-- [ ] Review with the user
-
-## Phase 3: Buttons, root topic, files
-
-- [x] **Task 7: Option buttons on `blocked` posts**
-  - Description: Parse a numbered dialog (2–9 options) from the screen into buttons `<n> · <label>`. Callback ids live in memory. A press on the latest open question sends the digit and edits the post to `✅ <n> · <label>`; stale and expired presses answer and do nothing.
+- [ ] **Task 7: Telegram section — daemon step**
   - Acceptance:
-    - [ ] Parser fixtures from real Claude Code screens (permission prompt, question) give the right options
-    - [ ] Stale button (agent moved on, newer question) does nothing and says so
-    - [ ] Every callback gets `answerCallbackQuery`
-  - Verify: tests pass; manual: answer a permission prompt with a button
-  - Dependencies: 6
-  - Files: `telegram/dialog.mjs`, `telegram/commands.mjs`, `telegram/test/dialog.test.mjs`, `telegram/test/fixtures/screens/*.txt`
-  - Scope: M
+    - [ ] Start/Stop/Restart call `--service`; the status line shows Running/Stopped/Not responding/Error within 5 s
+    - [ ] A settings change while running restarts the bridge; toggle off stops and uninstalls it, settings stay
+    - [ ] "Show log" opens `tail -f` of the log in a new tab; no Node 20 → "Start" is off with the reason
+  - Verify: ask the owner first, then move the owner's bridge from its terminal tab to launchd; reboot check
+  - Dependencies: 5, 6. Files: `mods/corral/main.js`. Scope: M
 
-- [x] **Task 8: `/close`, Delete topic and `/clear`**
-  - Description: `/close` asks End & close / End & delete / Cancel; both end the agent with `hc kill`. The `Agent ended` post gets a Delete topic button. `/clear` in the root topic asks to delete all `ended` topics.
+### Checkpoint: Telegram
+- [ ] Bridge tests pass; the owner's bridge runs under launchd and survives a reboot; the token is not in `ps` or the log
+
+## Phase 3: Keys
+
+- [ ] **Task 8: Keys section**
   - Acceptance:
-    - [ ] Close keeps the topic closed in `ended`; Delete removes it and leaves no `ended` entry
-    - [ ] `/clear` deletes only topics in `ended`, never the root topic or a live agent's topic
-    - [ ] Nothing is deleted without a confirm press by an owner
-  - Verify: tests pass; manual: both `/close` paths and `/clear` with two ended agents
-  - Dependencies: 5, 7 (callback handling)
-  - Files: `telegram/commands.mjs`, `telegram/agents.mjs`, `telegram/test/close.test.mjs`
-  - Scope: M
+    - [ ] Four rows with keycaps; a press records the next chord with a modifier; Esc cancels; Backspace clears
+    - [ ] A `global` chord shows "Replaces <action> in Corral"; a `terminal` chord shows its warning; `cmd-tab`, `cmd-space`, `cmd-shift-3/4/5` are refused
+    - [ ] Only `layout:corral` changes (`writeTextFile` with the read text as `expected`); `keys.error` is shown; "Reset to defaults" works
+  - Verify: `herdr-app check`; bind `cmd-1…4` here, check Corral and the `main` layout
+  - Dependencies: 2. Files: `mods/corral/main.js`. Scope: M
 
-- [x] **Task 9: Root topic: `/status`, dashboard, `/help`, command menu**
-  - Description: `/status` lists live agents with emoji, `where`, time in state and a topic link. The pinned dashboard shows the same text, `updated HH:MM` and Clear all (N) while `ended` is not empty; it is edited at most once per 10 s. `setMyCommands` with chat scope at start. `/help` per topic kind.
+## Phase 4: Updates
+
+- [ ] **Task 9: Version, changelog, release script, install by name**
   - Acceptance:
-    - [ ] Dashboard is created once, pinned, and edited in place after restarts
-    - [ ] Clear all appears only with ended topics and asks like `/clear`
-    - [ ] The "≡" menu shows the 7 commands with the spec's descriptions
-  - Verify: tests pass; manual: menu, `/status`, dashboard updates
-  - Dependencies: 4, 8
-  - Files: `telegram/dashboard.mjs`, `telegram/commands.mjs`, `telegram/bridge.mjs`, `telegram/test/dashboard.test.mjs`
-  - Scope: M
+    - [ ] `const VERSION = "0.1.0"` in `main.js`; `CHANGELOG.md`
+    - [ ] `scripts/release.sh x.y.z` refuses a version not above the last tag, runs the tests and the mod check, sets `VERSION`, commits, tags, pushes and runs `gh release create` — each outward step after a prompt
+    - [ ] `install.sh --name <folder>` installs into that mod folder; it updates the statusline hook and `telegram/` when present and restarts the launchd bridge when it runs
+  - Verify: `scripts/release.sh 0.0.1 --dry-run`; `./install.sh --name corral-test` into a scratch `HERDR_APP_HOME`
+  - Dependencies: 5. Files: `mods/corral/main.js`, `CHANGELOG.md`, `scripts/release.sh` (new), `install.sh`. Scope: M
 
-- [x] **Task 10: `/new` with space buttons**
-  - Description: `/new` in the root topic lists the spaces from `doc.get herdr-app` as buttons. A press starts `claude` in that space the way Task 1 verified, or answers with the fallback.
+- [ ] **Task 10: Update check and the Updates section**
   - Acceptance:
-    - [ ] Buttons match the spaces in Herdr.app
-    - [ ] A press starts one agent in that space; its topic appears through the normal sync
-    - [ ] `/new` outside the root topic answers where it works
-  - Verify: tests pass; manual: user story 1
-  - Dependencies: 1, 9
-  - Files: `telegram/commands.mjs`, `telegram/herdr.mjs`, `telegram/test/new.test.mjs`
-  - Scope: S
+    - [ ] The board copy checks `releases/latest` with `fetch` at start and every 6 h, not under `checking()`; drafts and pre-releases skipped
+    - [ ] Newer: toast with "Update"/"Later", a dot on the gear and on the section; the section shows notes, last check, errors
+    - [ ] "Check automatically" off sends nothing but "Check now"; a `--link` install shows "Linked to <path>" and never checks
+  - Verify: `herdr-app check`; a fake older `VERSION` in a scratch copy shows the toast
+  - Dependencies: 2, 9. Files: `mods/corral/main.js`. Scope: M
 
-- [x] **Task 11: Photos and files to the agent**
-  - Description: A photo (largest size) or document in an agent topic is downloaded with `getFile` into `inbox/<address>/<time>-<clean name>`, passed with `hc put`, and the agent gets `"<caption> <path>"` through `hc send`. Over 20 MB and `blocked` are refused.
+- [ ] **Task 11: Update by one click**
   - Acceptance:
-    - [ ] File names are reduced to `[A-Za-z0-9._-]` and cannot leave the inbox
-    - [ ] Caption and path arrive as one prompt
-    - [ ] Over-limit and blocked cases answer with the reason
-  - Verify: tests pass; manual: send a screenshot and a PDF to an agent
-  - Dependencies: 5
-  - Files: `telegram/files.mjs`, `telegram/commands.mjs`, `telegram/test/files.test.mjs`
-  - Scope: S
+    - [ ] "Update" downloads the release tarball with `curl`, unpacks with `tar`, checks `install.sh` and `mods/corral/main.js`, runs `install.sh --name <MOD>`
+    - [ ] The result is a toast; after the reload the section shows the new version and no dot
+    - [ ] A failed download or install leaves the old version running and shows why
+  - Verify: in a scratch `HERDR_APP_HOME`, update from a local tarball server or a fork release
+  - Dependencies: 10. Files: `mods/corral/main.js`. Scope: S
 
-### Checkpoint 3: Feature complete
-- [ ] Tests pass
-- [ ] User stories 1–12 work with a real bot
-- [ ] Review with the user
-
-## Phase 4: Delivery
-
-- [x] **Task 12: `install.sh` and README**
-  - Description: `install.sh` copies (or with `--link` symlinks) `telegram/` into `$HERDR_APP_HOME/corral/telegram/`. README gets a Telegram section: bot and group setup, rights, `telegram.json` by hand until tg-settings, `--check`, running in the foreground, muting the group.
+- [ ] **Task 12: First releases and the sandbox check**
   - Acceptance:
-    - [ ] A fresh `./install.sh` puts the daemon in place; `--check` runs from there
-    - [ ] README steps work from a clean state
-  - Verify: run `./install.sh`, then `node ~/.config/herdr-app/corral/telegram/bridge.mjs --check`
-  - Dependencies: 11
-  - Files: `install.sh`, `README.md`
-  - Scope: S
+    - [ ] With the owner's go-ahead: v0.1.0, then v0.1.1 on GitHub
+    - [ ] In a sandbox Herdr, an agent installs v0.1.0 from the gallery link; "Check now" finds v0.1.1; "Update" installs it
+    - [ ] `~/.config/herdr-app` did not change; the sandbox is removed
+  - Verify: the sandbox steps in the spec
+  - Dependencies: 1, 11. Files: `SPEC-settings.md` (results). Scope: S
 
-### Checkpoint 4: Done
-- [ ] Spec success criteria 1–7 met
-- [ ] Ready for review (`code-review-and-quality`, `security-and-hardening`)
+### Checkpoint: Updates
+- [ ] The sandbox updated from v0.1.0 to v0.1.1 with no step by hand
+
+## Phase 5: Close
+
+- [ ] **Task 13: Review and docs**
+  - Acceptance:
+    - [ ] code-reviewer and security-auditor findings fixed or answered
+    - [ ] README: settings, keys, updates; the network sentence changed; RECIPE.md and CAPABILITY-MAP.md current
+    - [ ] The spec's success criteria checked off
+  - Verify: all checks pass; the owner looks through the form
+  - Dependencies: 1–12. Files: `README.md`, `RECIPE.md`, `SPEC-settings.md`. Scope: S

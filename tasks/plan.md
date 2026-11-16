@@ -1,87 +1,55 @@
-# Implementation Plan: tg-bridge
+# Implementation Plan: Corral Settings
 
-Source spec: [SPEC-tg-bridge.md](../SPEC-tg-bridge.md) (module `tg-bridge` of [CAPABILITY-MAP.md](../CAPABILITY-MAP.md))
+Source spec: [SPEC-settings.md](../SPEC-settings.md). Modules: settings-form, tg-settings, keys-settings, auto-update.
+Tasks: [todo.md](todo.md). The finished bridge plan: [tg-bridge-plan.md](tg-bridge-plan.md).
 
 ## Overview
 
-A Node daemon in `telegram/` that mirrors the live Claude Code agents of
-herdr-core into a Telegram forum group: one topic per agent, status in the
-topic name, last reply on `done`, the screen and option buttons on `blocked`,
-text and files back to the agent, `/new` `/status` `/screen` `/stop` `/close`
-`/clear` `/help`. The settings UI is the next module (tg-settings); until then
-`telegram.json` is written by hand.
+A gear in Corral's header opens one settings popup with three sections: Telegram (a wizard that sets up and
+runs the bridge under launchd), Keys (the four view keys) and Updates (GitHub Releases, update by one click).
+The bridge gets the Telegram and launchd work; the mod only draws the form and calls the bridge.
 
 ## Architecture Decisions
 
-- **Two loops, one state.** Loop A follows `hc events --json` (agents → Telegram).
-  Loop B long-polls `getUpdates` (Telegram → agents). Both change one in-memory
-  state object; a debounced writer saves it to `telegram-state.json`.
-- **Injected transports.** `telegram.mjs` takes a `call(method, params)`
-  function, `herdr.mjs` takes a `run(args)` and a `stream(args)` function.
-  Tests pass fakes; the real ones wrap `fetch` and `child_process.spawn`.
-- **Pure decision functions.** Event → actions and update → actions are pure
-  functions that return a list of actions (`createTopic`, `rename`, `post`,
-  `keys`, `send`, …). An executor runs them. Most tests target the pure part.
-- **No shell.** Every `hc` call is `spawn(hcBin, argv)`.
-- **Throttle per topic.** Renames and dashboard edits wait 10 s and keep the
-  last value, so a flapping status does not hit Telegram's rate limits.
+- **The bridge does all Telegram and launchd work.** The mod runs `node bridge.mjs --check|--discover|--create-topic|--service … --json`
+  and reads one JSON line. Reason: the Bot API code stays tested in one place; the token never goes on a command line;
+  the mod cannot write `~/Library/LaunchAgents` anyway.
+- **The form has no settings file of its own.** Telegram → `telegram.json`, keys → `keys.json` (`layout:corral` only),
+  updates → shared key `corral.settings`.
+- **Sections are entries in one `SECTIONS` list** in `main.js`; the popup draws the list and the selected one.
+- **Pure helpers in `main.js` stay small and free of GPUI** (version compare, chord format, keys merge, status from the
+  state file), so a later move to a tested module is cheap. The mod is checked with `herdr-app check` and by hand.
+- **The update runs `install.sh` from the release tarball** with the mod's folder name, so a renamed install updates in place.
+- **Releases start at v0.1.0.** The repo has no tags yet; the sandbox check needs two releases.
 
 ## Dependency Graph
 
 ```
-config.mjs ─┬─ telegram.mjs ─┐
-            └─ herdr.mjs ────┼─ agents.mjs (topic sync, posts) ─┬─ commands.mjs (topic input, buttons, root)
-                             │                                   │
-                             └─────────── bridge.mjs (loops, lock, state writer, --check)
+spike (facts) ──► settings-form ──┬──► tg section ◄── bridge: partial settings ◄── bridge: --json modes ◄── bridge: --service
+                                  ├──► keys section
+                                  └──► updates section ◄── VERSION + release.sh + install.sh --name
+                                                           └──► update action ──► releases v0.1.0, v0.1.1 ──► sandbox check
 ```
 
-## Task List
+## Phases and Checkpoints
 
-Detailed tasks with acceptance criteria and verification: [todo.md](todo.md).
-
-### Phase 1: Foundation
-- [x] Task 1: Verify that Herdr.app adopts a labelled `hc run` terminal as a tab
-- [x] Task 2: Config, state file and Bot API client with `--check`
-- [x] Task 3: `hc` wrapper and the agent model from `hc events`
-
-### Checkpoint 1: Foundation
-- [ ] `node --test telegram/test/` passes; `--check` is green on this Mac
-
-### Phase 2: Core slices
-- [x] Task 4: A topic per agent with the status in its name
-- [x] Task 5: Text from a topic to its agent, `/screen`, `/stop`
-- [x] Task 6: `done` and `blocked` posts
-
-### Checkpoint 2: Agent topics end to end
-- [ ] User stories 2, 3, 4, 5 (text replies), 6 work with a real bot
-
-### Phase 3: Buttons, root topic, files
-- [x] Task 7: Option buttons on `blocked` posts
-- [x] Task 8: `/close`, Delete topic and `/clear`
-- [x] Task 9: Root topic: `/status`, dashboard, `/help`, command menu
-- [x] Task 10: `/new` with space buttons
-- [x] Task 11: Photos and files to the agent
-
-### Checkpoint 3: Feature complete
-- [ ] User stories 1–12 work with a real bot
-
-### Phase 4: Delivery
-- [x] Task 12: `install.sh` and README
-
-### Checkpoint 4: Done
-- [ ] Spec success criteria 1–7 met; ready for review
+1. **Foundation:** Task 1 spike, Task 2 settings form. Checkpoint: the gear opens an empty form in all four views.
+2. **Telegram:** Tasks 3–7. Checkpoint: the wizard moves the owner's bridge from a terminal tab to launchd, here on this Mac.
+3. **Keys:** Task 8. Checkpoint: `cmd-1…4` switch the views in Corral and still switch tabs in other layouts.
+4. **Updates:** Tasks 9–12. Checkpoint: the sandbox install updates from v0.1.0 to v0.1.1.
+5. **Close:** Task 13 review and docs.
 
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Herdr.app does not adopt a labelled `hc run` terminal | High (`/new`) | Task 1 runs first. Fallback in the spec: refuse `/new` with a reason, or start through the app when it runs |
-| Each `editForumTopic` posts a "topic renamed" service line into the topic | Medium (noise) | 10 s throttle; only real state changes rename; README tells to mute the group if needed |
-| Claude Code dialog layout changes and the parser misses options | Medium | Parser is a pure function with fixtures from real screens; without options the post still goes out and text replies work |
-| `hc events` format changes between hc versions | Medium | Parse only the fields used; unknown events are ignored and logged once |
-| Telegram rate limits (429) | Low | Backoff with `retry_after`; throttled edits |
-| Transcript of the session is not found | Low | Fall back to the last 20 screen lines |
+| A second Herdr instance with another `HERDR_APP_HOME` cannot run beside the owner's | Med | Spike first. Fallback: the sandbox is a macOS user account or a quit-and-swap of the home folder, with the owner's consent |
+| `exec` does not find Node 20+ | Med | Spike first; fallback `zsh -lc 'command -v node'`; the form shows "Node 20 needed" |
+| The mod cannot tell a `--link` install (main.js is a symlink, the folder is not) | Low | `exec("test", ["-L", path])` |
+| launchd keeps restarting a bridge with a bad token | Med | Exit 0 on bad settings; error in the state file (Task 3) |
+| A release goes out broken and every user gets it | High | `release.sh` runs the tests and `herdr-app check` first; the sandbox check before the gallery sees it |
+| Publishing a release and moving the owner's bridge to launchd are outward-facing | — | Ask the owner before each (Tasks 7 and 12) |
 
 ## Open Questions
 
-- None blocking. Task 1 answers the one open question of the spec.
+None.
