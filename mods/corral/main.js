@@ -1475,11 +1475,15 @@ export default class Board extends View {
     // A file set up by hand before the toggle existed counts as on.
     const on = s.enabled ?? !!(s.token && s.chat_id);
     const act = (label, work) => (_e, cx) => this.tgAction(cx, label, work);
+    // A button, not a checkbox: it starts and stops processes. While any of that runs, it is off.
+    const switching = t.busy === "Turning on…" || t.busy === "Turning off…";
     const head = h_flex().gap(8).items_center()
-      .child(h_flex().id("tg-enabled").flex_1().gap(10).items_center().cursor_pointer()
-        .on_click(act(on ? "Turning off…" : "Turning on…", () => this.setTelegramEnabled(!on)))
-        .child(checkBox(C, on))
-        .child(div().text_size(13).font_semibold().child("Work through Telegram")))
+      .child(div().flex_1().text_size(13).font_semibold().child("Telegram"))
+      .child(t.busy
+        ? h_flex().id("tg-enabled").h(26).px(10).flex_none().items_center().rounded(5).text_size(12).font_semibold()
+          .bg(C.selected).text_color(C.dim).child(switching ? t.busy : on ? "Turn off" : "Turn on")
+        : smallButton(C, "tg-enabled", on ? "Turn off" : "Turn on",
+          act(on ? "Turning off…" : "Turning on…", () => this.setTelegramEnabled(!on)), on ? null : C.accent))
       .child(smallButton(C, "tg-import", "Import", act("Importing…", () => this.importTelegram())))
       .when(!!t.text, el => el
         .child(smallButton(C, "tg-export", "Export", act("Exporting…", () => this.exportTelegram())))

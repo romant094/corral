@@ -53,7 +53,7 @@ Network: Corral asks `api.github.com` for its latest release at start and every 
 
 The gear right of the plan limits (or `herdr-app do corral.settings`) opens the settings:
 
-- **Telegram:** "Work through Telegram", then two steps: paste the bot token (the row links to @BotFather), and press "Add to a group". Telegram opens, you pick a group with Topics on and confirm; the bot gets its admin rights, you become its owner, and Corral starts the bridge. The root topic is the group's built-in General ("Restore" brings it back if it was hidden). More owners can be added by login; Export and Import move the settings, token included, to another Mac; Clear all stops the bridge and forgets the settings.
+- **Telegram:** "Turn on", then two steps: paste the bot token (the row links to @BotFather), and press "Add to a group". Telegram opens, you pick a group with Topics on and confirm; the bot gets its admin rights, you become its owner, and Corral starts the bridge. The root topic is the group's built-in General ("Restore" brings it back if it was hidden). More owners can be added by login; Export and Import move the settings, token included, to another Mac; Clear all stops the bridge and forgets the settings.
 - **Updates:** your version, the latest release and its notes, Update, Check now, and "Check automatically". When a new release is out, the gear shows a dot and a toast says so. Update downloads the release and runs its `install.sh` into this mod's folder. A `--link` install is never updated from here: use `git pull`.
 
 ## Board
@@ -128,7 +128,7 @@ The bridge is a small Node program (`telegram/`, Node 20+, no dependencies) next
 
 1. In [@BotFather](https://t.me/BotFather), send `/newbot` and keep the token.
 2. Make a Telegram group, turn on Topics, add the bot and make it an admin with **Manage topics**, **Delete messages** and **Pin messages**. Send any message there.
-3. Open Settings → Telegram, turn on "Work through Telegram" and follow the steps: paste the token, pick the group, the root topic and yourself, press Start. The bridge runs under launchd (`~/Library/LaunchAgents/dev.corral.telegram.plist`): it starts again after a restart of the Mac until you stop it. Its log is `~/.config/herdr-app/corral/telegram.log`. Turning the toggle off removes the service; if you remove Corral without that, run `node ~/.config/herdr-app/corral/telegram/bridge.mjs --service uninstall` first.
+3. Open Settings → Telegram, press "Turn on", paste the token and press "Add to a group". The bridge runs under launchd (`~/Library/LaunchAgents/dev.corral.telegram.plist`): it starts again after a restart of the Mac until you stop it. Its log is `~/.config/herdr-app/corral/telegram.log`. "Turn off" removes the service; if you remove Corral without that, run `node ~/.config/herdr-app/corral/telegram/bridge.mjs --service uninstall` first.
 
 By hand, without the settings: write `~/.config/herdr-app/corral/telegram.json` (`token`, `chat_id` — the group's negative id, `root_topic_id` — `null` for General, `owner_ids` — your Telegram user id), then `node ~/.config/herdr-app/corral/telegram/bridge.mjs --check` and `--service start` (or run it in the foreground without flags). The bridge needs Node 20 or newer.
 
