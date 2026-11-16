@@ -109,7 +109,7 @@ const gitBusy = async (name, label, work) => {
 // Dropdowns open from a button. A press on that button while its dropdown is open closes the dropdown
 // as a press outside it, and the click that follows would open it again: within this time it doesn't.
 const POPUP_REOPEN_MS = 400;
-const DROPDOWNS = new Set(["spaces", "projectfilter", "statusfilter", "worktrees", "agents", "logfilter"]);
+const DROPDOWNS = new Set(["panemenu", "spaces", "projectfilter", "statusfilter", "worktrees", "agents", "logfilter"]);
 const dropdownKey = (p) => `${p?.role}:${p?.field ?? ""}`;
 const openDropdown = (spec) => {
   const closed = shared(POPUP_CLOSED_KEY);
@@ -121,6 +121,8 @@ const openDropdown = (spec) => {
 const headerTop = () => appWindow()?.fullscreen ? 0 : 11;
 const headerH = () => 112 + headerTop();
 const DOCK_BAR = 40;
+// Below this width a pane header puts its buttons into a menu.
+const PANE_NARROW = 640;
 const DOCK_MS = 200;
 // The height the terminals open to after they were folded by dragging the divider to the bottom.
 const DOCK_OPEN = 160;
@@ -240,13 +242,12 @@ const projectRows = (all) => {
     r.space = open.find(s => s.folder === r.folder) ?? null;
     r.agents.sort((x, y) => ATTENTION.includes(y.status) - ATTENTION.includes(x.status));
   }
-  // Rows with agents by their most urgent status, in board order, then by how many agents are not idle;
-  // then open spaces, then folders that are not open.
-  const order = states().map(s => s.key);
-  const urgency = (r) => Math.min(...r.agents.map(a => order.indexOf(a.status)).filter(i => i >= 0), order.length);
-  const busy = (r) => r.agents.filter(a => a.status !== "idle").length;
-  const rank = (r) => r.agents.length ? urgency(r) : order.length + (r.space ? 1 : 2);
-  return rows.sort((x, y) => rank(x) - rank(y) || busy(y) - busy(x));
+  // Rows with an agent that needs you first, then the other rows with agents, the one whose agent changed
+  // last on top (agents' seq): a project keeps its place when its agent finishes. Then open spaces, then
+  // folders that are not open.
+  const recent = (r) => Math.max(0, ...r.agents.map(a => a.seq ?? 0));
+  const rank = (r) => !r.agents.length ? (r.space ? 2 : 3) : r.agents.some(a => a.status === "blocked") ? 0 : 1;
+  return rows.sort((x, y) => rank(x) - rank(y) || recent(y) - recent(x));
 };
 // How many of these agents are in each status, in board order; statuses without agents are left out.
 const statusCounts = (list) => states().map(s => ({ ...s, n: list.filter(a => a.status === s.key).length })).filter(s => s.n);
@@ -2328,12 +2329,20 @@ export default class Board extends View {
   paneHeader(C) {
     const p = panes().find(p => p.pane === props().pane);
     const info = p?.terminal ? live().sessions[p.terminal] : null;
+    const agent = p?.terminal && agents().find(a => a.address === p.terminal);
+    // An agent shows its task, as its card does; a plain terminal its program.
+    const title = agent ? info?.title || agent.tab_name || info?.model || p.program?.name : p?.program?.name || "Terminal";
+    // Too narrow for every button: they move into a menu.
+    const narrow = !!this.narrow;
     return h_flex().size_full().px(12).items_center().gap(8).bg(C.bar).border_b(1).border_color(C.line)
+      .on_size_change((size, cx) => {
+        if ((size.width < PANE_NARROW) !== narrow) { this.narrow = size.width < PANE_NARROW; cx.notify(); }
+      })
       .child(dot(states().find(s => s.key === p?.status)?.color ?? C.dim, 7))
       .child(icon(C, p?.program, 14))
-      .child(div().text_size(12).font_semibold().text_color(C.ink).child(info?.model || p?.program?.name || "Terminal"))
-      .when(!info?.sid, el => el.child(div().font_family("Geist Mono").text_size(11).text_color(C.muted).child(p?.terminal ?? "")))
-      .child(div().flex_1())
+      .child(div().id(`pane-title-${p?.pane}`).flex_1().min_w(0).truncate().text_size(12).font_semibold().text_color(C.ink)
+        .when(!!info?.model, el => el.tooltip(`${info.model} · ${title}`)).child(title ?? ""))
+      .when(!info?.sid, el => el.child(div().flex_none().font_family("Geist Mono").text_size(11).text_color(C.muted).child(p?.terminal ?? "")))
       // Compacting asks first: it sends /compact to the agent, which then summarizes and drops its context.
       .when(!!p && this.compacting, el => el
         .child(div().text_size(12).text_color(C.ink).child("Compact the context?"))
@@ -2348,9 +2357,9 @@ export default class Board extends View {
             hc(["send", p.terminal, "/compact"]).catch(() => {});
             cx.notify();
           }).child("Compact")))
-      .when(!!info && !this.compacting, el => el.child(h_flex().gap(6).items_center().font_family("Geist Mono").text_size(11).mr(4)
+      .when(!!info && !this.compacting, el => el.child(h_flex().flex_none().gap(6).items_center().font_family("Geist Mono").text_size(11).mr(4)
         // The session id, as on the card: a click copies the whole id.
-        .when(!!info.sid, el => el
+        .when(!!info.sid && !narrow, el => el
           .child(div().id(`pane-sid-${p.pane}`).px(4).py(1).rounded(4).text_color(C.muted).cursor_pointer()
             .hover(s => s.bg(C.selected).text_color(C.ink)).tooltip(`Copy ${info.sid}`)
             .on_click((_e, cx) => {
@@ -2361,12 +2370,18 @@ export default class Board extends View {
             .child(info.sid.slice(0, 8)))
           .child(div().text_color(C.dim).child("·")))
         .child(div().text_color(ctxColor(C, info.ctx)).child(`${info.ctx}% (${kTokens(info.tokens)})`))
-        .child(iconButton(C, `compact-${p.pane}`, "Compact the context (/compact)", "compact",
-          (_e, cx) => { this.compacting = true; cx.notify(); }))
+        .when(!narrow, el => el.child(iconButton(C, `compact-${p.pane}`, "Compact the context (/compact)", "compact",
+          (_e, cx) => { this.compacting = true; cx.notify(); })))
         .child(vbar(C))
         .child(div().text_color(C.muted).child(`$${info.cost.toFixed(2)}`))
-        .child(vbar(C))))
-      .when(!!p && !this.compacting, el => el
+        .when(!narrow, el => el.child(vbar(C)))))
+      .when(!!p && narrow && !this.compacting, el => el.child(iconButton(C, `pane-more-${p.pane}`, "More", "more",
+        () => {
+          const rows = 3 + (info ? 1 : 0) + (info?.sid ? 1 : 0) + (p.terminal ? 1 : 0);
+          openDropdown({ mod: MOD, kind: "popup", width: 260, height: 12 + rows * 34 + 5,
+            props: { role: "panemenu", pane: p.pane } });
+        })))
+      .when(!!p && !narrow && !this.compacting, el => el
         .child(iconButton(C, `split-right-${p.pane}`, "Split right: a new terminal beside", "split-right",
           () => run("pane.split", { pane: p.pane, direction: "right" })))
         .child(iconButton(C, `split-down-${p.pane}`, "Split down: a new terminal below", "split-down",
@@ -2515,6 +2530,37 @@ export default class Board extends View {
       .child(div().h(1).mx(4).my(2).bg(C.line))
       .child(item("project-copy", "Copy path", (cx) => copyText(cx, folder)));
   }
+  // The pane header's buttons, for a pane too narrow to show them. Compacting asks first, here too.
+  paneMenu(C) {
+    const { pane, overlay } = props();
+    const p = panes().find(x => x.pane === pane);
+    const info = p?.terminal ? live().sessions[p.terminal] : null;
+    const close = () => closeOverlay(overlay);
+    const item = (id, label, file, onClick) => h_flex().id(id).h(32).px(10).gap(10).items_center().rounded(6).cursor_pointer()
+      .text_size(13).hover(st => st.bg(C.selected)).on_click((_e, cx) => onClick(cx))
+      .child(div().size(14).flex_none().when(!!file, el => el.child(svg(`mods/${MOD}/icons/${file}.svg`).size(14).text_color(C.muted))))
+      .child(label);
+    const box = v_flex().w_full().h_full().p(6).gap(2).bg(C.bg).text_color(C.ink);
+    if (!p) return box;
+    if (this.compacting) return box.child(div().px(10).py(8).text_size(13).child("Compact the context?"))
+      .child(h_flex().gap(8).px(10).justify_end()
+        .child(h_flex().id("panemenu-cancel").h(24).px(10).items_center().rounded(5).cursor_pointer().bg(C.card).border(1)
+          .border_color(C.line).text_size(12).text_color(C.muted).on_click(close).child("Cancel"))
+        .child(h_flex().id("panemenu-compact").h(24).px(10).items_center().rounded(5).cursor_pointer().bg(C.accent)
+          .text_size(12).font_semibold().text_color(C.card)
+          .on_click(() => { hc(["send", p.terminal, "/compact"]).catch(() => {}); close(); }).child("Compact")));
+    return box
+      .when(!!info?.sid, el => el.child(item("panemenu-sid", `Copy session id ${info.sid.slice(0, 8)}`, "copy",
+        (cx) => { copyText(cx, info.sid); close(); })))
+      .when(!!info, el => el.child(item("panemenu-compact-ask", "Compact the context…", "compact",
+        (cx) => { this.compacting = true; cx.notify(); })))
+      .child(item("panemenu-right", "Split right", "split-right", () => { run("pane.split", { pane, direction: "right" }); close(); }))
+      .child(item("panemenu-down", "Split down", "split-down", () => { run("pane.split", { pane, direction: "down" }); close(); }))
+      .when(!!p.terminal, el => el.child(item("panemenu-detach", "Move to its own tab", "external",
+        () => { queuePaneJob({ kind: "detach", terminal: p.terminal }); close(); })))
+      .child(div().h(1).mx(4).my(2).bg(C.line))
+      .child(item("panemenu-close", "Close pane", null, () => { run("pane.close", { pane }); close(); }));
+  }
   pathMenu(C) {
     const { path, root, overlay } = props();
     const item = (id, label, keys, text) => h_flex().id(id).h(36).px(10).gap(10).items_center().rounded(6).cursor_pointer()
@@ -2638,6 +2684,7 @@ export default class Board extends View {
     if (role === "statusfilter") return this.statusFilterPopup(C);
     if (role === "pathmenu") return this.pathMenu(C);
     if (role === "projectmenu") return this.projectMenu(C);
+    if (role === "panemenu") return this.paneMenu(C);
     if (role === "branchmenu") return this.branchMenu(C);
     if (role === "gitdialog") return this.gitDialog(C);
     if (role === "logfilter") return this.logFilterPopup(C);
