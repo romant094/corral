@@ -1480,15 +1480,16 @@ export default class Board extends View {
     const act = (label, work) => (_e, cx) => this.tgAction(cx, label, work);
     // A button, not a checkbox: it starts and stops processes. While any of that runs, it is off.
     const switching = t.busy === "Turning on…" || t.busy === "Turning off…";
+    // Off: only the button and what it does. On: the button, the file actions, then the settings.
     const head = h_flex().gap(8).items_center()
-      .child(div().flex_1().text_size(13).font_semibold().child("Telegram"))
       .child(t.busy
         ? h_flex().id("tg-enabled").h(26).px(10).flex_none().items_center().rounded(5).text_size(12).font_semibold()
           .bg(C.selected).text_color(C.dim).child(switching ? t.busy : on ? "Turn off" : "Turn on")
         : smallButton(C, "tg-enabled", on ? "Turn off" : "Turn on",
           act(on ? "Turning off…" : "Turning on…", () => this.setTelegramEnabled(!on)), on ? null : C.accent))
-      .child(smallButton(C, "tg-import", "Import", act("Importing…", () => this.importTelegram())))
-      .when(!!t.text, el => el
+      .child(div().flex_1())
+      .when(on, el => el.child(smallButton(C, "tg-import", "Import", act("Importing…", () => this.importTelegram()))))
+      .when(on && !!t.text, el => el
         .child(smallButton(C, "tg-export", "Export", act("Exporting…", () => this.exportTelegram())))
         .child(t.confirmClear
           ? smallButton(C, "tg-clear-yes", "Clear: sure?", act("Clearing…", () => this.clearTelegram()), C.danger)
