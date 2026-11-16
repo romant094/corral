@@ -126,6 +126,33 @@ test("pair: a group without Topics is asked once and followed to its supergroup"
   assert.equal(a.of("sendMessage").filter(c => /turn on Topics/.test(c.params.text)).length, 1);
 });
 
+test("pair: /init works for whoever added the bot in this window, not for others; the menu is set and removed", async () => {
+  const a = pairApi([[
+    { update_id: 1, my_chat_member: { chat: herd, from: anton, new_chat_member: { status: "administrator" } } },
+    { update_id: 2, message: { chat: herd, from: { id: 8, first_name: "X" }, text: "/init" } },
+  ], [
+    { update_id: 3, message: { chat: herd, from: anton, text: "/init@corral_bot" } },
+  ]], { [-1001]: herd });
+  const out = await pair({ api: a, state: emptyState(), code: "K7Q2", seconds: 60 });
+  assert.equal(out.owner.id, 7);
+  assert.deepEqual(a.of("setMyCommands")[0].params.scope, { type: "all_group_chats" });
+  assert.deepEqual(a.of("deleteMyCommands")[0].params.scope, { type: "all_group_chats" });
+});
+
+test("pair: a group the bot was added to without the link is told to send /init, once", async () => {
+  let t = 0;
+  const a = pairApi([
+    [{ update_id: 1, my_chat_member: { chat: herd, from: anton, new_chat_member: { status: "administrator" } } }],
+    [], [],
+    [{ update_id: 2, message: { chat: herd, from: anton, text: "/init" } }],
+  ], { [-1001]: herd });
+  await pair({ api: a, state: emptyState(), code: "K7Q2", seconds: 60, now: () => (t += 2000) });
+  const prompts = a.of("sendMessage").filter(c => /Send \/init/.test(c.params.text));
+  assert.equal(prompts.length, 1);
+  // Short polls until the prompt went out.
+  assert.equal(a.of("getUpdates")[1].params.timeout, 3);
+});
+
 test("pair: nothing in time is an error", async () => {
   let t = 0;
   const a = pairApi([], {});

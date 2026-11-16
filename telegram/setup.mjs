@@ -65,30 +65,68 @@ export function listing(state) {
 export const PAIR_RIGHTS = "manage_topics+delete_messages+pin_messages";
 export const pairLink = (bot, code) => `https://t.me/${bot}?startgroup=${code}&admin=${PAIR_RIGHTS}`;
 
+// While pairing, every group's menu has one command, /init: the person who added the bot to a group in this
+// window can send it there instead of following the link. It leaves the menu when pairing ends; the bridge then
+// sets the group's own menu.
+const INIT_SCOPE = { type: "all_group_chats" };
 export async function pair({ api, state, code, seconds = 290, now = Date.now, wait = 25 }) {
   const me = await api.call("getMe", {}, { tries: 1 });
+  await api.call("setMyCommands", { commands: [{ command: "init", description: "Connect this group to Corral" }], scope: INIT_SCOPE },
+    { tries: 1 }).catch(() => {});
+  try {
+    return await pairLoop({ api, state, code, seconds, now, wait, me });
+  } finally {
+    await api.call("deleteMyCommands", { scope: INIT_SCOPE }, { tries: 1 }).catch(() => {});
+  }
+}
+
+async function pairLoop({ api, state, code, seconds, now, wait, me }) {
   const deadline = now() + seconds * 1000;
   const start = new RegExp(`^/start(@${me.username})?\\s+${code}$`, "i");
+  const init = new RegExp(`^/init(@${me.username})?$`, "i");
+  // Who added the bot to which group during this window: only they may /init there.
+  const addedBy = new Map();
+  // Added without the link: the group is told to send /init, once, if no /start with the code follows soon.
+  const invited = new Map(), prompted = new Set();
   let found = null, asked = null;
   while (now() < deadline) {
     // Long waits for the /start; once it came, every few seconds, because turning Topics on in a supergroup
-    // sends the bot nothing and only getChat shows it.
-    const step = asked ? Math.min(wait, 3) : wait;
+    // sends the bot nothing and only getChat shows it. The same while a group waits for its /init prompt.
+    const waiting = [...invited.keys()].some(id => !prompted.has(id));
+    const step = asked || waiting ? Math.min(wait, 3) : wait;
     const timeout = Math.max(0, Math.min(step, Math.floor((deadline - now()) / 1000)));
     const updates = await api.raw("getUpdates", { offset: state.offset, timeout, allowed_updates: ["message", "my_chat_member"] });
     for (const u of updates) {
       state.offset = u.update_id + 1;
-      if (u.my_chat_member) rememberChat(state, u.my_chat_member.chat);
+      const cm = u.my_chat_member;
+      if (cm) {
+        rememberChat(state, cm.chat);
+        if (["member", "administrator"].includes(cm.new_chat_member?.status) && cm.from) {
+          addedBy.set(cm.chat.id, cm.from.id);
+          if (!invited.has(cm.chat.id)) invited.set(cm.chat.id, now());
+        }
+      }
       const m = u.message;
       if (!m) continue;
       rememberMessage(state, m);
-      if (m.chat?.type !== "private" && start.test((m.text ?? "").trim()) && m.from && !m.from.is_bot) {
+      // Adding the bot to a group also shows as new_chat_members in a plain group.
+      if (m.new_chat_members?.some(x => x.id === me.id) && m.from) addedBy.set(m.chat.id, m.from.id);
+      const text = (m.text ?? "").trim();
+      const fromPerson = m.chat?.type !== "private" && m.from && !m.from.is_bot;
+      if (fromPerson && (start.test(text) || (init.test(text) && addedBy.get(m.chat.id) === m.from.id))) {
         found = { chat: m.chat, from: m.from };
       }
       // Turning Topics on moves a plain group to a supergroup with a new id.
       if (found && m.migrate_to_chat_id && m.chat?.id === found.chat.id) found.chat = { ...found.chat, id: m.migrate_to_chat_id };
     }
-    if (!found) continue;
+    if (!found) {
+      for (const [chat, at] of invited) {
+        if (prompted.has(chat) || now() - at < 3000) continue;
+        prompted.add(chat);
+        await api.call("sendMessage", { chat_id: chat, text: "Send /init here to connect this group to Corral." }, { tries: 1 }).catch(() => {});
+      }
+      continue;
+    }
     const chat = await api.call("getChat", { chat_id: found.chat.id }, { tries: 1 });
     if (!chat.is_forum) {
       if (asked !== chat.id) {

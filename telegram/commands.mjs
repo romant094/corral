@@ -179,6 +179,8 @@ export function makeCommands({
         return reply(msg, renderStatus(herd.list(), state, chat_id));
       }
       if (cmd.name === "help") return reply(msg, agent ? HELP_AGENT : HELP_ROOT);
+      // /init is the setup command (Corral's settings pair the group with it); here the group is connected already.
+      if (cmd.name === "init" || cmd.name === "start") return reply(msg, "Already set up: this group is connected to Corral. /help lists the commands.");
       if (ROOT_ONLY.has(cmd.name)) return isRoot ? onRootCommand(msg, cmd) : reply(msg, where(cmd.name));
       if (AGENT_ONLY.has(cmd.name)) {
         if (agent) return onAgentCommand(msg, cmd, agent);
