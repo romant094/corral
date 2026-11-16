@@ -45,7 +45,7 @@ const setSettings = (change) => setShared(SETTINGS_KEY, { ...settingsState(), ..
 const SECTIONS = [
   { id: "telegram", title: "Telegram", badge: () => false, render: "telegramSection" },
   { id: "keys", title: "Keys", badge: () => false, render: "keysSection" },
-  { id: "updates", title: "Updates", badge: () => false, render: "updatesSection" },
+  { id: "updates", title: "Updates", badge: () => updateReady(), render: "updatesSection" },
 ];
 // Telegram: the bridge (telegram/, installed by install.sh) does all talking to Telegram and launchd;
 // the settings section writes telegram.json and calls the bridge's JSON modes.
@@ -125,6 +125,39 @@ const keyCaps = (chord) => {
 };
 // The Corral layout's section: its name follows the layout, which a gallery install may have renamed.
 const layoutSection = () => `layout:${shared("layout") || "corral"}`;
+// Updates: GitHub's latest release (never a draft or a pre-release) against VERSION.
+const REPO = "romant094/corral";
+const UPDATE_EVERY_MS = 6 * 3600 * 1000;
+const updatesState = () => ({ auto: true, checked_at: null, latest: null, notes: "", tarball: null, error: null, later: null,
+  ...(settingsState().updates ?? {}) });
+const setUpdates = (change) => setSettings({ updates: { ...updatesState(), ...change } });
+// "0.10.0" > "0.9.1"; anything that is not x.y.z counts as 0.0.0.
+const versionParts = (v) => (/^v?(\d+)\.(\d+)\.(\d+)$/.exec(v ?? "") ?? [0, 0, 0, 0]).slice(1).map(Number);
+const newerVersion = (a, b) => {
+  const [x, y] = [versionParts(a), versionParts(b)];
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  return false;
+};
+const updateReady = () => { const u = updatesState(); return !!u.latest && newerVersion(u.latest, VERSION); };
+// A --link install (main.js is a symlink into a checkout) is updated with git, never from here.
+let linkLookup = null;
+const linkedTo = () => linkLookup ??= exec("readlink", [`${appHome()}/mods/${MOD}/main.js`])
+  .then(r => r.code === 0 && r.stdout.trim() ? r.stdout.trim() : null, () => null);
+async function checkUpdates() {
+  if (await linkedTo()) return;
+  try {
+    const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`,
+      { headers: { Accept: "application/vnd.github+json", "User-Agent": `corral/${VERSION}` } });
+    // No release yet is not an error.
+    if (r.status === 404) return setUpdates({ checked_at: Date.now(), latest: null, error: null });
+    if (!r.ok) throw new Error(`GitHub answered ${r.status}`);
+    const rel = await r.json();
+    setUpdates({ checked_at: Date.now(), latest: rel.tag_name.replace(/^v/, ""), notes: rel.body ?? "",
+      tarball: rel.tarball_url, error: null });
+  } catch (err) {
+    setUpdates({ checked_at: Date.now(), error: String(err?.message ?? err) });
+  }
+}
 // The gear and `herdr-app do corral.settings` open it.
 const openSettings = () => openOverlay({ mod: MOD, kind: "dialog", width: 720, height: 520, props: { role: "settings" } });
 // Changes as a folder tree (the default) or a flat list, per repository: { [root]: boolean }.
@@ -742,6 +775,24 @@ export default class Board extends View {
         { keystroke: keys.relative, action: "corral-copy-relative", context: "CorralPaths" },
         { keystroke: keys.absolute, action: "corral-copy-absolute", context: "CorralPaths" },
       ]);
+      // Updates: at start and every 6 hours, unless the person turned it off. A reload of the mod within
+      // the hour does not ask GitHub again (60 requests an hour without a token).
+      if (!checking()) {
+        // The copy an update just installed says so.
+        const done = updatesState().installing;
+        if (done && done === VERSION) {
+          setUpdates({ installing: null });
+          notify({ title: `Corral ${VERSION} is installed`, level: "success" });
+        }
+        const auto = async () => {
+          const u = updatesState();
+          if (!u.auto || (u.checked_at && Date.now() - u.checked_at < 3600 * 1000 && !u.error)) return this.announceUpdate();
+          await checkUpdates();
+          this.announceUpdate();
+        };
+        cx.spawn(auto);
+        cx.timer.every(UPDATE_EVERY_MS, (cx) => { cx.spawn(auto); });
+      }
       // Saved projects from the Board layout this grew out of come along once.
       if (shared(PROJECTS_KEY) == null && shared("board.projects")) setShared(PROJECTS_KEY, shared("board.projects"));
       this.dir = `${home()}/.cache/corral/sessions`;
@@ -1708,7 +1759,90 @@ export default class Board extends View {
         });
       })));
   }
-  updatesSection(C) { return div().text_size(12).text_color(C.muted).child("New versions of Corral."); }
+  // One toast per new version and run; "Later" in the section silences that version.
+  announceUpdate() {
+    const u = updatesState();
+    if (!updateReady() || u.later === u.latest || this.announced === u.latest) return;
+    this.announced = u.latest;
+    notify({ title: `Corral ${u.latest} is out`, body: `You have ${VERSION}. Click to see what's new and update.`,
+      level: "info", action: { name: `${MOD}.settings-updates` } });
+  }
+  updatesSection(C) {
+    const u = updatesState();
+    const ui = (this.updUi ??= { busy: null, linked: undefined });
+    if (ui.linked === undefined) { ui.linked = null; linkedTo().then(l => { ui.linked = l || false; }); }
+    const when = u.checked_at ? new Date(u.checked_at) : null;
+    const checked = when ? `Checked ${when.toLocaleDateString()} ${pad2(when.getHours())}:${pad2(when.getMinutes())}` : "Not checked yet";
+    const check = (_e, cx) => {
+      if (ui.busy) return;
+      ui.busy = "Checking…";
+      cx.notify();
+      cx.spawn(async (cx) => { await checkUpdates(); ui.busy = null; cx.notify(); });
+    };
+    const ready = updateReady();
+    return v_flex().gap(14)
+      .child(h_flex().gap(10).items_center()
+        .child(div().text_size(13).child(`Corral ${VERSION}`))
+        .when(ready, el => el.child(div().px(8).py(2).rounded(5).bg(wash(C.accent, C)).text_size(12).text_color(C.accent)
+          .child(`${u.latest} is out`)))
+        .when(!ready && !!u.checked_at && !u.error && !ui.linked, el => el.child(div().text_size(12).text_color(C.muted).child("Up to date"))))
+      .when(!!ui.linked, el => el.child(div().text_size(12).text_color(C.muted)
+        .child(`Linked to ${tilde(ui.linked)}: update with git pull. Corral does not check for releases here.`)))
+      .when(!ui.linked && ready, el => el
+        .child(v_flex().id("update-notes").max_h(180).overflow_y_scrollbar().p(10).rounded(6).bg(C.card).border(1).border_color(C.line)
+          .text_size(12).text_color(C.ink).child(u.notes.trim() || "No notes for this release."))
+        .child(h_flex().gap(8)
+          .child(settingsButton(C, "update-now", "Update", true, (_e, cx) => this.installUpdate(cx)))
+          .when(u.later !== u.latest, el => el.child(settingsButton(C, "update-later", "Later", false, () => setUpdates({ later: u.latest }))))))
+      .when(!ui.linked, el => el
+        .child(h_flex().gap(10).items_center()
+          .child(settingsButton(C, "update-check", "Check now", false, check))
+          .child(div().text_size(12).text_color(C.muted).child(ui.busy ?? checked)))
+        .child(h_flex().id("update-auto").gap(10).items_center().cursor_pointer()
+          .on_click(() => setUpdates({ auto: !u.auto }))
+          .child(checkBox(C, u.auto))
+          .child(div().text_size(13).child("Check automatically"))
+          .child(div().text_size(12).text_color(C.muted).child("at start and every 6 hours; off sends nothing"))))
+      .when(!!u.error, el => el.child(div().text_size(12).text_color(C.danger).child(`Last check failed: ${u.error}`)))
+      .when(!!ui.error, el => el.child(div().text_size(12).text_color(C.danger).child(ui.error)));
+  }
+  // Downloads the release, checks it is Corral at that version, and runs its install.sh into this mod's own
+  // folder. The install replaces main.js, so Herdr reloads the mod in the middle: the new copy reports success.
+  installUpdate(cx) {
+    const ui = this.updUi;
+    const u = updatesState();
+    if (ui.busy || !u.tarball) return;
+    Object.assign(ui, { busy: `Downloading ${u.latest}…`, error: null });
+    cx.notify();
+    cx.spawn(async (cx) => {
+      let tmp = null;
+      try {
+        const run = async (cmd, args, what, timeout = 120000) => {
+          const r = await exec(cmd, args, { timeout });
+          if (r.code !== 0) throw new Error(`${what}: ${(r.stderr || r.stdout).trim().split("\n").pop() || `exit ${r.code}`}`);
+          return r.stdout.trim();
+        };
+        tmp = await run("mktemp", ["-d", "-t", "corral-update"], "temp folder");
+        const src = `${tmp}/src`;
+        await run("mkdir", [src], "temp folder");
+        await run("curl", ["-fsSL", "--max-time", "120", "-o", `${tmp}/release.tgz`, u.tarball], "download");
+        await run("tar", ["-xzf", `${tmp}/release.tgz`, "-C", src, "--strip-components", "1"], "unpack");
+        const main = await readTextFile(`${src}/mods/corral/main.js`);
+        if (!main || (await readTextFile(`${src}/install.sh`)) == null) throw new Error("the release has no Corral in it");
+        if (!main.includes(`const VERSION = "${u.latest}";`)) throw new Error(`the release is not Corral ${u.latest}`);
+        ui.busy = `Installing ${u.latest}…`;
+        cx.notify();
+        setUpdates({ installing: u.latest });
+        await run("/usr/bin/env", [`HERDR_APP_HOME=${appHome()}`, "/bin/bash", `${src}/install.sh`, "--name", MOD], "install", 300000);
+      } catch (err) {
+        setUpdates({ installing: null });
+        ui.error = `Update failed, ${VERSION} stays: ${err?.message ?? err}`;
+      }
+      if (tmp) await exec("rm", ["-rf", tmp]).catch(() => {});
+      ui.busy = null;
+      cx.notify();
+    });
+  }
   // + Agent: Claude to the right of the focused terminal of the shown tab, else in a new tab.
   newAgent(active) {
     const tab = active?.tabs.find(t => t.active);

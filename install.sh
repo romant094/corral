@@ -31,8 +31,9 @@ while [ $# -gt 0 ]; do
   shift
 done
 if $link && [ "$name" != corral ]; then echo "--link installs as corral only" >&2; exit 1; fi
-# A statusline hook installed before is kept current.
-[ -f "$STATUSLINE_DIR/corral-statusline.py" ] && with_statusline=true
+# A statusline hook installed before is kept current, quietly.
+had_statusline=false
+[ -f "$STATUSLINE_DIR/corral-statusline.py" ] && with_statusline=true && had_statusline=true
 MOD_DIR="$HERDR_HOME/mods/$name"
 
 if [ ! -d "$HERDR_HOME" ]; then
@@ -115,6 +116,7 @@ if $with_statusline; then
   mkdir -p "$STATUSLINE_DIR"
   cp "$SRC/statusline/corral-statusline.py" "$STATUSLINE_DIR/corral-statusline.py"
   chmod +x "$STATUSLINE_DIR/corral-statusline.py"
+  $had_statusline && { echo "Updated $STATUSLINE_DIR/corral-statusline.py."; exit 0; }
   echo
   echo "Installed $STATUSLINE_DIR/corral-statusline.py."
   echo "Point Claude Code at it in ~/.claude/settings.json:"

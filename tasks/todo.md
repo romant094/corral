@@ -89,7 +89,7 @@ Checks: `node --test telegram/test/` for the bridge; `herdr-app check mods/corra
   - Verify: `scripts/release.sh 0.0.1 --dry-run`; `./install.sh --name corral-test` into a scratch `HERDR_APP_HOME`
   - Dependencies: 5. Files: `mods/corral/main.js`, `CHANGELOG.md`, `scripts/release.sh` (new), `install.sh`. Scope: M
 
-- [ ] **Task 10: Update check and the Updates section**
+- [x] **Task 10: Update check and the Updates section**
   - Acceptance:
     - [ ] The board copy checks `releases/latest` with `fetch` at start and every 6 h, not under `checking()`; drafts and pre-releases skipped
     - [ ] Newer: toast with "Update"/"Later", a dot on the gear and on the section; the section shows notes, last check, errors
@@ -97,7 +97,7 @@ Checks: `node --test telegram/test/` for the bridge; `herdr-app check mods/corra
   - Verify: `herdr-app check`; a fake older `VERSION` in a scratch copy shows the toast
   - Dependencies: 2, 9. Files: `mods/corral/main.js`. Scope: M
 
-- [ ] **Task 11: Update by one click**
+- [x] **Task 11: Update by one click**
   - Acceptance:
     - [ ] "Update" downloads the release tarball with `curl`, unpacks with `tar`, checks `install.sh` and `mods/corral/main.js`, runs `install.sh --name <MOD>`
     - [ ] The result is a toast; after the reload the section shows the new version and no dot
