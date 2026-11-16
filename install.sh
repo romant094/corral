@@ -4,6 +4,8 @@
 # With --link the code and the layout are symlinks to this checkout, so edits apply at once.
 # Icons stay copies: Herdr does not load SVGs through a symlinked folder.
 set -euo pipefail
+# [a-z] in the --name check means ASCII letters only in the C locale.
+export LC_ALL=C
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HERDR_HOME="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
@@ -58,7 +60,9 @@ cp "$SRC"/mods/corral/icons/*.svg "$MOD_DIR/icons/"
 cp "$SRC"/themes/*.json "$HERDR_HOME/themes/"
 # The Telegram bridge: a folder of Node modules, linked whole or copied without its tests.
 rm -rf "$HERDR_HOME/corral/telegram"
+# corral/ also holds the bot token and the bridge's state: the owner's only.
 mkdir -p "$HERDR_HOME/corral"
+chmod 700 "$HERDR_HOME/corral"
 if $link; then
   ln -s "$SRC/telegram" "$HERDR_HOME/corral/telegram"
 else

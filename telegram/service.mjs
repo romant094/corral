@@ -9,8 +9,10 @@ export const LABEL = "dev.corral.telegram";
 const xml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 // node: the Node that runs this now, which Corral found as v20 or newer; launchd gets no PATH to look it up.
+// PATH keeps absolute folders only: a "." or an empty entry would look up hc in launchd's working folder.
 export function plistText({ node, bridge, log, env }) {
-  const vars = Object.entries(env).filter(([, v]) => v);
+  const clean = { ...env, PATH: (env.PATH ?? "").split(":").filter(p => p.startsWith("/")).join(":") };
+  const vars = Object.entries(clean).filter(([, v]) => v);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -25,6 +27,7 @@ export function plistText({ node, bridge, log, env }) {
   <dict>
 ${vars.map(([k, v]) => `    <key>${xml(k)}</key><string>${xml(v)}</string>`).join("\n")}
   </dict>
+  <key>WorkingDirectory</key><string>${xml(dirname(bridge))}</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key>
   <dict>

@@ -127,8 +127,11 @@ export function rememberChat(state, chat) {
   const i = state.chats.findIndex(c => c.id === chat.id);
   if (i >= 0 && state.chats[i].title === entry.title && state.chats[i].forum === entry.forum) return false;
   if (i >= 0) state.chats[i] = entry;
-  else if (state.chats.length < MAX_CHATS) state.chats.push(entry);
-  else return false;
+  else {
+    // Full: the oldest goes, so groups made to fill the list cannot keep a real one out for good.
+    if (state.chats.length >= MAX_CHATS) state.chats.shift();
+    state.chats.push(entry);
+  }
   return true;
 }
 

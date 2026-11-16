@@ -31,6 +31,7 @@ const print = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 // The settings file holds the token: only its owner reads it, whoever wrote it.
 async function draft() {
   const settings = await loadSettings(P.settings, { partial: true });
+  await chmod(P.dir, 0o700).catch(() => {});
   await chmod(P.settings, 0o600).catch(() => {});
   return settings;
 }
@@ -90,7 +91,9 @@ async function wizard(mode) {
 
 // One bridge per machine: two would both poll Telegram and fight (409 Conflict).
 async function lock() {
-  await mkdir(P.dir, { recursive: true });
+  // The folder holds the token, the state with group members and the log: the owner's only.
+  await mkdir(P.dir, { recursive: true, mode: 0o700 });
+  await chmod(P.dir, 0o700).catch(() => {});
   try {
     await writeFile(P.lock, String(process.pid), { flag: "wx" });
     return;

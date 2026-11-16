@@ -128,7 +128,7 @@ const layoutSection = () => `layout:${shared("layout") || "corral"}`;
 // Updates: GitHub's latest release (never a draft or a pre-release) against VERSION.
 const REPO = "romant094/corral";
 const UPDATE_EVERY_MS = 6 * 3600 * 1000;
-const updatesState = () => ({ auto: true, checked_at: null, latest: null, notes: "", tarball: null, error: null, later: null,
+const updatesState = () => ({ auto: true, checked_at: null, latest: null, notes: "", error: null, later: null,
   ...(settingsState().updates ?? {}) });
 const setUpdates = (change) => setSettings({ updates: { ...updatesState(), ...change } });
 // "0.10.0" > "0.9.1"; anything that is not x.y.z counts as 0.0.0.
@@ -152,8 +152,9 @@ async function checkUpdates() {
     if (r.status === 404) return setUpdates({ checked_at: Date.now(), latest: null, error: null });
     if (!r.ok) throw new Error(`GitHub answered ${r.status}`);
     const rel = await r.json();
-    setUpdates({ checked_at: Date.now(), latest: rel.tag_name.replace(/^v/, ""), notes: rel.body ?? "",
-      tarball: rel.tarball_url, error: null });
+    // Only a plain vX.Y.Z tag is a Corral release; the download URL is built from it, never taken from the answer.
+    if (!/^v\d+\.\d+\.\d+$/.test(rel.tag_name ?? "")) throw new Error(`the latest release has an odd tag: ${String(rel.tag_name).slice(0, 40)}`);
+    setUpdates({ checked_at: Date.now(), latest: rel.tag_name.slice(1), notes: rel.body ?? "", error: null });
   } catch (err) {
     setUpdates({ checked_at: Date.now(), error: String(err?.message ?? err) });
   }
@@ -1413,7 +1414,9 @@ export default class Board extends View {
   async saveTelegram(change) {
     const f = tgFiles();
     const next = JSON.stringify({ ...(this.tg.settings ?? {}), ...change }, null, 2) + "\n";
+    // The folder is the owner's only, so the token is never readable by others, not even before the chmod.
     await fs.mkdir(f.dir, { recursive: true }).catch(() => {});
+    await exec("chmod", ["700", f.dir]).catch(() => {});
     await writeTextFile(f.settings, next, this.tg.text ?? null);
     await exec("chmod", ["600", f.settings]).catch(() => {});
     Object.assign(this.tg, { text: next, settings: parseJson(next) });
@@ -1540,7 +1543,8 @@ export default class Board extends View {
     const body = editing
       ? v_flex().gap(8)
         .child(div().text_size(12).text_color(C.muted)
-          .child("Make a bot with @BotFather (/newbot) and paste its token. In BotFather's Bot Settings: Allow Groups on, Group Privacy off."))
+          .child("Make a bot with @BotFather (/newbot) and paste its token. In BotFather's Bot Settings: Allow Groups on, Group Privacy off. "
+            + "Once the bot is in your group, turn Allow Groups off, so nobody adds it elsewhere."))
         .child(h_flex().gap(8)
           .child(div().flex_1().h(32).px(10).flex().items_center().rounded(6).bg(C.card).border(1).border_color(C.input).text_size(13)
             .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.tokenInput)))
@@ -1597,13 +1601,16 @@ export default class Board extends View {
     });
     const body = v_flex().gap(2)
       .child(div().pb(4).text_size(12).text_color(C.muted)
-        .child("Only these people can start, answer and stop agents. Write in the group and press Refresh to see yourself here."))
+        .child("Only these people can start, answer and stop agents: they run code on this Mac. Write in the group and press Refresh "
+          + "to see yourself here, and check the id: anyone can copy a name."))
       .when(!people.length && !unknown.length, el => el.child(div().py(6).text_size(12).text_color(C.dim).child("Nobody wrote in the group yet.")))
       .children([...unknown, ...people].map(p => h_flex().id(`tg-owner-${p.id}`).h(30).px(8).gap(10).items_center().rounded(6)
         .cursor_pointer().hover(st => st.bg(C.selected)).on_click(toggle(p.id))
         .child(checkBox(C, owners.includes(p.id)))
         .child(div().text_size(13).child(p.name))
-        .when(!!p.username, el => el.child(div().text_size(12).text_color(C.muted).child(`@${p.username}`)))));
+        .when(!!p.username, el => el.child(div().text_size(12).text_color(C.muted).child(`@${p.username}`)))
+        // Names can be copied; the id cannot. Yours is in Telegram's settings or from @userinfobot.
+        .child(div().text_size(11).text_color(C.dim).font_family("Geist Mono").child(`id ${p.id}`))));
     return { title: "Who may give commands", body,
       summary: [...unknown, ...people].filter(p => owners.includes(p.id)).map(p => p.username ? `@${p.username}` : p.name).join(", ") };
   }
@@ -1641,7 +1648,10 @@ export default class Board extends View {
   }
   // A bridge started by hand (a terminal, before launchd) holds the lock; it goes before launchd starts one.
   async takeOver() {
-    const pid = this.tg.state?.daemon?.pid;
+    let pid = this.tg.state?.daemon?.pid;
+    // The pid comes from a file: stop it only if it is still the bridge.
+    const cmd = pid ? await exec("ps", ["-o", "command=", "-p", String(pid)]).catch(() => null) : null;
+    if (!cmd?.stdout.includes("bridge.mjs")) pid = null;
     if (pid) await exec("kill", [String(pid)]).catch(() => {});
     for (let i = 0; i < 20 && pid; i++) {
       const r = await exec("kill", ["-0", String(pid)]).catch(() => ({ code: 1 }));
@@ -1820,17 +1830,16 @@ export default class Board extends View {
   // Downloads the release, checks it is Corral at that version, and runs its install.sh into this mod's own
   // folder. The install replaces main.js, so Herdr reloads the mod in the middle: the new copy reports success.
   installUpdate(cx) {
-    const u = updatesState();
-    if (u.tarball) this.installRelease(cx, this.updUi, u.latest, u.tarball);
+    if (updateReady()) this.installRelease(cx, this.updUi, updatesState().latest);
   }
   // A gallery install copies the layout and the mod only: the bridge comes from this version's release.
   installBridge(cx) {
-    this.installRelease(cx, (this.bridgeUi ??= { busy: null, error: null }), VERSION,
-      `https://api.github.com/repos/${REPO}/tarball/v${VERSION}`);
+    this.installRelease(cx, (this.bridgeUi ??= { busy: null, error: null }), VERSION);
   }
-  installRelease(cx, ui, version, tarball) {
-    if (ui.busy) return;
-    const u = { latest: version, tarball };
+  installRelease(cx, ui, version) {
+    if (ui.busy || !/^\d+\.\d+\.\d+$/.test(version)) return;
+    // GitHub's tarball of the tag; it redirects to codeload.github.com, over HTTPS only.
+    const u = { latest: version, tarball: `https://api.github.com/repos/${REPO}/tarball/v${version}` };
     Object.assign(ui, { busy: `Downloading ${u.latest}…`, error: null });
     cx.notify();
     cx.spawn(async (cx) => {
@@ -1844,7 +1853,8 @@ export default class Board extends View {
         tmp = await run("mktemp", ["-d", "-t", "corral-update"], "temp folder");
         const src = `${tmp}/src`;
         await run("mkdir", [src], "temp folder");
-        await run("curl", ["-fsSL", "--max-time", "120", "-o", `${tmp}/release.tgz`, u.tarball], "download");
+        await run("curl", ["-fsSL", "--proto", "=https", "--proto-redir", "=https", "--max-time", "120",
+          "-o", `${tmp}/release.tgz`, "--", u.tarball], "download");
         await run("tar", ["-xzf", `${tmp}/release.tgz`, "-C", src, "--strip-components", "1"], "unpack");
         const main = await readTextFile(`${src}/mods/corral/main.js`);
         if (!main || (await readTextFile(`${src}/install.sh`)) == null) throw new Error("the release has no Corral in it");

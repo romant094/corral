@@ -167,4 +167,7 @@ test("groups the bot is added to are capped", () => {
   const s = emptyState();
   for (let i = 0; i < MAX_CHATS + 5; i++) rememberChat(s, { id: -1000 - i, type: "supergroup", title: `g${i}` });
   assert.equal(s.chats.length, MAX_CHATS);
+  // The newest stays in: the oldest made room.
+  assert.equal(s.chats.at(-1).id, -1000 - (MAX_CHATS + 4));
+  assert.equal(s.chats[0].id, -1005);
 });

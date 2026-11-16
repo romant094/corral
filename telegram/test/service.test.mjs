@@ -29,7 +29,8 @@ function world({ loaded = false, running = true } = {}) {
 const PLIST = `/Users/a/Library/LaunchAgents/${LABEL}.plist`;
 
 test("plist: absolute node and bridge, PATH, log, restart only after a crash", () => {
-  const text = plistText({ node: "/n/node", bridge: "/b/a&b.mjs", log: "/l/x.log", env: { PATH: "/usr/bin", HERDR_APP_HOME: "" } });
+  const text = plistText({ node: "/n/node", bridge: "/b/a&b.mjs", log: "/l/x.log", env: { PATH: ".:/usr/bin::rel/bin", HERDR_APP_HOME: "" } });
+  assert.match(text, /<key>WorkingDirectory<\/key><string>\/b<\/string>/);
   assert.match(text, /<string>\/n\/node<\/string>\s*<string>\/b\/a&amp;b.mjs<\/string>/);
   assert.match(text, /<key>PATH<\/key><string>\/usr\/bin<\/string>/);
   assert.doesNotMatch(text, /HERDR_APP_HOME/);
