@@ -83,6 +83,8 @@ except ValueError:
 added, kept = [], []
 for section, keys in ours.items():
     have = theirs.setdefault(section, {})
+    # Decided before adding anything: did the person's section already have Corral's keys?
+    had = any(v.startswith(name + ".") for v in have.values())
     for key, action in keys.items():
         action = name + action[len("corral"):] if action.startswith("corral.") else action
         # An action already on another key was rebound in Corral's settings: it stays there.
@@ -90,7 +92,7 @@ for section, keys in ours.items():
             continue
         # Once the person's section has Corral's keys, a view without one was cleared on purpose.
         view = action.split(".", 1)[1] if "." in action else ""
-        if view in ("board", "files", "log", "changes") and any(v.startswith(name + ".") for v in have.values()):
+        if view in ("board", "files", "log", "changes") and had:
             continue
         if key not in have:
             have[key] = action
@@ -121,8 +123,10 @@ if $with_statusline; then
   fi
 fi
 
-# A bridge running under launchd picks up the new code.
-if [ "$(uname)" = Darwin ] && launchctl print "gui/$(id -u)/dev.corral.telegram" >/dev/null 2>&1; then
+# A bridge running under launchd picks up the new code, if it is this install's bridge (not one of another home).
+PLIST="$HOME/Library/LaunchAgents/dev.corral.telegram.plist"
+if [ "$(uname)" = Darwin ] && [ -f "$PLIST" ] && grep -qF "$HERDR_HOME/corral/telegram/bridge.mjs" "$PLIST" \
+  && launchctl print "gui/$(id -u)/dev.corral.telegram" >/dev/null 2>&1; then
   launchctl kickstart -k "gui/$(id -u)/dev.corral.telegram" && echo "Restarted the Telegram bridge."
 fi
 
