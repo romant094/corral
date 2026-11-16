@@ -81,7 +81,7 @@ Checks: `node --test telegram/test/` for the bridge; `herdr-app check mods/corra
 
 ## Phase 4: Updates
 
-- [ ] **Task 9: Version, changelog, release script, install by name**
+- [x] **Task 9: Version, changelog, release script, install by name**
   - Acceptance:
     - [ ] `const VERSION = "0.1.0"` in `main.js`; `CHANGELOG.md`
     - [ ] `scripts/release.sh x.y.z` refuses a version not above the last tag, runs the tests and the mod check, sets `VERSION`, commits, tags, pushes and runs `gh release create` — each outward step after a prompt
