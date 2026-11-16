@@ -11,21 +11,24 @@ export async function check({ api, hc, settings }) {
   const out = { ok: true, bot: null, group: null, rights: null, hc: null, errors: [] };
   const fail = (what, err) => { out.ok = false; out.errors.push(`${what}: ${err.message}`); };
   try {
-    const me = await api.call("getMe", {}, { tries: 1 });
+    const me = await api.call("getMe", {}, { tries: 3 });
     out.bot = { id: me.id, username: me.username, groups: !!me.can_join_groups, privacy: !me.can_read_all_group_messages };
     if (settings.chat_id) {
       try {
-        const chat = await api.call("getChat", { chat_id: settings.chat_id }, { tries: 1 });
+        const chat = await api.call("getChat", { chat_id: settings.chat_id }, { tries: 3 });
         out.group = { id: chat.id, title: chat.title, forum: !!chat.is_forum };
         if (!chat.is_forum) { out.ok = false; out.errors.push("group: Topics are off"); }
-        const member = await api.call("getChatMember", { chat_id: settings.chat_id, user_id: me.id }, { tries: 1 });
+        const member = await api.call("getChatMember", { chat_id: settings.chat_id, user_id: me.id }, { tries: 3 });
         const admin = member.status === "creator" || member.status === "administrator";
         out.rights = { admin, missing: member.status === "creator" ? [] : RIGHTS.filter(r => !member[r]) };
         if (out.rights.missing.length) out.ok = false;
       } catch (err) { fail("group", err); }
     }
   } catch (err) {
-    fail("bot", err.code === 401 ? { message: "the token was rejected" } : err);
+    // Only a 401 says the token is wrong; a 5xx or no network says nothing about it.
+    fail("bot", err.code === 401 ? { message: "the token was rejected" }
+      : err.code == null || err.code >= 500 ? { message: `Telegram is not answering right now (${err.code ?? "no network"}); try again in a minute` }
+      : err);
   }
   try {
     const { terminals } = await hc.ls();
@@ -70,7 +73,7 @@ export const pairLink = (bot, code) => `https://t.me/${bot}?startgroup=${code}&a
 // sets the group's own menu.
 const INIT_SCOPE = { type: "all_group_chats" };
 export async function pair({ api, state, code, seconds = 290, now = Date.now, wait = 25 }) {
-  const me = await api.call("getMe", {}, { tries: 1 });
+  const me = await api.call("getMe", {}, { tries: 3 });
   await api.call("setMyCommands", { commands: [{ command: "init", description: "Connect this group to Corral" }], scope: INIT_SCOPE },
     { tries: 1 }).catch(() => {});
   try {
@@ -127,7 +130,7 @@ async function pairLoop({ api, state, code, seconds, now, wait, me }) {
       }
       continue;
     }
-    const chat = await api.call("getChat", { chat_id: found.chat.id }, { tries: 1 });
+    const chat = await api.call("getChat", { chat_id: found.chat.id }, { tries: 3 });
     if (!chat.is_forum) {
       if (asked !== chat.id) {
         asked = chat.id;

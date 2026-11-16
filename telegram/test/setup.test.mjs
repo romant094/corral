@@ -41,6 +41,12 @@ test("check: a rejected token says so and never shows it", async () => {
   assert.deepEqual(out.errors, ["bot: the token was rejected"]);
 });
 
+test("check: Telegram down is not a wrong token", async () => {
+  const out = await check({ hc, settings: { token: "1:x", chat_id: null }, api: api({ getMe: new TelegramError("getMe", 502, "Bad Gateway") }) });
+  assert.match(out.errors[0], /not answering right now \(502\)/);
+  assert.doesNotMatch(out.errors[0], /rejected/);
+});
+
 test("discover: reads without confirming and learns groups, topics and people", async () => {
   const state = emptyState();
   state.offset = 40;

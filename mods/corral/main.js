@@ -1444,6 +1444,14 @@ export default class Board extends View {
       const before = this.tg.text;
       await this.saveTelegram({ token });
       const r = await bridgeJson(["--check", "--json"]);
+      // Back to the old file only when the token itself is wrong: refused by Telegram or not a token at all.
+      // When Telegram does not answer, the token stays and Check can run again.
+      const wrong = (r.errors ?? []).some(e => /rejected|must be a bot token/.test(e));
+      if (!r.bot && !wrong) {
+        this.tg.check = r;
+        this.tokenInput.set_value("");
+        throw new Error(`${(r.errors ?? []).join("; ") || r.error} The token is saved.`);
+      }
       if (!r.bot) {
         const f = tgFiles();
         if (before == null) await fs.unlink(f.settings).catch(() => {});
