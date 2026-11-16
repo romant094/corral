@@ -58,7 +58,7 @@ Checks: `node --test telegram/test/` for the bridge; `herdr-app check mods/corra
   - Verify: `herdr-app check`; the wizard against the owner's bot with the bridge stopped
   - Dependencies: 2, 4. Files: `mods/corral/main.js`. Scope: M
 
-- [ ] **Task 7: Telegram section — daemon step**
+- [x] **Task 7: Telegram section — daemon step**
   - Acceptance:
     - [ ] Start/Stop/Restart call `--service`; the status line shows Running/Stopped/Not responding/Error within 5 s
     - [ ] A settings change while running restarts the bridge; toggle off stops and uninstalls it, settings stay
@@ -71,7 +71,7 @@ Checks: `node --test telegram/test/` for the bridge; `herdr-app check mods/corra
 
 ## Phase 3: Keys
 
-- [ ] **Task 8: Keys section**
+- [x] **Task 8: Keys section**
   - Acceptance:
     - [ ] Four rows with keycaps; a press records the next chord with a modifier; Esc cancels; Backspace clears
     - [ ] A `global` chord shows "Replaces <action> in Corral"; a `terminal` chord shows its warning; `cmd-tab`, `cmd-space`, `cmd-shift-3/4/5` are refused

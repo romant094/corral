@@ -1,7 +1,7 @@
 import { View, div, svg, image, uniform_list, PathBuilder } from "gpui-kit";
 import { h_flex, v_flex, Input, InputState, Editor, EditorState, h_resizable, resizable_panel, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import {
-  agents, spaces, panes, props, run, setAgentOrder, theme, shared, setShared, pickFolder,
+  agents, spaces, panes, props, run, setAgentOrder, theme, shared, setShared, pickFolder, keys as keyBindings,
   home, appHome, hc, exec, readTextFile, writeTextFile, checking, openOverlay, closeOverlay, notify, window as appWindow, layout, nextCommand,
 } from "herdr";
 import * as fs from "fs/promises";
@@ -72,14 +72,13 @@ const findNodeBin = () => nodeLookup ??= (async () => {
     nvmBins = (await fs.readdir(nvm)).filter(v => /^v\d+/.test(v))
       .sort((a, b) => b.slice(1).localeCompare(a.slice(1), undefined, { numeric: true })).map(v => `${nvm}/${v}/bin/node`);
   } catch {}
-  const candidates = [await whence("/bin/sh", ["-c", "command -v node"]), await whence("/bin/zsh", ["-lic", "command -v node"]),
-    ...nvmBins, "/opt/homebrew/bin/node", "/usr/local/bin/node"];
-  for (const bin of candidates) {
-    if (!bin?.startsWith("/")) continue;
-    const found = await usable(bin);
+  // The interactive shell last: it is slow, and a shell setup that waits for input only ends at the timeout.
+  for (const bin of [await whence("/bin/sh", ["-c", "command -v node"]), ...nvmBins, "/opt/homebrew/bin/node", "/usr/local/bin/node"]) {
+    const found = bin?.startsWith("/") && await usable(bin);
     if (found) return found;
   }
-  return null;
+  const bin = await whence("/bin/zsh", ["-lic", "command -v node"]);
+  return bin?.startsWith("/") ? usable(bin) : null;
 })();
 // Runs one of the bridge's JSON modes; its last stdout line is the answer.
 const bridgeJson = async (args, timeout = 60000) => {
@@ -94,6 +93,36 @@ const bridgeJson = async (args, timeout = 60000) => {
   }
 };
 const parseJson = (text) => { try { return text ? JSON.parse(text) : null; } catch { return null; } };
+// Keys: the view keys live in keys.json under the layout's own section, which wins over `global`
+// while the layout shows; `terminal` still wins while a terminal has focus.
+const DEFAULT_KEYS = { board: "cmd-alt-1", files: "cmd-alt-2", log: "cmd-alt-3", changes: "cmd-alt-4" };
+const VIEW_NAMES = { board: "Board", files: "Files", log: "Log", changes: "Changes" };
+// macOS takes these before any app.
+const SYSTEM_KEYS = ["cmd-tab", "cmd-space", "cmd-shift-3", "cmd-shift-4", "cmd-shift-5", "ctrl-space"];
+const MODS_ORDER = ["cmd", "ctrl", "alt", "shift", "fn"];
+// "alt-cmd-1" and "cmd-alt-1" are one chord.
+const normChord = (chord) => {
+  const parts = chord.toLowerCase().split("-");
+  // A "-" key itself ("cmd--") leaves an empty part at the end.
+  const key = chord.endsWith("--") ? "-" : parts.pop();
+  const mods = parts.filter(Boolean).map(m => ({ control: "ctrl", option: "alt", super: "cmd", platform: "cmd" }[m] ?? m));
+  return [...MODS_ORDER.filter(m => mods.includes(m)), key].join("-");
+};
+const chordOf = (e) => {
+  const m = e.modifiers ?? {};
+  const key = (e.key ?? "").toLowerCase();
+  if (!key || ["shift", "control", "alt", "platform", "function", "cmd", "ctrl"].includes(key)) return null;
+  return [m.platform && "cmd", m.control && "ctrl", m.alt && "alt", m.shift && "shift", m.function && "fn", key].filter(Boolean).join("-");
+};
+const KEY_GLYPHS = { cmd: "⌘", ctrl: "⌃", alt: "⌥", shift: "⇧", fn: "fn", left: "←", right: "→", up: "↑", down: "↓",
+  enter: "↩", escape: "⎋", backspace: "⌫", tab: "⇥", space: "Space" };
+const keyCaps = (chord) => {
+  const parts = normChord(chord).split("-");
+  const key = parts.pop();
+  return [...parts, key].map(p => KEY_GLYPHS[p] ?? p.toUpperCase());
+};
+// The Corral layout's section: its name follows the layout, which a gallery install may have renamed.
+const layoutSection = () => `layout:${shared("layout") || "corral"}`;
 // The gear and `herdr-app do corral.settings` open it.
 const openSettings = () => openOverlay({ mod: MOD, kind: "dialog", width: 720, height: 520, props: { role: "settings" } });
 // Changes as a folder tree (the default) or a flat list, per repository: { [root]: boolean }.
@@ -621,7 +650,7 @@ export default class Board extends View {
       // `herdr-app do corral.dock` (or a key bound to it) folds and opens the terminals as the chevron does;
       // corral.merge, corral.split and corral.detach do what the bar's and the pane header's buttons do;
       // corral.sort moves every running agent to its project's space, as a new agent is moved;
-      // corral.settings opens the settings dialog.
+      // corral.settings opens the settings dialog, corral.settings-<section> on that section.
       // corral.board, corral.files, corral.log and corral.changes switch the top area (mods/corral/keys.json binds them).
       cx.spawn(async (cx) => {
         for (;;) {
@@ -635,6 +664,9 @@ export default class Board extends View {
           if (command === "split" && tab) queuePaneJob({ kind: "split", tab: tab.id });
           if (command === "sort") sortAgents();
           if (command === "settings") openSettings();
+          // corral.settings-keys and the like open the dialog on that section.
+          const section = SECTIONS.find(s => command === `settings-${s.id}`);
+          if (section) { setSettings({ section: section.id }); openSettings(); }
           const focused = panes().find(p => p.focused && p.terminal);
           if (command === "detach" && focused) queuePaneJob({ kind: "detach", terminal: focused.terminal });
           cx.notify();
@@ -657,6 +689,8 @@ export default class Board extends View {
     }
     if (p?.role === "settings") {
       this.tg = { loaded: false, busy: null, error: null, check: null, editToken: false };
+      this.keysFocus = cx.focus_handle();
+      this.keysUi = { recording: null, error: null, warn: null };
       this.tokenInput = InputState.new({ placeholder: "123456789:AAH…" });
       this.groupSearch = InputState.new({ placeholder: "Filter groups" });
       this.groupSearch.on("change", (_e, cx) => cx.notify());
@@ -1584,7 +1618,94 @@ export default class Board extends View {
         .child("The bridge runs under launchd: it starts again after a restart of the Mac until you stop it. Keep the Mac awake."));
     return { title: "Bridge", body };
   }
-  keysSection(C) { return div().text_size(12).text_color(C.muted).child("The keys that switch Board, Files, Log and Changes."); }
+  // The chord bound to a view in the layout's section, or null.
+  viewKey(view) {
+    const action = `${MOD}.${view}`;
+    return keyBindings().find(b => b.section === layoutSection() && b.action === action)?.keys ?? null;
+  }
+  // What else uses a chord: Herdr's global keys (the layout's section wins over them) and terminal keys (they win).
+  keyUses(chord, view) {
+    const n = normChord(chord);
+    return keyBindings().filter(b => normChord(b.keys) === n && !(b.section === layoutSection() && b.action === `${MOD}.${view}`));
+  }
+  // Rewrites only the layout's section of keys.json; Herdr applies it at once, or keeps the last good file
+  // and says why in keys.error.
+  async writeViewKeys(change) {
+    const file = `${appHome()}/keys.json`;
+    const text = await readTextFile(file);
+    const all = parseJson(text) ?? {};
+    const section = layoutSection();
+    const ours = { ...(all[section] ?? {}) };
+    for (const [view, chord] of Object.entries(change)) {
+      const action = `${MOD}.${view}`;
+      for (const k of Object.keys(ours)) if (ours[k] === action || (chord && normChord(k) === normChord(chord))) delete ours[k];
+      if (chord) ours[chord] = action;
+    }
+    all[section] = ours;
+    await writeTextFile(file, JSON.stringify(all, null, 2) + "\n", text);
+    await exec("sleep", ["0.5"]);
+    const error = await readTextFile(`${appHome()}/keys.error`).catch(() => null);
+    if (error?.trim()) throw new Error(`Herdr kept the old keys: ${error.trim()}`);
+  }
+  keyPressed(e, cx) {
+    const ui = this.keysUi;
+    if (!ui.recording) return;
+    cx.stop_propagation();
+    const view = ui.recording;
+    const m = e.modifiers ?? {};
+    const plain = !m.platform && !m.control && !m.alt && !m.function;
+    if (plain && e.key === "escape") { ui.recording = null; return cx.notify(); }
+    if (plain && e.key === "backspace") return this.saveViewKey(cx, view, null);
+    const chord = chordOf(e);
+    if (!chord) return;
+    if (plain) { ui.error = "Use at least one of ⌘, ⌃ or ⌥: plain keys are typing."; return cx.notify(); }
+    if (SYSTEM_KEYS.includes(normChord(chord))) { ui.error = `${keyCaps(chord).join("")} belongs to macOS.`; return cx.notify(); }
+    this.saveViewKey(cx, view, chord);
+  }
+  saveViewKey(cx, view, chord) {
+    const ui = this.keysUi;
+    Object.assign(ui, { recording: null, error: null, warn: null });
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try { await this.writeViewKeys({ [view]: chord }); } catch (err) { ui.error = String(err?.message ?? err); }
+      cx.notify();
+    });
+  }
+  keysSection(C) {
+    const ui = this.keysUi;
+    const row = (view) => {
+      const chord = this.viewKey(view);
+      const recording = ui.recording === view;
+      const uses = chord ? this.keyUses(chord, view) : [];
+      const note = uses.map(u => u.section === "terminal" ? `While a terminal has focus, this key stays ${u.action}`
+        : u.section === "global" ? `Replaces ${u.action} in Corral` : `Also ${u.action} (${u.section})`).join(" · ");
+      return v_flex().gap(4)
+        .child(h_flex().h(36).gap(12).items_center()
+          .child(div().w(90).flex_none().text_size(13).child(VIEW_NAMES[view]))
+          .child(h_flex().id(`key-${view}`).h(30).min_w(140).px(8).gap(4).items_center().rounded(6).cursor_pointer()
+            .border(1).border_color(recording ? C.accent : C.line).bg(recording ? C.selected : C.card)
+            .hover(s => s.border_color(C.input))
+            .on_click((_e, cx) => { Object.assign(ui, { recording: view, error: null }); this.keysFocus.focus(); cx.notify(); })
+            .when(recording, el => el.child(div().text_size(12).text_color(C.accent).child("Press the new keys…")))
+            .when(!recording && !chord, el => el.child(div().text_size(12).text_color(C.dim).child("No key")))
+            .when(!recording && !!chord, el => el.children(keyCaps(chord).map(cap => div().px(6).h(20).flex().items_center().rounded(4)
+              .bg(C.bg).border(1).border_color(C.line).font_family("Geist Mono").text_size(11).child(cap)))))
+          .when(recording, el => el.child(div().text_size(11).text_color(C.dim).child("Esc cancels · ⌫ clears"))))
+        .when(!!note, el => el.child(div().pl(102).text_size(11).text_color(theme().blocked).child(note)));
+    };
+    return v_flex().gap(10).track_focus(this.keysFocus).on_key_down((e, cx) => this.keyPressed(e, cx))
+      .child(div().text_size(12).text_color(C.muted)
+        .child("Keys that switch the top area while the Corral layout shows. Click a key and press the new one; a key Herdr uses elsewhere is taken over in Corral only."))
+      .children(VIEWS.map(row))
+      .when(!!ui.error, el => el.child(div().text_size(12).text_color(C.danger).child(ui.error)))
+      .child(h_flex().pt(6).child(settingsButton(C, "keys-reset", "Reset to defaults", false, (_e, cx) => {
+        Object.assign(ui, { recording: null, error: null });
+        cx.spawn(async (cx) => {
+          try { await this.writeViewKeys(DEFAULT_KEYS); } catch (err) { ui.error = String(err?.message ?? err); }
+          cx.notify();
+        });
+      })));
+  }
   updatesSection(C) { return div().text_size(12).text_color(C.muted).child("New versions of Corral."); }
   // + Agent: Claude to the right of the focused terminal of the shown tab, else in a new tab.
   newAgent(active) {
