@@ -40,33 +40,33 @@ config.mjs ─┬─ telegram.mjs ─┐
 Detailed tasks with acceptance criteria and verification: [todo.md](todo.md).
 
 ### Phase 1: Foundation
-- [ ] Task 1: Verify that Herdr.app adopts a labelled `hc run` terminal as a tab
-- [ ] Task 2: Config, state file and Bot API client with `--check`
-- [ ] Task 3: `hc` wrapper and the agent model from `hc events`
+- [x] Task 1: Verify that Herdr.app adopts a labelled `hc run` terminal as a tab
+- [x] Task 2: Config, state file and Bot API client with `--check`
+- [x] Task 3: `hc` wrapper and the agent model from `hc events`
 
 ### Checkpoint 1: Foundation
 - [ ] `node --test telegram/test/` passes; `--check` is green on this Mac
 
 ### Phase 2: Core slices
-- [ ] Task 4: A topic per agent with the status in its name
-- [ ] Task 5: Text from a topic to its agent, `/screen`, `/stop`
-- [ ] Task 6: `done` and `blocked` posts
+- [x] Task 4: A topic per agent with the status in its name
+- [x] Task 5: Text from a topic to its agent, `/screen`, `/stop`
+- [x] Task 6: `done` and `blocked` posts
 
 ### Checkpoint 2: Agent topics end to end
 - [ ] User stories 2, 3, 4, 5 (text replies), 6 work with a real bot
 
 ### Phase 3: Buttons, root topic, files
-- [ ] Task 7: Option buttons on `blocked` posts
-- [ ] Task 8: `/close`, Delete topic and `/clear`
-- [ ] Task 9: Root topic: `/status`, dashboard, `/help`, command menu
-- [ ] Task 10: `/new` with space buttons
-- [ ] Task 11: Photos and files to the agent
+- [x] Task 7: Option buttons on `blocked` posts
+- [x] Task 8: `/close`, Delete topic and `/clear`
+- [x] Task 9: Root topic: `/status`, dashboard, `/help`, command menu
+- [x] Task 10: `/new` with space buttons
+- [x] Task 11: Photos and files to the agent
 
 ### Checkpoint 3: Feature complete
 - [ ] User stories 1–12 work with a real bot
 
 ### Phase 4: Delivery
-- [ ] Task 12: `install.sh` and README
+- [x] Task 12: `install.sh` and README
 
 ### Checkpoint 4: Done
 - [ ] Spec success criteria 1–7 met; ready for review

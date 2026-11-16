@@ -110,6 +110,51 @@ Right-click a branch for: new branch or worktree from it, checkout, update, push
 
 `git status` and `git diff HEAD` of the agent's folder, refreshed every 4 seconds. The files show as a folder tree or a flat list ("Group by directory", kept per repository). Click a file for its diff.
 
+## Telegram
+
+Work with the agents from a Telegram group with Topics. The root topic (General by default) starts agents and pins a dashboard of all of them. Every live Claude Code agent gets a topic of its own: its status is the emoji in the topic name, its last reply arrives when it finishes, and its screen with one button per option arrives when it waits for you. What you write in the topic goes to the agent, and so do photos and files.
+
+The bridge is a small Node program (`telegram/`, Node 20+, no dependencies) next to herdr-core, so it keeps working when the Herdr window is closed. It stops while the Mac sleeps; Telegram keeps your messages for 24 hours.
+
+### Set it up
+
+1. In [@BotFather](https://t.me/BotFather), send `/newbot` and keep the token.
+2. Make a Telegram group, turn on Topics, add the bot and make it an admin with **Manage topics**, **Delete messages** and **Pin messages**.
+3. Write `~/.config/herdr-app/corral/telegram.json` (the Corral settings window will write it for you later):
+
+   ```json
+   {
+     "token": "123456:ABC…",
+     "chat_id": -1001234567890,
+     "root_topic_id": null,
+     "owner_ids": [123456789]
+   }
+   ```
+
+   `chat_id` is the group's id, `owner_ids` your own Telegram user id: only these users can control the bot. `root_topic_id: null` means General.
+4. Check it, then run it:
+
+   ```sh
+   node ~/.config/herdr-app/corral/telegram/bridge.mjs --check
+   node ~/.config/herdr-app/corral/telegram/bridge.mjs
+   ```
+
+Each topic rename shows as a line in the topic. Mute the group if they distract you: the agents' questions still arrive.
+
+### Commands
+
+| Command | Where | What it does |
+|---|---|---|
+| `/new` | root topic | buttons with your workspaces; a press starts Claude in a new tab there |
+| `/status` | anywhere | all agents, their status and a link to their topic |
+| `/clear` | root topic | delete the topics of ended agents (also **Clear all** under the dashboard) |
+| `/screen` | agent topic | the agent's screen |
+| `/stop` | agent topic | stop the current turn (Esc) |
+| `/close` | agent topic | end the agent and close or delete its topic |
+| `/help` | anywhere | the commands of this topic |
+
+While an agent waits at a dialog, answer with a button or with `1`…`9`, `y`, `n`, `enter`, `esc`.
+
 ## Light and dark
 
 The layout follows the system appearance with the `one-light` and `one-dark` themes in `themes/`. Code colors follow the theme.
@@ -133,6 +178,7 @@ mods/corral/icons/               SVG icons
 mods/corral/keys.json            the view keys, merged into keys.json by install.sh
 themes/one-dark.json, one-light.json
 statusline/corral-statusline.py  Claude Code statusline hook
+telegram/                        the Telegram bridge; tests: node --test telegram/test/
 RECIPE.md                        the brief to rebuild it from scratch
 preview.png                      the screenshot herdr.dev shows
 ```

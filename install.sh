@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs Corral into Herdr: the layout, the mod and the one-dark and one-light themes.
+# Installs Corral into Herdr: the layout, the mod, the one-dark and one-light themes and the Telegram bridge.
 # With --statusline it also installs the Claude Code statusline hook that feeds the cards.
 # With --link the code and the layout are symlinks to this checkout, so edits apply at once.
 # Icons stay copies: Herdr does not load SVGs through a symlinked folder.
@@ -17,8 +17,8 @@ for arg in "$@"; do
     --link) link=true ;;
     -h|--help)
       echo "Usage: ./install.sh [--link] [--statusline]"
-      echo "  Copies layouts/, mods/corral/ and themes/ into $HERDR_HOME."
-      echo "  --link        symlinks main.js and the layout to this checkout instead of copying them."
+      echo "  Copies layouts/, mods/corral/, themes/ and telegram/ into $HERDR_HOME."
+      echo "  --link        symlinks main.js, the layout and telegram/ to this checkout instead of copying them."
       echo "  --statusline  also copies statusline/corral-statusline.py into $STATUSLINE_DIR."
       exit 0 ;;
     *) echo "Unknown option: $arg" >&2; exit 1 ;;
@@ -44,7 +44,16 @@ fi
 cp "$SRC/mods/corral/mod.json" "$SRC/mods/corral/preview.svg" "$HERDR_HOME/mods/corral/"
 cp "$SRC"/mods/corral/icons/*.svg "$HERDR_HOME/mods/corral/icons/"
 cp "$SRC"/themes/*.json "$HERDR_HOME/themes/"
-echo "Installed the corral layout into $HERDR_HOME$($link && echo " (main.js and the layout linked to $SRC)")."
+# The Telegram bridge: a folder of Node modules, linked whole or copied without its tests.
+rm -rf "$HERDR_HOME/corral/telegram"
+mkdir -p "$HERDR_HOME/corral"
+if $link; then
+  ln -s "$SRC/telegram" "$HERDR_HOME/corral/telegram"
+else
+  mkdir -p "$HERDR_HOME/corral/telegram"
+  cp "$SRC"/telegram/*.mjs "$HERDR_HOME/corral/telegram/"
+fi
+echo "Installed the corral layout into $HERDR_HOME$($link && echo " (main.js, the layout and telegram/ linked to $SRC)")."
 
 # Corral's keys go into the person's keys.json, in its own section; a key they already bind stays theirs.
 # Herdr writes keys.json with its defaults, so without one the keys are left for them to add.
