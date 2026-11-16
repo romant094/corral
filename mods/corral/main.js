@@ -629,6 +629,10 @@ const smallButton = (C, id, label, onClick, color = null) => h_flex().id(id).h(2
   .hover(s => s.opacity(0.85)).on_click((e, cx) => { cx.stop_propagation(); onClick(e, cx); }).child(label);
 const field = (C, state) => div().h(26).px(8).flex().items_center().rounded(5).bg(C.card).border(1).border_color(C.input).text_size(12)
   .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(state));
+// A one-glyph button, as × is: ✓ and ⊘ for a confirmation in place.
+const glyphButton = (C, id, tip, glyph, color, onClick) => div().id(id).size(22).flex().flex_none().items_center().justify_center()
+  .rounded(5).text_size(14).text_color(color).cursor_pointer().hover(s => s.bg(C.selected))
+  .tooltip(tip).on_click((e, cx) => { cx.stop_propagation(); onClick(e, cx); }).child(glyph);
 // A small monospaced figure, as in "+12 −3".
 const monoNum = (text, color) => div().font_family("Geist Mono").text_size(11).text_color(color).flex_none().child(text);
 // A thin vertical line between groups of controls.
@@ -1601,7 +1605,14 @@ export default class Board extends View {
         .when(!!o.name, el => el.child(div().text_size(13).child(o.name)))
         .when(!!o.login, el => el.child(div().text_size(12).text_color(C.muted).child(`@${o.login}`)))
         .child(div().text_size(11).text_color(C.dim).font_family("Geist Mono").child(`id ${o.id}`))
-        .child(xButton(C, `tg-owner-rm-${o.id}`, "Remove", (_e, cx) => this.tgAction(cx, "Saving…", () => save(list.filter(x => x.id !== o.id)))))))
+        // × asks first: ✓ removes, ⊘ keeps.
+        .when(this.tg.removing !== o.id, el => el.child(xButton(C, `tg-owner-rm-${o.id}`, "Remove",
+          (_e, cx) => { this.tg.removing = o.id; cx.notify(); })))
+        .when(this.tg.removing === o.id, el => el
+          .child(glyphButton(C, `tg-owner-rm-yes-${o.id}`, "Remove", "✓", C.danger,
+            (_e, cx) => { this.tg.removing = null; this.tgAction(cx, "Saving…", () => save(list.filter(x => x.id !== o.id))); }))
+          .child(glyphButton(C, `tg-owner-rm-no-${o.id}`, "Keep", "⊘", C.muted,
+            (_e, cx) => { this.tg.removing = null; cx.notify(); })))))
       .child(h_flex().gap(8).items_center()
         .child(div().text_size(13).text_color(C.muted).child("@"))
         .child(field(C, this.ownerInput).w(180))
