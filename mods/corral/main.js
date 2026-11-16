@@ -112,6 +112,15 @@ const updateReady = () => { const u = updatesState(); return !!u.latest && newer
 let linkLookup = null;
 const linkedTo = () => linkLookup ??= exec("readlink", [`${appHome()}/mods/${MOD}/main.js`])
   .then(r => r.code === 0 && r.stdout.trim() ? r.stdout.trim() : null, () => null);
+// A toast once per new version, whichever check found it (at start, every 6 hours, Check now). The version is kept
+// in the shared state, so two copies of the mod do not both toast; "Later" in the section silences it too.
+function announceUpdate() {
+  const u = updatesState();
+  if (!updateReady() || u.later === u.latest || u.announced === u.latest) return;
+  setUpdates({ announced: u.latest });
+  notify({ title: `Corral ${u.latest} is out`, body: `You have ${VERSION}. Click to see what's new and update.`,
+    level: "info", action: { name: `${MOD}.settings-updates` } });
+}
 async function checkUpdates() {
   if (await linkedTo()) return;
   try {
@@ -124,6 +133,7 @@ async function checkUpdates() {
     // Only a plain vX.Y.Z tag is a Corral release; the download URL is built from it, never taken from the answer.
     if (!/^v\d+\.\d+\.\d+$/.test(rel.tag_name ?? "")) throw new Error(`the latest release has an odd tag: ${String(rel.tag_name).slice(0, 40)}`);
     setUpdates({ checked_at: Date.now(), checked_for: VERSION, latest: rel.tag_name.slice(1), notes: rel.body ?? "", error: null });
+    announceUpdate();
   } catch (err) {
     setUpdates({ checked_at: Date.now(), error: String(err?.message ?? err) });
   }
@@ -774,9 +784,9 @@ export default class Board extends View {
           const u = updatesState();
           // A different VERSION than at the last check (an update, a reinstall) asks again at once.
           const fresh = u.checked_at && Date.now() - u.checked_at < 3600 * 1000 && !u.error && u.checked_for === VERSION;
-          if (!u.auto || fresh) return this.announceUpdate();
+          if (!u.auto || fresh) return announceUpdate();
           await checkUpdates();
-          this.announceUpdate();
+          announceUpdate();
         };
         cx.spawn(auto);
         cx.timer.every(UPDATE_EVERY_MS, (cx) => { cx.spawn(auto); });
@@ -1787,14 +1797,6 @@ export default class Board extends View {
         .child(smallButton(C, "tg-log", "Log", () => run("tab.new", { name: "Telegram log", argv: ["tail", "-n", "200", "-f", tgFiles().log] }))))
       .when(known && !outside && !svc.running && missing.length > 0, el => el.child(div().pl(24).text_size(12).text_color(C.muted)
         .child(`To start, set ${missing.join(", ")}.`)));
-  }
-  // One toast per new version and run; "Later" in the section silences that version.
-  announceUpdate() {
-    const u = updatesState();
-    if (!updateReady() || u.later === u.latest || this.announced === u.latest) return;
-    this.announced = u.latest;
-    notify({ title: `Corral ${u.latest} is out`, body: `You have ${VERSION}. Click to see what's new and update.`,
-      level: "info", action: { name: `${MOD}.settings-updates` } });
   }
   updatesSection(C) {
     const u = updatesState();
