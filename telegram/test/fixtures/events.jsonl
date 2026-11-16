@@ -1,0 +1,14 @@
+{"channel":null,"seq":10,"terminals":[{"address":"t1","argv":["/bin/zsh","-l"],"cwd":"/p/gmail","foreground":{"argv":["claude"],"cwd":"/p/gmail-now","name":"claude","pid":100},"labels":{"herdr.space":"spA","herdr.tab":"tbA","where":"gmail / Claude Code"},"parent":null,"pid":90,"state":"live","status":{"app":"claude-code","state":"idle"},"status_ms":1000},{"address":"t2","argv":["/bin/zsh","-l"],"cwd":"/p/x","foreground":{"argv":["zsh"],"name":"zsh","pid":91},"labels":{"where":"x / 1"},"parent":null,"pid":91,"state":"live","status":null,"status_ms":1000},{"address":"t3","argv":["claude"],"cwd":"/p/gmail","foreground":{"argv":["claude"],"name":"claude","pid":102},"labels":{},"parent":"t1","pid":102,"state":"live","status":{"app":"claude-code","state":"working"},"status_ms":1000}]}
+{"jsonrpc":"2.0","method":"event","params":{"data":{"address":"t4","argv":["claude"],"cwd":"/p/notes","labels":{"test":"1"},"parent":null,"pid":200,"state":"live","status":null},"seq":11,"terminal":"t4","type":"created"}}
+{"jsonrpc":"2.0","method":"event","params":{"data":{"argv":["claude"],"cwd":"/p/notes","name":"claude","pid":200},"seq":12,"terminal":"t4","type":"foreground"}}
+{"jsonrpc":"2.0","method":"event","params":{"data":{"title":"Claude Code"},"seq":13,"terminal":"t4","type":"title"}}
+{"jsonrpc":"2.0","method":"event","params":{"data":{"records":{},"reported":true,"status":{"app":"claude-code","state":"idle"}},"seq":14,"terminal":"t4","type":"status"}}
+{"jsonrpc":"2.0","method":"event","params":{"data":{"labels":{"where":"notes / 2"}},"seq":15,"terminal":"t4","type":"labels"}}
+{"jsonrpc":"2.0","method":"event","params":{"data":{"records":{},"reported":true,"status":{"app":"claude-code","state":"working"}},"seq":16,"terminal":"t4","type":"status"}}
+{"jsonrpc":"2.0","method":"event","params":{"data":{"records":{},"reported":true,"status":{"app":"claude-code","state":"done"}},"seq":17,"terminal":"t4","type":"status"}}
+{"jsonrpc":"2.0","method":"event","params":{"data":{"state":"done","turn":1},"seq":18,"terminal":"t4","type":"turn"}}
+{"jsonrpc":"2.0","method":"event","params":{"data":{"records":{},"reported":true,"status":null},"seq":19,"terminal":"t4","type":"status"}}
+{"jsonrpc":"2.0","method":"event","params":{"data":{"exit_code":129,"finished_ms":5000,"reason":"killed","signal":null},"seq":20,"terminal":"t4","type":"finished"}}
+{"jsonrpc":"2.0","method":"event","params":{"data":{},"seq":21,"terminal":"t4","type":"removed"}}
+{"jsonrpc":"2.0","method":"event","params":{"data":{"records":{},"reported":true,"status":null},"seq":22,"terminal":"t1","type":"status"}}
+{"jsonrpc":"2.0","method":"event","params":{"data":{"argv":["zsh"],"name":"zsh","pid":90},"seq":23,"terminal":"t1","type":"foreground"}}

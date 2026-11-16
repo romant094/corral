@@ -70,12 +70,25 @@ Verified on this Mac (hc 0.1.21):
   statusline hook saves `~/.cache/corral/sessions/<pid>.json`, which carries
   the session's `transcript_path`.
 
-Not yet verified (task 1 of the plan checks it):
-
-- `hc run --bg --cwd <folder> --label herdr.space=<id> --label herdr.tab=<new id> claude`
-  makes Herdr.app adopt the terminal as a new tab of that space. Fallback if
-  not: start through Herdr.app's own command when the app runs, and refuse
-  `/new` with a clear reason when it does not.
+- `hc run --bg --no-parent --cwd <folder> --label herdr.space=<id> --label herdr.tab=tb<32 hex> claude`
+  makes Herdr.app add a new tab with that terminal to the space, and set
+  `where` and `keep=true` on it (checked with the app running, 2026-11-16).
+- `hc kill <t>` ends the terminal (`finished`); `hc rm <t>` then removes it,
+  and Herdr.app removes its tab. `/close` uses both.
+- `hc events --json` lines after the snapshot are JSON-RPC notifications:
+  `{"method":"event","params":{"type","terminal","data","seq"}}`. Types used:
+  `created`, `status` (`data.status` may be `null`), `foreground`
+  (`data.name`), `labels`, `finished`, `removed`; `missed` comes with a fresh
+  snapshot.
+- When Claude Code exits and the shell stays, `status` turns `null` and the
+  foreground becomes the shell. The bridge treats a tracked agent as ended
+  when it is finished/removed, or when its status is no longer `claude-code`
+  and its foreground is no longer `claude`.
+- `hc send` from inside a terminal wraps the text in `<hc from="tN">…</hc>`.
+  The bridge runs `hc` without `HC_TERMINAL_ID` in its environment, so the
+  agent gets the text as typed.
+- The session transcript is JSONL; the last reply is the text blocks of the
+  last `type: "assistant"` line that is not a sidechain.
 
 ## Commands
 
@@ -106,8 +119,8 @@ come from `HERDR_APP_HOME`, `HOME` and `HC_BIN` (default `hc` on `PATH`).
 
 ### Files (the contract with tg-settings)
 
-`telegram.json` — settings. tg-settings writes it; the bridge reads it at start
-and when the file changes.
+`telegram.json` — settings. tg-settings writes it; the bridge reads it at start.
+tg-settings restarts the bridge after it saves new settings.
 
 ```json
 {
