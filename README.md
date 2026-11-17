@@ -53,8 +53,23 @@ Network: Corral asks `github.com` for its latest release at start and every hour
 
 The gear right of the plan limits (or `herdr-app do corral.settings`) opens the settings:
 
-- **Telegram:** "Turn on", then two steps: paste the bot token (the row links to @BotFather), and make a new group with Topics on and press "Add the bot". Telegram opens, you pick that group and confirm; the bot gets its admin rights, you become its owner, and Corral starts the bridge. The root topic is the group's built-in General ("Restore" brings it back if it was hidden). More owners can be added by login; Export and Import move the settings, token included, to another Mac; Clear all stops the bridge and forgets the settings.
-- **Updates:** your version, the latest release and its notes, Update, Check now, and "Check automatically". When a new release is out, the gear shows a dot and a toast says so. Update downloads the release and runs its `install.sh` into this mod's folder. A `--link` install is never updated from here: use `git pull`.
+### Telegram
+
+![Telegram settings](docs/images/settings-telegram.png)
+
+"Turn on", then two steps: paste the bot token (the row links to @BotFather), and make a new group with Topics on and press "Add the bot". Telegram opens, you pick that group and confirm; the bot gets its admin rights, you become its owner, and Corral starts the bridge. The root topic is the group's built-in General ("Restore" brings it back if it was hidden). More owners can be added by login; Export and Import move the settings, token included, to another Mac; Clear all stops the bridge and forgets the settings.
+
+**Formatter options** shape the agents' replies. With **Rich messages** on, a reply goes as a Telegram rich message, and one longer than **Long replies** characters (1200 by default, 0 never) keeps its opening in view and folds each section. Off, a reply goes as a classic message with Telegram's formatting (bold, italics, code, links, quotes; headings as bold lines, tables as code), never folded. The bridge reads these at each reply, so a change needs no restart.
+
+**Log** shows the bridge's log in place of the section: ← goes back. Select any part of it, or copy all of it with the button in the top right corner.
+
+![Bridge Logs](docs/images/settings-bridge-logs.png)
+
+### Updates
+
+![Updates](docs/images/settings-updates.png)
+
+Your version, the latest release and its notes, Update and Later, Check now, "Check automatically" and "Install automatically". Corral checks at start and every hour (it asks github.com where the latest release is, outside the GitHub API's limit); the section shows when the next check runs. When a new release is out, the gear and the section show a yellow dot and a toast says so. Update downloads the release and runs its `install.sh` into this mod's folder; with "Install automatically" on, a found release goes in by itself. A toast says when an update is installed, or why it was not. A `--link` install is never updated from here: use `git pull`.
 
 ## Board
 
@@ -120,7 +135,7 @@ Right-click a branch for: new branch or worktree from it, checkout, update, push
 
 ## Telegram
 
-Work with the agents from a Telegram group with Topics. The root topic (General by default) starts agents and pins a dashboard of all of them. Every live Claude Code agent gets a topic of its own, named like its card, `[project] session title`: its status is the topic icon, its last reply arrives when it finishes, and its screen with one button per option arrives when it waits for you. What you write in the topic goes to the agent, and so do photos and files.
+Work with the agents from a Telegram group with Topics. The root topic (General by default) starts agents and pins a dashboard of all of them. Every live Claude Code agent gets a topic of its own, named like its card, `[project] session title`: its status is the topic icon, the reply that ends its turn arrives when it finishes (formatted as the Formatter options say), and its screen with one button per option arrives when it waits for you ("Chat about this" too). What you write in the topic goes to the agent, and so do photos and files. A reply to an earlier message reaches the agent with a line saying which message it answers, and with that message's photo or file. A keyboard with the commands sits under the message field (the keyboard icon opens it; `/help` brings it back).
 
 The bridge is a small Node program (`telegram/`, Node 20+, no dependencies) next to herdr-core, so it keeps working when the Herdr window is closed. It stops while the Mac sleeps; Telegram keeps your messages for 24 hours.
 
@@ -128,9 +143,9 @@ The bridge is a small Node program (`telegram/`, Node 20+, no dependencies) next
 
 1. In [@BotFather](https://t.me/BotFather), send `/newbot` and keep the token.
 2. Make a new Telegram group and turn on Topics in its settings.
-3. Open Settings → Telegram, press "Turn on", paste the token and press "Add the bot" and pick the new group. The bridge runs under launchd (`~/Library/LaunchAgents/dev.corral.telegram.plist`): it starts again after a restart of the Mac until you stop it. Its log is `~/.config/herdr-app/corral/telegram.log`. "Turn off" removes the service; if you remove Corral without that, run `node ~/.config/herdr-app/corral/telegram/bridge.mjs --service uninstall` first.
+3. Open Settings → Telegram, press "Turn on", paste the token and press "Add the bot" and pick the new group. The bridge runs under launchd (`~/Library/LaunchAgents/dev.corral.telegram.plist`): it starts again after a restart of the Mac until you stop it. Its log is `~/.config/herdr-app/corral/telegram.log`; Log in the settings shows it. "Turn off" removes the service; if you remove Corral without that, run `node ~/.config/herdr-app/corral/telegram/bridge.mjs --service uninstall` first.
 
-By hand, without the settings: write `~/.config/herdr-app/corral/telegram.json` (`token`, `chat_id` — the group's negative id, `root_topic_id` — `null` for General, `owner_ids` — your Telegram user id), then `node ~/.config/herdr-app/corral/telegram/bridge.mjs --check` and `--service start` (or run it in the foreground without flags). The bridge needs Node 20 or newer.
+By hand, without the settings: write `~/.config/herdr-app/corral/telegram.json` (`token`, `chat_id` — the group's negative id, `root_topic_id` — `null` for General, `owner_ids` — your Telegram user id; optional: `reply_format` — `"rich"` or `"markdown"`, `fold_chars` — the Long replies limit), then `node ~/.config/herdr-app/corral/telegram/bridge.mjs --check` and `--service start` (or run it in the foreground without flags). The bridge needs Node 20 or newer.
 
 Keep the group to yourself and the bot: everyone in it reads the agents' screens and replies. Once the bot is in your group, turn off **Allow Groups** for it in BotFather, so nobody can add it elsewhere.
 
@@ -146,7 +161,7 @@ Each topic rename shows as a line in the topic. Mute the group if they distract 
 | `/clear` | root topic | delete the topics of ended agents (also **Clear all** under the dashboard) |
 | `/stop` | agent topic | stop the current turn (Esc) |
 | `/close` | agent topic | end the agent and close or delete its topic |
-| `/help` | anywhere | the commands of this topic |
+| `/help` | anywhere | the commands of this topic, and the command keyboard again |
 
 While an agent waits at a dialog, answer with a button or with `1`…`9`, `y`, `n`, `enter`, `esc`. Other commands in an agent's topic (`/compact`, `/model`…) go to Claude as typed. What you wrote while the bridge was offline is not typed when it comes back: send it again if it still applies. A closed topic takes no messages: the bot removes what you write there.
 
