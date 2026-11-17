@@ -1567,12 +1567,15 @@ export default class Board extends View {
   // The bridge reads the formatter's options at each reply, so a change needs no restart.
   tgFormatRow(C, s) {
     const rich = s.reply_format !== "markdown";
-    return h_flex().id("tg-rich").h(30).gap(10).items_center().cursor_pointer()
-      .on_click((_e, cx) => this.tgAction(cx, "Saving…", () => this.saveTelegram({ reply_format: rich ? "markdown" : "rich" })))
-      .child(div().w(14).flex_none().child(checkBox(C, rich)))
-      .child(div().text_size(13).child("Use Rich Messages"))
-      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(C.muted)
-        .child(rich ? "long replies fold into sections" : "classic formatted messages, never folded"));
+    // Laid out like the other rows: the name on the left, the control on the right.
+    return h_flex().h(30).gap(10).items_center()
+      .child(div().w(14).flex_none())
+      .child(div().w(110).flex_none().text_size(13).child("Rich messages"))
+      .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(C.muted)
+        .child(rich ? "long replies fold into sections" : "classic formatted messages, never folded"))
+      .child(div().id("tg-rich").flex_none().cursor_pointer()
+        .on_click((_e, cx) => this.tgAction(cx, "Saving…", () => this.saveTelegram({ reply_format: rich ? "markdown" : "rich" })))
+        .child(checkBox(C, rich)));
   }
   // How long a reply may be before the bridge folds it into sections; 0 never folds.
   saveFold(cx) {
