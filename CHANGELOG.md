@@ -6,6 +6,7 @@ Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHu
 
 - Telegram settings: a "Use Rich Messages" checkbox instead of the format tabs. Off sends a classic formatted message (bold, italics, code, links, quotes; headings as bold lines, tables as code) instead of Markdown as plain text.
 - Telegram: the bridge reads the formatter's options at each reply, so changing them no longer restarts it.
+- Telegram settings: Log opens Bridge Logs in the settings dialog (a back arrow returns), not in a terminal tab. The text can be selected; a Copy button copies all of it.
 
 ## 0.1.6
 
