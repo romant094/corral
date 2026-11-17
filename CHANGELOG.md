@@ -2,6 +2,10 @@
 
 Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHub release notes.
 
+## 0.1.7
+
+- Telegram: the Markdown format sends a classic formatted message (bold, italics, code, links, quotes; headings as bold lines, tables as code) instead of Markdown as plain text.
+
 ## 0.1.6
 
 - Telegram: agents' replies go as rich messages (rendered Markdown); a long reply folds its sections, the rest stays in view.

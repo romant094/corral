@@ -79,7 +79,10 @@ export function foldReply(md, fold = FOLD_CHARS) {
 }
 
 // The parts to send: a reply over Telegram's limit is cut at paragraph ends, each part folded on its own.
-export function richParts(md, { limit = PART_CHARS, fold = FOLD_CHARS } = {}) {
+export const richParts = (md, { limit = PART_CHARS, fold = FOLD_CHARS } = {}) => splitParts(md, limit).map(p => foldReply(p, fold));
+
+// A reply cut into parts of at most `limit` characters, at paragraph ends.
+export function splitParts(md, limit) {
   const parts = [];
   let cur = "";
   for (const b of paragraphs(md.trim())) {
@@ -100,5 +103,64 @@ export function richParts(md, { limit = PART_CHARS, fold = FOLD_CHARS } = {}) {
     cur = cur ? `${cur}\n\n${b}` : b;
   }
   if (cur) parts.push(cur);
-  return parts.map(p => foldReply(p, fold));
+  return parts;
+}
+
+// The "Markdown" format: a classic message, Claude's Markdown made into the HTML Telegram's
+// parse_mode takes (b, i, s, code, pre, a, blockquote). Headings are bold lines, list items
+// start with •, tables and code go as <pre>. A classic message holds 4096 characters.
+export const HTML_PART_CHARS = 3500;
+const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+function inline(text) {
+  // Code spans first: nothing inside them is formatting.
+  const codes = [];
+  let s = text.replace(/(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g, (_, _ticks, code) => {
+    codes.push(`<code>${esc(code)}</code>`);
+    return `\u0000${codes.length - 1}\u0000`;
+  });
+  s = esc(s)
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, label, url) => `<a href="${url.replace(/"/g, "&quot;")}">${label}</a>`)
+    .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, "<b>$1</b>")
+    .replace(/__(?=\S)([\s\S]*?\S)__/g, "<b>$1</b>")
+    // A single * or _ only between non-word characters: snake_case and 2*3*4 stay as they are.
+    .replace(/(^|[^*\w])\*(?=\S)([^*]*?\S)\*(?![*\w])/g, "$1<i>$2</i>")
+    .replace(/(^|[^_\w])_(?=\S)([^_]*?\S)_(?![_\w])/g, "$1<i>$2</i>")
+    .replace(/~~(?=\S)([\s\S]*?\S)~~/g, "<s>$1</s>");
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => codes[Number(i)]);
+}
+
+export function markdownToHtml(md) {
+  const out = [];
+  let fence = null, lang = "", code = [], quote = [], table = [];
+  const pre = (text, language = "") => language
+    ? `<pre><code class="language-${language}">${esc(text)}</code></pre>` : `<pre>${esc(text)}</pre>`;
+  const flush = () => {
+    if (quote.length) { out.push(`<blockquote>${quote.join("\n")}</blockquote>`); quote = []; }
+    if (table.length) { out.push(pre(table.join("\n"))); table = []; }
+  };
+  for (const line of md.split("\n")) {
+    if (fence) {
+      const f = /^\s*(```+|~~~+)\s*$/.exec(line);
+      if (f && f[1][0] === fence[0] && f[1].length >= fence.length) { out.push(pre(code.join("\n"), lang)); fence = null; code = []; }
+      else code.push(line);
+      continue;
+    }
+    const f = /^\s*(```+|~~~+)\s*([\w+#-]*)/.exec(line);
+    if (f) { flush(); fence = f[1]; lang = f[2]; continue; }
+    if (/^\s*\|/.test(line)) { if (quote.length) flush(); table.push(line.trim()); continue; }
+    const q = /^\s*>\s?(.*)$/.exec(line);
+    if (q) { if (table.length) flush(); quote.push(inline(q[1])); continue; }
+    flush();
+    const h = /^#{1,6}\s+(.*?)\s*#*\s*$/.exec(line);
+    if (h) { out.push(`<b>${inline(h[1])}</b>`); continue; }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { out.push("──────────"); continue; }
+    const li = /^(\s*)[-*+]\s+(.*)$/.exec(line);
+    if (li) { out.push(`${li[1]}• ${inline(li[2])}`); continue; }
+    out.push(inline(line));
+  }
+  // A code block the cut left open still goes as code.
+  if (fence) out.push(pre(code.join("\n"), lang));
+  flush();
+  return out.join("\n");
 }

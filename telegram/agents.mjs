@@ -2,7 +2,7 @@
 // its status as the topic icon, the last reply on done, the screen and option
 // buttons when it waits, and the close/delete path when it ends.
 import { escapeHtml, splitText } from "./telegram.mjs";
-import { richParts } from "./format.mjs";
+import { richParts, splitParts, markdownToHtml, HTML_PART_CHARS } from "./format.mjs";
 import { tailScreen, parseChoices } from "./dialog.mjs";
 
 export const EMOJI = { starting: "🎬", working: "⚡", blocked: "❓", done: "✅", idle: "☕", ended: "🏁" };
@@ -187,8 +187,17 @@ export function makeSync({
 
   async function postDone(agent) {
     const reply = await freshReply(agent);
+    // "Markdown": a classic message with Telegram's own formatting; HTML it refuses goes as plain text.
     if (reply && settings.reply_format === "markdown") {
-      await inTopic(agent, async (id) => { for (const c of splitText(reply)) await send(id, escapeHtml(c) || "(empty)"); });
+      await inTopic(agent, async (id) => {
+        for (const part of splitParts(reply.trim(), HTML_PART_CHARS)) {
+          try { await send(id, markdownToHtml(part) || "(empty)"); } catch (err) {
+            if (TOPIC_GONE.test(err.message) || TOPIC_CLOSED.test(err.message)) throw err;
+            log(`formatted message refused (${err.message}); sent as plain text`);
+            for (const c of splitText(part)) await send(id, escapeHtml(c) || "(empty)");
+          }
+        }
+      });
       return;
     }
     if (reply) {

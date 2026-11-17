@@ -1,6 +1,28 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { escapeText, foldReply, richParts, FOLD_CHARS } from "../format.mjs";
+import { escapeText, foldReply, richParts, markdownToHtml, FOLD_CHARS } from "../format.mjs";
+
+test("markdownToHtml: Claude's Markdown as Telegram HTML", () => {
+  const md = [
+    "**Done.** The `a < b` check and *one* fix in snake_case_name.",
+    "## Next",
+    "- see [docs](https://x.dev/a?b=1&c=2)",
+    "> quoted",
+    "```js",
+    "if (a < b) {}",
+    "```",
+    "| a | b |",
+    "|---|---|",
+  ].join("\n");
+  assert.equal(markdownToHtml(md), [
+    "<b>Done.</b> The <code>a &lt; b</code> check and <i>one</i> fix in snake_case_name.",
+    "<b>Next</b>",
+    '• see <a href="https://x.dev/a?b=1&amp;c=2">docs</a>',
+    "<blockquote>quoted</blockquote>",
+    '<pre><code class="language-js">if (a &lt; b) {}</code></pre>',
+    "<pre>| a | b |\n|---|---|</pre>",
+  ].join("\n"));
+});
 
 test("escapeText: < outside code only", () => {
   assert.equal(escapeText("a < b & `x<y` here"), "a &lt; b &amp; `x<y` here");
