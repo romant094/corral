@@ -3161,6 +3161,8 @@ export default class Board extends View {
     const title = agent ? info?.title || agent.tab_name || info?.model || p.program?.name : p?.program?.name || "Terminal";
     // Too narrow for every button: they move into a menu.
     const narrow = !!this.narrow;
+    // Compacting and closing ask first, in place of the header's buttons.
+    const asking = this.compacting || this.closing;
     return h_flex().size_full().px(12).items_center().gap(8).bg(C.bar).border_b(1).border_color(C.line)
       .on_size_change((size, cx) => {
         if ((size.width < PANE_NARROW) !== narrow) { this.narrow = size.width < PANE_NARROW; cx.notify(); }
@@ -3184,7 +3186,20 @@ export default class Board extends View {
             hc(["send", p.terminal, "/compact"]).catch(() => {});
             cx.notify();
           }).child("Compact")))
-      .when(!!info && !this.compacting, el => el.child(h_flex().flex_none().gap(6).items_center().font_family("Geist Mono").text_size(11).mr(4)
+      // As on the card: an agent that has not started work closes at once; one with context asks first.
+      .when(!!p && this.closing, el => el
+        .child(div().text_size(12).text_color(C.ink).child("End this session?"))
+        .child(h_flex().id(`close-cancel-${p.pane}`).h(22).px(9).items_center().rounded(5).cursor_pointer()
+          .bg(C.card).border(1).border_color(C.line).text_size(11).text_color(C.muted).hover(s => s.border_color(C.input))
+          .on_click((_e, cx) => { cx.stop_propagation(); this.closing = false; cx.notify(); }).child("Cancel"))
+        .child(h_flex().id(`close-go-${p.pane}`).h(22).px(9).items_center().rounded(5).cursor_pointer()
+          .bg(C.danger).text_size(11).font_semibold().text_color(C.card).hover(s => s.opacity(0.82))
+          .on_click((_e, cx) => {
+            cx.stop_propagation();
+            this.closing = false;
+            run("pane.close", { pane: p.pane });
+          }).child("Close")))
+      .when(!!info && !asking, el => el.child(h_flex().flex_none().gap(6).items_center().font_family("Geist Mono").text_size(11).mr(4)
         // The session id, as on the card: a click copies the whole id.
         .when(!!info.sid && !narrow, el => el
           .child(div().id(`pane-sid-${p.pane}`).px(4).py(1).rounded(4).text_color(C.muted).cursor_pointer()
@@ -3202,13 +3217,13 @@ export default class Board extends View {
         .child(vbar(C))
         .child(div().text_color(C.muted).child(`$${info.cost.toFixed(2)}`))
         .when(!narrow, el => el.child(vbar(C)))))
-      .when(!!p && narrow && !this.compacting, el => el.child(iconButton(C, `pane-more-${p.pane}`, "More", "more",
+      .when(!!p && narrow && !asking, el => el.child(iconButton(C, `pane-more-${p.pane}`, "More", "more",
         () => {
           const rows = 3 + (info ? 1 : 0) + (info?.sid ? 1 : 0) + (p.terminal ? 1 : 0);
           openDropdown({ mod: MOD, kind: "popup", width: 260, height: 12 + rows * 34 + 5,
             props: { role: "panemenu", pane: p.pane } });
         })))
-      .when(!!p && !narrow && !this.compacting, el => el
+      .when(!!p && !narrow && !asking, el => el
         .child(iconButton(C, `split-right-${p.pane}`, "Split right: a new terminal beside", "split-right",
           () => run("pane.split", { pane: p.pane, direction: "right" })))
         .child(iconButton(C, `split-down-${p.pane}`, "Split down: a new terminal below", "split-down",
@@ -3216,7 +3231,9 @@ export default class Board extends View {
         .when(!!p.terminal, el => el.child(iconButton(C, `detach-${p.pane}`, "Move to its own tab, in its project's space when one is open", "external",
           () => queuePaneJob({ kind: "detach", terminal: p.terminal }))))
         .child(vbar(C))
-        .child(xButton(C, `pane-close-${p.pane}`, "Close pane", () => run("pane.close", { pane: p.pane }), 22, 17)));
+        .child(xButton(C, `pane-close-${p.pane}`, "Close pane", (_e, cx) => {
+          if (info?.tokens) { this.closing = true; cx.notify(); } else run("pane.close", { pane: p.pane });
+        }, 22, 17)));
   }
   panel(C) {
     return v_flex().min_w(0).min_h(0).rounded(8).overflow_hidden().bg(C.card).border(1).border_color(C.line);
@@ -3357,7 +3374,7 @@ export default class Board extends View {
       .child(div().h(1).mx(4).my(2).bg(C.line))
       .child(item("project-copy", "Copy path", (cx) => copyText(cx, folder)));
   }
-  // The pane header's buttons, for a pane too narrow to show them. Compacting asks first, here too.
+  // The pane header's buttons, for a pane too narrow to show them. Compacting and closing ask first, here too.
   paneMenu(C) {
     const { pane, overlay } = props();
     const p = panes().find(x => x.pane === pane);
@@ -3376,6 +3393,13 @@ export default class Board extends View {
         .child(h_flex().id("panemenu-compact").h(24).px(10).items_center().rounded(5).cursor_pointer().bg(C.accent)
           .text_size(12).font_semibold().text_color(C.card)
           .on_click(() => { hc(["send", p.terminal, "/compact"]).catch(() => {}); close(); }).child("Compact")));
+    if (this.closing) return box.child(div().px(10).py(8).text_size(13).child("End this session?"))
+      .child(h_flex().gap(8).px(10).justify_end()
+        .child(h_flex().id("panemenu-close-cancel").h(24).px(10).items_center().rounded(5).cursor_pointer().bg(C.card).border(1)
+          .border_color(C.line).text_size(12).text_color(C.muted).on_click(close).child("Cancel"))
+        .child(h_flex().id("panemenu-close-go").h(24).px(10).items_center().rounded(5).cursor_pointer().bg(C.danger)
+          .text_size(12).font_semibold().text_color(C.card)
+          .on_click(() => { run("pane.close", { pane }); close(); }).child("Close")));
     return box
       .when(!!info?.sid, el => el.child(item("panemenu-sid", `Copy session id ${info.sid.slice(0, 8)}`, "copy",
         (cx) => { copyText(cx, info.sid); close(); })))
@@ -3386,7 +3410,9 @@ export default class Board extends View {
       .when(!!p.terminal, el => el.child(item("panemenu-detach", "Move to its own tab", "external",
         () => { queuePaneJob({ kind: "detach", terminal: p.terminal }); close(); })))
       .child(div().h(1).mx(4).my(2).bg(C.line))
-      .child(item("panemenu-close", "Close pane", null, () => { run("pane.close", { pane }); close(); }));
+      .child(item("panemenu-close", "Close pane", null, (cx) => {
+        if (info?.tokens) { this.closing = true; cx.notify(); } else { run("pane.close", { pane }); close(); }
+      }));
   }
   pathMenu(C) {
     const { path, root, overlay } = props();

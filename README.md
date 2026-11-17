@@ -102,7 +102,7 @@ The bar under the board holds the plain terminals of the active space as chips: 
 
 ![Terminals folded](docs/images/board-collapsed.png)
 
-Each pane header shows the status, the agent's task as on its card (the model is in the tooltip; a long task ends in an ellipsis), the session id (click to copy), the context use, a compact button that sends `/compact` after you confirm, the cost, split right, split down, move to its own tab (in its project's space when one is open) and close. In a pane narrower than 640 px the session id and the buttons move into a ⋮ menu.
+Each pane header shows the status, the agent's task as on its card (the model is in the tooltip; a long task ends in an ellipsis), the session id (click to copy), the context use, a compact button that sends `/compact` after you confirm, the cost, split right, split down, move to its own tab (in its project's space when one is open) and close. Closing an agent that has done work asks first, as its card does; one that has not started closes at once. In a pane narrower than 640 px the session id and the buttons move into a ⋮ menu.
 
 ![Narrow pane header](docs/images/pane-narrow.png)
 

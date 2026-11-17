@@ -2,6 +2,10 @@
 
 Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHub release notes.
 
+## 0.1.11
+
+- Pane header: closing an agent's pane (× or Close pane in the ⋮ menu) asks "End this session?" when the agent has done work, as its card does; an agent that has not started closes at once.
+
 ## 0.1.10
 
 - Projects: "Add project…" opens Herdr's own folder picker, which comes up at once (the macOS dialog took seconds to start). It takes one folder and opens a space with Claude there.
