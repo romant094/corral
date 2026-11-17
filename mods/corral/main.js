@@ -1,5 +1,5 @@
 import { View, div, svg, image, uniform_list, PathBuilder } from "gpui-kit";
-import { h_flex, v_flex, Input, InputState, Editor, EditorState, h_resizable, resizable_panel, v_virtual_list, VirtualListScrollHandle, ScrollHandle } from "gpui-base";
+import { h_flex, v_flex, Input, InputState, Editor, EditorState, h_resizable, resizable_panel, v_virtual_list, VirtualListScrollHandle, ScrollHandle, TextView } from "gpui-base";
 import {
   agents, spaces, panes, props, run, setAgentOrder, theme, shared, setShared, pickFolder,
   home, appHome, hc, exec, readTextFile, writeTextFile, checking, openOverlay, closeOverlay, notify, window as appWindow, layout, nextCommand,
@@ -1437,6 +1437,7 @@ export default class Board extends View {
         .child(h_flex().h(52).flex_none().px(20).items_center().border_b(1).border_color(C.line)
           .when(log, el => el.child(back))
           .child(div().flex_1().text_size(15).font_semibold().child(log ? "Bridge Logs" : current.title))
+          .when(log, el => el.child(this.bridgeLogCopy(C)))
           .child(xButton(C, "settings-close", "Close (Esc)", () => closeOverlay(overlay), 30, 20)))
         .when(!log, el => el.child(v_flex().id("settings-body").flex_1().min_h(0).overflow_y_scrollbar().p(20).gap(14)
           .child(this[current.render](C))))
@@ -1453,24 +1454,40 @@ export default class Board extends View {
     const log = this.bridgeLog;
     if (!log || text === log.text) return false;
     log.text = text;
-    log.lines = (text ?? "").split("\n").filter(Boolean).slice(-500);
-    if (log.lines.length) this.bridgeLogScroll.scroll_to_item(log.lines.length - 1);
+    // "2026-11-16T17:03:20.574Z message": the time in local date and hh:mm:ss.
+    log.lines = (text ?? "").split("\n").filter(Boolean).slice(-500).map(l => {
+      const m = /^(\d{4}-\d\d-\d\dT[\d:.]+Z) (.*)$/.exec(l);
+      const at = m && new Date(m[1]);
+      return at ? `${at.toLocaleDateString()} ${pad2(at.getHours())}:${pad2(at.getMinutes())}:${pad2(at.getSeconds())}  ${m[2]}` : l;
+    });
+    // The end mark after the text: revealing it keeps the newest line in view.
+    if (log.lines.length) this.bridgeLogScroll.scroll_to_item(1);
     return true;
   }
+  // The log as one selectable text, so a part of it can be selected and copied; Copy in the header takes all of it.
   bridgeLogView(C) {
     const { lines, text } = this.bridgeLog;
+    const html = `<pre>${lines.join("\n").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>`;
     return v_flex().id("bridge-log").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.bridgeLogScroll).px(20).py(12)
-      .font_family("Geist Mono").text_size(11).text_color(C.ink)
+      .text_size(11).text_color(C.ink)
       .when(!lines.length, el => el.child(div().text_color(C.muted).child(text === null ? "No log yet: the bridge has not run." : "The log is empty.")))
-      .children(lines.map(l => {
-        // "2026-11-16T17:03:20.574Z message": the time is dimmed and shortened to the local hh:mm:ss.
-        const m = /^(\d{4}-\d\d-\d\dT[\d:.]+Z) (.*)$/.exec(l);
-        const at = m ? new Date(m[1]) : null;
-        return h_flex().gap(8).items_start()
-          .when(!!at, el => el.child(div().flex_none().text_color(C.dim)
-            .child(`${at.toLocaleDateString()} ${pad2(at.getHours())}:${pad2(at.getMinutes())}:${pad2(at.getSeconds())}`)))
-          .child(div().flex_1().min_w(0).child(m ? m[2] : l));
-      }));
+      .when(!!lines.length, el => el.child(TextView.html("bridge-log-text", html).selectable(true)).child(div().h(1)));
+  }
+  // Copy: the button turns into a green "Copied" for 3 seconds.
+  bridgeLogCopy(C) {
+    const log = this.bridgeLog;
+    if (log.copied) return div().h(26).px(6).flex().flex_none().items_center().mr(8).text_size(12).font_semibold()
+      .text_color(theme().done).child("Copied");
+    return div().id("bridge-log-copy").size(26).mr(8).flex().flex_none().items_center().justify_center().rounded(5)
+      .text_color(C.muted).cursor_pointer().hover(s => s.bg(C.selected).text_color(C.ink)).tooltip("Copy the log")
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        cx.write_to_clipboard(log.lines.join("\n"));
+        log.copied = true;
+        cx.notify();
+        cx.spawn(async (cx) => { await cx.sleep(3000); log.copied = false; cx.notify(); });
+      })
+      .child(svg(`mods/${MOD}/icons/copy.svg`).size(15));
   }
   // telegram.json and telegram-state.json as text and parsed; true when either changed.
   async loadTelegram() {
