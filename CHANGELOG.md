@@ -2,6 +2,10 @@
 
 Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHub release notes.
 
+## 0.1.10
+
+- Projects: "Add project…" opens Herdr's own folder picker, which comes up at once (the macOS dialog took seconds to start). It takes one folder and opens a space with Claude there.
+
 ## 0.1.9
 
 - Updates: the check runs every hour, with no interval to choose; the section still shows the next check's time.

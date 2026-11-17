@@ -389,25 +389,6 @@ const PROJECT_LEGEND_H = 36;
 const projectsPopupHeight = () => Math.min(POPUP_MAX, 124 + PROJECT_LEGEND_H + projectRows(agents()).length * PROJECT_ROW_H);
 const worktreesPopupHeight = () => Math.min(WT_POPUP_MAX, 92 + gitState().worktrees.length * 50);
 const matches = (q, ...texts) => !q || texts.some(t => (t ?? "").toLowerCase().includes(q));
-// macOS: a native dialog that takes several folders at once. Elsewhere, or if it can't run, Herdr's single picker.
-const pickFolders = async () => {
-  const script = [
-    "activate",
-    'set picked to choose folder with prompt "Add projects" with multiple selections allowed',
-    'set out to ""',
-    "repeat with f in picked",
-    "set out to out & POSIX path of f & linefeed",
-    "end repeat",
-    "return out",
-  ];
-  try {
-    const r = await exec("osascript", script.flatMap(line => ["-e", line]), { timeout: 600000 });
-    if (r.code === 0) return r.stdout.split("\n").map(f => f.trim().replace(/\/$/, "")).filter(Boolean);
-    if (r.stderr.includes("-128")) return [];
-  } catch { /* not macOS */ }
-  const folder = await pickFolder({ prompt: "Add project" });
-  return folder ? [folder] : [];
-};
 // Moving terminals between tabs parks a terminal (it keeps running, its pane goes) and keeps it again
 // where it goes. The pane header that asks for it goes with the pane, so the bar copy does the work:
 // pane headers queue jobs here.
@@ -3059,19 +3040,15 @@ export default class Board extends View {
         .child(legendItem(emptyMark(false, 7), "Not open")))
       .child(div().h(1).mx(4).my(6).bg(C.line))
       .child(row("project-add", (_e, cx) => cx.spawn(async () => {
-        const folders = await pickFolders();
+        // Herdr's own picker: it opens at once (an osascript dialog took seconds to start).
+        const folder = await pickFolder({ prompt: "Add project" });
         closeOverlay(overlay);
-        if (!folders.length) return;
-        const known = new Set(projects().map(p => p.folder));
-        const added = folders.filter(f => !known.has(f)).map(folder => ({ name: baseName(folder), folder }));
-        if (added.length) setShared(PROJECTS_KEY, [...projects(), ...added]);
-        // One folder opens at once; several are only saved, to open from this list.
-        if (folders.length === 1) openProject({ name: baseName(folders[0]), folder: folders[0] });
-        else notify({ title: `Added ${added.length} project${added.length === 1 ? "" : "s"}`,
-          body: "Open them from the project list.", level: "info", timeout: 3000 });
+        if (!folder) return;
+        if (!projects().some(p => p.folder === folder)) setShared(PROJECTS_KEY, [...projects(), { name: baseName(folder), folder }]);
+        openProject({ name: baseName(folder), folder });
       }))
         .text_size(12).text_color(C.muted).hover(st => st.text_color(C.ink))
-        .child("+").child("Add projects… (one opens a space with Claude)"));
+        .child("+").child("Add project… (opens a space with Claude)"));
   }
   // Folds the terminals under the bar like an accordion, or opens them again, sliding the divider over DOCK_MS.
   toggleDock(cx) {
