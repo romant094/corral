@@ -197,7 +197,10 @@ async function run() {
   const buttons = makeButtons();
   const icons = await loadIcons(api, log);
   const dashboard = makeDashboard({ api, settings, state, save, herd, log });
-  const sync = makeSync({ api, hc, settings, state, save, log, buttons, herd, icons, lastReply, session });
+  // The reply format and fold limit come from the settings file at each reply, so Corral changes them
+  // without restarting the bridge. A file that does not read keeps the ones from the start.
+  const formatting = () => loadSettings(P.settings, { partial: true }).catch(() => settings);
+  const sync = makeSync({ api, hc, settings, state, save, log, buttons, herd, icons, lastReply, session, formatting });
   const commands = makeCommands({ api, hc, settings, state, save, herd, sync, buttons, dashboard, inbox: P.inbox, log, bot: me.username, session });
 
   // Agents → Telegram. Changes are handled in order, one at a time.

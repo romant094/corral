@@ -116,6 +116,16 @@ test("a rich message Telegram refuses goes as plain text; a long reply is split"
   assert.ok(s.api.of("sendMessage").some(c => c.params.text === "# Done\n\n**All** good."));
 });
 
+test("the format is read at each reply: Markdown goes as a classic formatted message", async () => {
+  let format = { reply_format: "rich", fold_chars: 1200 };
+  const s = setup({ reply: "# Done\n\n**All** good.", sync: { formatting: async () => format } });
+  await s.feed({ terminals: [term("t1", "working")] });
+  format = { reply_format: "markdown", fold_chars: 1200 };
+  await s.feed(status("t1", "done"));
+  assert.equal(s.api.of("sendRichMessage").length, 0);
+  assert.ok(s.api.of("sendMessage").some(c => c.params.text === "<b>Done</b>\n\n<b>All</b> good."));
+});
+
 test("done without a transcript posts the screen tail", async () => {
   const s = setup({ screen: "line a\n────\nline b\n\n", reply: null });
   await s.feed({ terminals: [term("t1", "working")] });

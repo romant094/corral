@@ -53,7 +53,7 @@ export const dialogKey = (options) => (options ?? []).map(o => `${o.n}.${o.label
 
 export function makeSync({
   api, hc, settings, state, save, log, buttons, herd, icons = {},
-  lastReply, session = async () => null, throttleMs = 10000, blockedDelayMs = 1500, now = () => Date.now(),
+  lastReply, session = async () => null, formatting = async () => settings, throttleMs = 10000, blockedDelayMs = 1500, now = () => Date.now(),
   replyTries = 6, replyRetryMs = 500, startCheckMs = 5000, startGiveUpMs = 300000,
 }) {
   const chat_id = settings.chat_id;
@@ -187,8 +187,10 @@ export function makeSync({
 
   async function postDone(agent) {
     const reply = await freshReply(agent);
+    // The formatter's options are read per reply: a change in Corral's settings needs no restart.
+    const format = await formatting();
     // "Markdown": a classic message with Telegram's own formatting; HTML it refuses goes as plain text.
-    if (reply && settings.reply_format === "markdown") {
+    if (reply && format.reply_format === "markdown") {
       await inTopic(agent, async (id) => {
         for (const part of splitParts(reply.trim(), HTML_PART_CHARS)) {
           try { await send(id, markdownToHtml(part) || "(empty)"); } catch (err) {
@@ -202,7 +204,7 @@ export function makeSync({
     }
     if (reply) {
       await inTopic(agent, async (id) => {
-        for (const part of richParts(reply, { fold: settings.fold_chars ?? 1200 })) {
+        for (const part of richParts(reply, { fold: format.fold_chars ?? 1200 })) {
           try { await sendRich(id, part); } catch (err) {
             // A gone or closed topic is inTopic's to handle; anything else about the rich message falls back.
             if (TOPIC_GONE.test(err.message) || TOPIC_CLOSED.test(err.message)) throw err;

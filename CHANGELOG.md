@@ -4,7 +4,8 @@ Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHu
 
 ## 0.1.7
 
-- Telegram: the Markdown format sends a classic formatted message (bold, italics, code, links, quotes; headings as bold lines, tables as code) instead of Markdown as plain text.
+- Telegram settings: a "Use Rich Messages" checkbox instead of the format tabs. Off sends a classic formatted message (bold, italics, code, links, quotes; headings as bold lines, tables as code) instead of Markdown as plain text.
+- Telegram: the bridge reads the formatter's options at each reply, so changing them no longer restarts it.
 
 ## 0.1.6
 

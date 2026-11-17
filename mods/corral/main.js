@@ -1563,21 +1563,16 @@ export default class Board extends View {
         .child(this.tgFormatRow(C, s))
         .child(this.tgFoldRow(C, s))));
   }
-  // Two tabs: a rich message (rendered Markdown, long replies folded) or Claude's Markdown as plain text.
+  // On: rich messages (long replies fold). Off: a classic message with Telegram's formatting.
+  // The bridge reads the formatter's options at each reply, so a change needs no restart.
   tgFormatRow(C, s) {
-    const current = s.reply_format === "markdown" ? "markdown" : "rich";
-    const tab = (key, label) => h_flex().id(`tg-format-${key}`).h(24).px(12).items_center().rounded(4).text_size(12)
-      .when(key === current, el => el.bg(C.card).text_color(C.ink).font_semibold())
-      .when(key !== current, el => el.text_color(C.muted).cursor_pointer().hover(st => st.text_color(C.ink))
-        .on_click((_e, cx) => this.tgAction(cx, "Saving…", async () => { await this.saveTelegram({ reply_format: key }); await this.restartIfRunning(); })))
-      .child(label);
-    return h_flex().h(30).gap(10).items_center()
-      .child(div().w(14).flex_none())
-      .child(div().w(110).flex_none().text_size(13).child("Format"))
-      .child(div().flex_1())
-      .child(h_flex().flex_none().p(2).gap(2).rounded(6).bg(C.bg).border(1).border_color(C.line)
-        .child(tab("rich", "Rich message"))
-        .child(tab("markdown", "Markdown")));
+    const rich = s.reply_format !== "markdown";
+    return h_flex().id("tg-rich").h(30).gap(10).items_center().cursor_pointer()
+      .on_click((_e, cx) => this.tgAction(cx, "Saving…", () => this.saveTelegram({ reply_format: rich ? "markdown" : "rich" })))
+      .child(div().w(14).flex_none().child(checkBox(C, rich)))
+      .child(div().text_size(13).child("Use Rich Messages"))
+      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(C.muted)
+        .child(rich ? "long replies fold into sections" : "classic formatted messages, never folded"));
   }
   // How long a reply may be before the bridge folds it into sections; 0 never folds.
   saveFold(cx) {
@@ -1592,7 +1587,7 @@ export default class Board extends View {
       this.foldInput.set_value(String(current));
       return cx.notify();
     }
-    this.tgAction(cx, "Saving…", async () => { await this.saveTelegram({ fold_chars: n }); await this.restartIfRunning(); });
+    this.tgAction(cx, "Saving…", () => this.saveTelegram({ fold_chars: n }));
   }
   tgFoldRow(C, s) {
     const current = s.fold_chars ?? 1200;
