@@ -221,8 +221,7 @@ Only releases reach users, not each push to `main`. A test checks that `VERSION`
 ### In the mod
 
 - `const VERSION = "x.y.z"` in `main.js`. The section shows it.
-- The board copy checks at start and then every 5 min, 15 min, 1 hour or 6 hours, the person's choice (default
-  1 hour, as VS Code and Zed check). A check reads the tag `https://github.com/romant094/corral/releases/latest`
+- The board copy checks at start and every hour, as VS Code and Zed check. A check reads the tag `https://github.com/romant094/corral/releases/latest`
   redirects to, which is outside the GitHub API's 60 requests an hour; the notes come from
   `api.github.com/repos/romant094/corral/releases/tags/<tag>` once per new tag. Drafts and pre-releases are skipped.
   The section shows the next check's time.

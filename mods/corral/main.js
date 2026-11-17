@@ -96,12 +96,8 @@ const bridgeJson = async (args, timeout = 60000) => {
 const parseJson = (text) => { try { return text ? JSON.parse(text) : null; } catch { return null; } };
 // Updates: GitHub's latest release (never a draft or a pre-release) against VERSION.
 const REPO = "romant094/corral";
-// How often the automatic check runs, the person's choice in Updates; an hour, as VS Code and Zed do.
-const UPDATE_INTERVALS = [[5 * 60000, "5 min"], [15 * 60000, "15 min"], [3600000, "1 hour"], [6 * 3600000, "6 hours"]];
-const updateEvery = () => {
-  const ms = updatesState().interval;
-  return UPDATE_INTERVALS.some(([v]) => v === ms) ? ms : 3600000;
-};
+// How often the automatic check runs: an hour, as VS Code and Zed do.
+const UPDATE_EVERY_MS = 3600000;
 const updatesState = () => ({ auto: true, checked_at: null, latest: null, notes: "", error: null, later: null,
   ...(settingsState().updates ?? {}) });
 const setUpdates = (change) => setSettings({ updates: { ...updatesState(), ...change } });
@@ -724,7 +720,7 @@ export default class Board extends View {
           if (command === "sort") sortAgents();
           if (command === "settings") openSettings();
           // To watch the 6-hour check happen: the last check moves to 5:59:50 ago, so the next one runs in about 10 s.
-          if (command === "updates-due") setUpdates({ checked_at: Date.now() - updateEvery() + 10000, checked_for: VERSION, error: null });
+          if (command === "updates-due") setUpdates({ checked_at: Date.now() - UPDATE_EVERY_MS + 10000, checked_for: VERSION, error: null });
           // corral.settings-keys and the like open the dialog on that section.
           const section = SECTIONS.find(s => command === `settings-${s.id}`);
           if (section) { setSettings({ section: section.id }); openSettings(); }
@@ -811,7 +807,7 @@ export default class Board extends View {
         { keystroke: keys.relative, action: "corral-copy-relative", context: "CorralPaths" },
         { keystroke: keys.absolute, action: "corral-copy-absolute", context: "CorralPaths" },
       ]);
-      // Updates: one interval (the person's choice) after the last check, unless the person turned it off. The time
+      // Updates: at start and an hour after the last check, unless the person turned it off. The time
       // is the last check's, so it holds across reloads, and `herdr-app do corral.updates-due` can move it to see a
       // check happen. A check is one request to github.com, outside the API's 60 an hour.
       if (!checking()) {
@@ -821,14 +817,14 @@ export default class Board extends View {
           setUpdates({ installing: null });
           notify({ title: `Corral ${VERSION} is installed`, level: "success" });
         }
-        // Due: never checked, another VERSION than at the last check (an update, a reinstall), an interval
-        // since it, 10 minutes after a failed one (or the interval, when shorter).
+        // Due: never checked, another VERSION than at the last check (an update, a reinstall), an hour
+        // since it, 10 minutes after a failed one.
         let checkingNow = false;
         const due = (start) => {
           const u = updatesState();
           if (!u.auto || checkingNow) return false;
           const since = Date.now() - (u.checked_at ?? 0);
-          return !u.checked_at || u.checked_for !== VERSION || since >= (u.error ? Math.min(600000, updateEvery()) : updateEvery());
+          return !u.checked_at || u.checked_for !== VERSION || since >= (u.error ? 600000 : UPDATE_EVERY_MS);
         };
         const auto = async (start, cx) => {
           if (due(start)) {
@@ -1965,9 +1961,8 @@ export default class Board extends View {
     if (ui.linked === undefined) { ui.linked = null; linkedTo().then(l => { ui.linked = l || false; }); }
     const when = u.checked_at ? new Date(u.checked_at) : null;
     const checked = when ? `Checked ${when.toLocaleDateString()} ${pad2(when.getHours())}:${pad2(when.getMinutes())}` : "Not checked yet";
-    // The next automatic check: an interval after the last one (10 minutes after a failed one, when sooner).
-    const every = updateEvery();
-    const next = new Date((u.checked_at ?? Date.now()) + (u.error ? Math.min(600000, every) : every));
+    // The next automatic check: an hour after the last one, 10 minutes after a failed one.
+    const next = new Date((u.checked_at ?? Date.now()) + (u.error ? 600000 : UPDATE_EVERY_MS));
     const nextCheck = next <= new Date() ? "next check in a few seconds"
       : `next check ${next.toDateString() === new Date().toDateString() ? "" : `${next.toLocaleDateString()} `}at ${pad2(next.getHours())}:${pad2(next.getMinutes())}`;
     const check = (_e, cx) => {
@@ -1999,20 +1994,7 @@ export default class Board extends View {
           .on_click(() => setUpdates({ auto: !u.auto }))
           .child(checkBox(C, u.auto))
           .child(div().text_size(13).child("Check automatically"))
-          .child(div().text_size(12).text_color(C.muted).child(u.auto ? nextCheck : "off sends nothing")))
-        // The interval: one chip per choice, the chosen one filled.
-        .child(h_flex().gap(10).items_center()
-          .child(div().w(16).flex_none())
-          .child(div().text_size(13).text_color(u.auto ? C.ink : C.dim).child("Every"))
-          .children(UPDATE_INTERVALS.map(([ms, label]) => h_flex().id(`update-every-${ms}`).h(24).px(10).items_center().rounded(5)
-            .text_size(12).border(1)
-            .when(ms === every, el => el.bg(u.auto ? C.accent : C.selected).border_color(u.auto ? C.accent : C.line)
-              .text_color(u.auto ? C.card : C.dim).font_semibold())
-            .when(ms !== every, el => el.border_color(C.line).text_color(u.auto ? C.muted : C.dim))
-            .when(ms !== every && u.auto, el => el.cursor_pointer().hover(st => st.text_color(C.ink))
-              .on_click(() => setUpdates({ interval: ms })))
-            .child(label))))
-        // Installing needs the checks: with them off, the box is locked.
+          .child(div().text_size(12).text_color(C.muted).child(u.auto ? nextCheck : "off sends nothing")))        // Installing needs the checks: with them off, the box is locked.
         .child(h_flex().id("update-install").gap(10).items_center()
           .when(u.auto, el => el.cursor_pointer().on_click(() => setUpdates({ install: !u.install })))
           .child(div().when(!u.auto, el => el.opacity(0.4)).child(checkBox(C, u.auto && !!u.install)))

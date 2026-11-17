@@ -2,6 +2,10 @@
 
 Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHub release notes.
 
+## 0.1.9
+
+- Updates: the check runs every hour, with no interval to choose; the section still shows the next check's time.
+
 ## 0.1.8
 
 - Updates: the check interval is a choice (5 min, 15 min, 1 hour, 6 hours; default 1 hour, as VS Code and Zed), and the section shows the next check's time.

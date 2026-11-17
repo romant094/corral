@@ -47,7 +47,7 @@ Herdr mods are trusted JavaScript. Corral:
 - reads `~/.cache/corral/sessions/` and the files of the folder you browse in Files;
 - from the settings: runs `node` with the Telegram bridge, `launchctl` for the bridge's service and writes `telegram.json`.
 
-Network: Corral asks `github.com` for its latest release at start and then every 5 minutes to 6 hours, as set in Settings → Updates (default 1 hour; turn it off there), and `api.github.com` once per new release for its notes, and downloads a release from GitHub when you press Update. The Telegram bridge talks to `api.telegram.org` once you turn it on. `git fetch`, `pull` and `push` reach your git remotes when you click them.
+Network: Corral asks `github.com` for its latest release at start and every hour (turn it off in Settings → Updates), and `api.github.com` once per new release for its notes, and downloads a release from GitHub when you press Update. The Telegram bridge talks to `api.telegram.org` once you turn it on. `git fetch`, `pull` and `push` reach your git remotes when you click them.
 
 ## Settings
 
