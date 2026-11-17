@@ -221,8 +221,11 @@ Only releases reach users, not each push to `main`. A test checks that `VERSION`
 ### In the mod
 
 - `const VERSION = "x.y.z"` in `main.js`. The section shows it.
-- The board copy checks `https://api.github.com/repos/romant094/corral/releases/latest` at start and every 6 hours
-  (no token; the limit is 60 requests per hour). Drafts and pre-releases are skipped.
+- The board copy checks at start and then every 5 min, 15 min, 1 hour or 6 hours, the person's choice (default
+  1 hour, as VS Code and Zed check). A check reads the tag `https://github.com/romant094/corral/releases/latest`
+  redirects to, which is outside the GitHub API's 60 requests an hour; the notes come from
+  `api.github.com/repos/romant094/corral/releases/tags/<tag>` once per new tag. Drafts and pre-releases are skipped.
+  The section shows the next check's time.
 - A newer `tag_name` than `VERSION`: a toast "Corral 0.5.0 is out" (Herdr's toast has one click action: it opens
   Settings → Updates, where "Update" and "Later" are),
   a dot on the gear, and in the section the release notes and an "Update" button.

@@ -96,7 +96,12 @@ const bridgeJson = async (args, timeout = 60000) => {
 const parseJson = (text) => { try { return text ? JSON.parse(text) : null; } catch { return null; } };
 // Updates: GitHub's latest release (never a draft or a pre-release) against VERSION.
 const REPO = "romant094/corral";
-const UPDATE_EVERY_MS = 6 * 3600 * 1000;
+// How often the automatic check runs, the person's choice in Updates; an hour, as VS Code and Zed do.
+const UPDATE_INTERVALS = [[5 * 60000, "5 min"], [15 * 60000, "15 min"], [3600000, "1 hour"], [6 * 3600000, "6 hours"]];
+const updateEvery = () => {
+  const ms = updatesState().interval;
+  return UPDATE_INTERVALS.some(([v]) => v === ms) ? ms : 3600000;
+};
 const updatesState = () => ({ auto: true, checked_at: null, latest: null, notes: "", error: null, later: null,
   ...(settingsState().updates ?? {}) });
 const setUpdates = (change) => setSettings({ updates: { ...updatesState(), ...change } });
@@ -112,7 +117,7 @@ const updateReady = () => { const u = updatesState(); return !!u.latest && newer
 let linkLookup = null;
 const linkedTo = () => linkLookup ??= exec("readlink", [`${appHome()}/mods/${MOD}/main.js`])
   .then(r => r.code === 0 && r.stdout.trim() ? r.stdout.trim() : null, () => null);
-// A toast once per new version, whichever check found it (at start, every 6 hours, Check now). The version is kept
+// A toast once per new version, whichever check found it (at start, the automatic ones, Check now). The version is kept
 // in the shared state, so two copies of the mod do not both toast; "Later" in the section silences it too.
 function announceUpdate() {
   const u = updatesState();
@@ -125,20 +130,31 @@ function announceUpdate() {
 async function checkUpdates() {
   if (await linkedTo()) return;
   try {
-    // curl, not fetch: fetch has no timeout here, and a request that never ends kept every later check from running.
-    const r = await exec("curl", ["-sSL", "--proto", "=https", "--max-time", "20", "-w", "\n%{http_code}",
-      "-H", "Accept: application/vnd.github+json", "-H", `User-Agent: corral/${VERSION}`,
-      "--", `https://api.github.com/repos/${REPO}/releases/latest`], { timeout: 30000 });
+    // The version: github.com redirects releases/latest to the latest release's tag page. That page is not the
+    // API, so frequent checks do not use up its 60 requests an hour. curl, not fetch: fetch has no timeout here,
+    // and a request that never ends kept every later check from running.
+    const r = await exec("curl", ["-sS", "-o", "/dev/null", "--proto", "=https", "--max-time", "20",
+      "-w", "%{http_code} %{redirect_url}", "-H", `User-Agent: corral/${VERSION}`,
+      "--", `https://github.com/${REPO}/releases/latest`], { timeout: 30000 });
     if (r.code !== 0) throw new Error(`no answer from GitHub: ${r.stderr.trim() || `curl exited ${r.code}`}`);
-    const at = r.stdout.lastIndexOf("\n");
-    const status = Number(r.stdout.slice(at + 1));
-    // No release yet is not an error.
-    if (status === 404) return setUpdates({ checked_at: Date.now(), checked_for: VERSION, latest: null, error: null });
-    if (status !== 200) throw new Error(`GitHub answered ${status}`);
-    const rel = JSON.parse(r.stdout.slice(0, at));
+    const [status, location = ""] = r.stdout.trim().split(" ");
+    if (status !== "302") throw new Error(`GitHub answered ${status}`);
+    // No release yet redirects to the release list: not an error.
+    if (!location.includes("/releases/tag/")) return setUpdates({ checked_at: Date.now(), checked_for: VERSION, latest: null, error: null });
     // Only a plain vX.Y.Z tag is a Corral release; the download URL is built from it, never taken from the answer.
-    if (!/^v\d+\.\d+\.\d+$/.test(rel.tag_name ?? "")) throw new Error(`the latest release has an odd tag: ${String(rel.tag_name).slice(0, 40)}`);
-    setUpdates({ checked_at: Date.now(), checked_for: VERSION, latest: rel.tag_name.slice(1), notes: rel.body ?? "", error: null });
+    const tag = decodeURIComponent(location.split("/releases/tag/")[1] ?? "");
+    if (!/^v\d+\.\d+\.\d+$/.test(tag)) throw new Error(`the latest release has an odd tag: ${tag.slice(0, 40)}`);
+    const latest = tag.slice(1);
+    const u = updatesState();
+    // The notes: from the API, once per new version. Without them (the API's limit) the update still shows.
+    let notes = u.latest === latest ? u.notes : "";
+    if (u.latest !== latest || !notes) {
+      const n = await exec("curl", ["-sSf", "--proto", "=https", "--max-time", "20",
+        "-H", "Accept: application/vnd.github+json", "-H", `User-Agent: corral/${VERSION}`,
+        "--", `https://api.github.com/repos/${REPO}/releases/tags/${tag}`], { timeout: 30000 }).catch(() => null);
+      if (n?.code === 0) notes = parseJson(n.stdout)?.body ?? "";
+    }
+    setUpdates({ checked_at: Date.now(), checked_for: VERSION, latest, notes, error: null });
     announceUpdate();
   } catch (err) {
     setUpdates({ checked_at: Date.now(), error: String(err?.message ?? err) });
@@ -708,7 +724,7 @@ export default class Board extends View {
           if (command === "sort") sortAgents();
           if (command === "settings") openSettings();
           // To watch the 6-hour check happen: the last check moves to 5:59:50 ago, so the next one runs in about 10 s.
-          if (command === "updates-due") setUpdates({ checked_at: Date.now() - UPDATE_EVERY_MS + 10000, checked_for: VERSION, error: null });
+          if (command === "updates-due") setUpdates({ checked_at: Date.now() - updateEvery() + 10000, checked_for: VERSION, error: null });
           // corral.settings-keys and the like open the dialog on that section.
           const section = SECTIONS.find(s => command === `settings-${s.id}`);
           if (section) { setSettings({ section: section.id }); openSettings(); }
@@ -795,9 +811,9 @@ export default class Board extends View {
         { keystroke: keys.relative, action: "corral-copy-relative", context: "CorralPaths" },
         { keystroke: keys.absolute, action: "corral-copy-absolute", context: "CorralPaths" },
       ]);
-      // Updates: at start, and 6 hours after the last check, unless the person turned it off. The time is the last
-      // check's, so it holds across reloads, and `herdr-app do corral.updates-due` can move it to see a check happen.
-      // A reload within the hour does not ask GitHub again (60 requests an hour without a token).
+      // Updates: one interval (the person's choice) after the last check, unless the person turned it off. The time
+      // is the last check's, so it holds across reloads, and `herdr-app do corral.updates-due` can move it to see a
+      // check happen. A check is one request to github.com, outside the API's 60 an hour.
       if (!checking()) {
         // The copy an update just installed says so.
         const done = updatesState().installing;
@@ -805,14 +821,14 @@ export default class Board extends View {
           setUpdates({ installing: null });
           notify({ title: `Corral ${VERSION} is installed`, level: "success" });
         }
-        // Due: never checked, another VERSION than at the last check (an update, a reinstall), 6 hours since it,
-        // 10 minutes after a failed one; at start already an hour after it.
+        // Due: never checked, another VERSION than at the last check (an update, a reinstall), an interval
+        // since it, 10 minutes after a failed one (or the interval, when shorter).
         let checkingNow = false;
         const due = (start) => {
           const u = updatesState();
           if (!u.auto || checkingNow) return false;
           const since = Date.now() - (u.checked_at ?? 0);
-          return !u.checked_at || u.checked_for !== VERSION || since >= (u.error ? 600000 : start ? 3600000 : UPDATE_EVERY_MS);
+          return !u.checked_at || u.checked_for !== VERSION || since >= (u.error ? Math.min(600000, updateEvery()) : updateEvery());
         };
         const auto = async (start, cx) => {
           if (due(start)) {
@@ -1949,6 +1965,11 @@ export default class Board extends View {
     if (ui.linked === undefined) { ui.linked = null; linkedTo().then(l => { ui.linked = l || false; }); }
     const when = u.checked_at ? new Date(u.checked_at) : null;
     const checked = when ? `Checked ${when.toLocaleDateString()} ${pad2(when.getHours())}:${pad2(when.getMinutes())}` : "Not checked yet";
+    // The next automatic check: an interval after the last one (10 minutes after a failed one, when sooner).
+    const every = updateEvery();
+    const next = new Date((u.checked_at ?? Date.now()) + (u.error ? Math.min(600000, every) : every));
+    const nextCheck = next <= new Date() ? "next check in a few seconds"
+      : `next check ${next.toDateString() === new Date().toDateString() ? "" : `${next.toLocaleDateString()} `}at ${pad2(next.getHours())}:${pad2(next.getMinutes())}`;
     const check = (_e, cx) => {
       if (ui.busy) return;
       ui.busy = "Checking…";
@@ -1978,7 +1999,19 @@ export default class Board extends View {
           .on_click(() => setUpdates({ auto: !u.auto }))
           .child(checkBox(C, u.auto))
           .child(div().text_size(13).child("Check automatically"))
-          .child(div().text_size(12).text_color(C.muted).child("at start and every 6 hours; off sends nothing")))
+          .child(div().text_size(12).text_color(C.muted).child(u.auto ? nextCheck : "off sends nothing")))
+        // The interval: one chip per choice, the chosen one filled.
+        .child(h_flex().gap(10).items_center()
+          .child(div().w(16).flex_none())
+          .child(div().text_size(13).text_color(u.auto ? C.ink : C.dim).child("Every"))
+          .children(UPDATE_INTERVALS.map(([ms, label]) => h_flex().id(`update-every-${ms}`).h(24).px(10).items_center().rounded(5)
+            .text_size(12).border(1)
+            .when(ms === every, el => el.bg(u.auto ? C.accent : C.selected).border_color(u.auto ? C.accent : C.line)
+              .text_color(u.auto ? C.card : C.dim).font_semibold())
+            .when(ms !== every, el => el.border_color(C.line).text_color(u.auto ? C.muted : C.dim))
+            .when(ms !== every && u.auto, el => el.cursor_pointer().hover(st => st.text_color(C.ink))
+              .on_click(() => setUpdates({ interval: ms })))
+            .child(label))))
         // Installing needs the checks: with them off, the box is locked.
         .child(h_flex().id("update-install").gap(10).items_center()
           .when(u.auto, el => el.cursor_pointer().on_click(() => setUpdates({ install: !u.install })))

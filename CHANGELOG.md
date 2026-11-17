@@ -2,6 +2,11 @@
 
 Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHub release notes.
 
+## 0.1.8
+
+- Updates: the check interval is a choice (5 min, 15 min, 1 hour, 6 hours; default 1 hour, as VS Code and Zed), and the section shows the next check's time.
+- Updates: a check asks github.com where its latest release is, outside the GitHub API's 60 requests an hour; the API is asked once per new release, for its notes.
+
 ## 0.1.7
 
 - Telegram settings: a "Use Rich Messages" checkbox instead of the format tabs. Off sends a classic formatted message (bold, italics, code, links, quotes; headings as bold lines, tables as code) instead of Markdown as plain text.
