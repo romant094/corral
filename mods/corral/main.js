@@ -1,5 +1,5 @@
 import { View, div, svg, image, uniform_list, PathBuilder } from "gpui-kit";
-import { h_flex, v_flex, Input, InputState, Editor, EditorState, h_resizable, resizable_panel, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
+import { h_flex, v_flex, Input, InputState, Editor, EditorState, h_resizable, resizable_panel, v_virtual_list, VirtualListScrollHandle, ScrollHandle } from "gpui-base";
 import {
   agents, spaces, panes, props, run, setAgentOrder, theme, shared, setShared, pickFolder,
   home, appHome, hc, exec, readTextFile, writeTextFile, checking, openOverlay, closeOverlay, notify, window as appWindow, layout, nextCommand,
@@ -743,7 +743,12 @@ export default class Board extends View {
       this.foldInput.on("blur", (_e, cx) => this.saveFold(cx));
       // The bridge writes its state file as it goes; the section follows it.
       cx.spawn(async (cx) => { await this.loadTelegram(); cx.notify(); if (this.tg.settings?.token) this.checkTelegram(cx); });
-      cx.timer.every(2000, (cx) => cx.spawn(async (cx) => { if (await this.loadTelegram()) cx.notify(); }));
+      cx.timer.every(2000, (cx) => cx.spawn(async (cx) => {
+        const changed = await this.loadTelegram();
+        if (changed | (this.bridgeLog && await this.loadBridgeLog())) cx.notify();
+      }));
+      // Bridge Logs replace the Telegram section's content; the newest line is kept in view.
+      this.bridgeLogScroll = ScrollHandle.new();
       // launchd's view every 5 s, but not while a Start or Stop is changing it.
       cx.spawn(async (cx) => { await this.loadService(); cx.notify(); });
       cx.timer.every(5000, (cx) => cx.spawn(async (cx) => { if (!this.tg.busy && await this.loadService()) cx.notify(); }));
@@ -1414,22 +1419,58 @@ export default class Board extends View {
   settingsDialog(C) {
     const { overlay } = props();
     const current = SECTIONS.find(s => s.id === settingsState().section) ?? SECTIONS[0];
+    const log = current.id === "telegram" && !!this.bridgeLog;
+    const back = h_flex().id("bridge-log-back").size(26).mr(8).flex_none().items_center().justify_center().rounded(5)
+      .text_size(16).text_color(C.muted).cursor_pointer().hover(st => st.bg(C.selected).text_color(C.ink)).tooltip("Back to Telegram")
+      .on_click((_e, cx) => { this.bridgeLog = null; cx.notify(); }).child("←");
     return h_flex().size_full().bg(C.bg).text_color(C.ink)
       .child(v_flex().w(180).h_full().flex_none().p(10).gap(2).bg(C.bar)
         .child(div().px(10).pt(6).pb(10).text_size(14).font_semibold().child("Settings"))
         .children(SECTIONS.map(s => h_flex().id(`section-${s.id}`).h(32).px(10).gap(8).items_center().rounded(6)
           .text_size(13).cursor_pointer().when(s === current, el => el.bg(C.selected))
           .text_color(s === current ? C.ink : C.muted).hover(st => st.bg(C.selected))
-          .on_click(() => setSettings({ section: s.id }))
+          .on_click(() => { this.bridgeLog = null; setSettings({ section: s.id }); })
           .child(div().flex_1().child(s.title))
           .when(s.badge(), el => el.child(dot(theme().blocked, 8))))))
       .child(div().w(1).h_full().flex_none().bg(C.line))
       .child(v_flex().flex_1().min_w(0).h_full()
         .child(h_flex().h(52).flex_none().px(20).items_center().border_b(1).border_color(C.line)
-          .child(div().flex_1().text_size(15).font_semibold().child(current.title))
+          .when(log, el => el.child(back))
+          .child(div().flex_1().text_size(15).font_semibold().child(log ? "Bridge Logs" : current.title))
           .child(xButton(C, "settings-close", "Close (Esc)", () => closeOverlay(overlay), 30, 20)))
-        .child(v_flex().id("settings-body").flex_1().min_h(0).overflow_y_scrollbar().p(20).gap(14)
-          .child(this[current.render](C))));
+        .when(!log, el => el.child(v_flex().id("settings-body").flex_1().min_h(0).overflow_y_scrollbar().p(20).gap(14)
+          .child(this[current.render](C))))
+        .when(log, el => el.child(this.bridgeLogView(C))));
+  }
+  // The bridge's log in the dialog: the last lines of telegram.log, followed every 2 seconds.
+  openBridgeLog(cx) {
+    this.bridgeLog = { lines: [], text: null };
+    cx.notify();
+    cx.spawn(async (cx) => { await this.loadBridgeLog(); cx.notify(); });
+  }
+  async loadBridgeLog() {
+    const text = await readTextFile(tgFiles().log).catch(() => null);
+    const log = this.bridgeLog;
+    if (!log || text === log.text) return false;
+    log.text = text;
+    log.lines = (text ?? "").split("\n").filter(Boolean).slice(-500);
+    if (log.lines.length) this.bridgeLogScroll.scroll_to_item(log.lines.length - 1);
+    return true;
+  }
+  bridgeLogView(C) {
+    const { lines, text } = this.bridgeLog;
+    return v_flex().id("bridge-log").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.bridgeLogScroll).px(20).py(12)
+      .font_family("Geist Mono").text_size(11).text_color(C.ink)
+      .when(!lines.length, el => el.child(div().text_color(C.muted).child(text === null ? "No log yet: the bridge has not run." : "The log is empty.")))
+      .children(lines.map(l => {
+        // "2026-11-16T17:03:20.574Z message": the time is dimmed and shortened to the local hh:mm:ss.
+        const m = /^(\d{4}-\d\d-\d\dT[\d:.]+Z) (.*)$/.exec(l);
+        const at = m ? new Date(m[1]) : null;
+        return h_flex().gap(8).items_start()
+          .when(!!at, el => el.child(div().flex_none().text_color(C.dim)
+            .child(`${at.toLocaleDateString()} ${pad2(at.getHours())}:${pad2(at.getMinutes())}:${pad2(at.getSeconds())}`)))
+          .child(div().flex_1().min_w(0).child(m ? m[2] : l));
+      }));
   }
   // telegram.json and telegram-state.json as text and parsed; true when either changed.
   async loadTelegram() {
@@ -1878,7 +1919,7 @@ export default class Board extends View {
         .when(known && !!svc.running, el => el
           .child(smallButton(C, "tg-stop", "Stop", act("Stopping…", () => this.service("stop"))))
           .child(smallButton(C, "tg-restart", "Restart", act("Restarting…", () => this.service("restart")))))
-        .child(smallButton(C, "tg-log", "Log", () => run("tab.new", { name: "Telegram log", argv: ["tail", "-n", "200", "-f", tgFiles().log] }))))
+        .child(smallButton(C, "tg-log", "Log", (_e, cx) => this.openBridgeLog(cx))))
       .when(known && !outside && !svc.running && missing.length > 0, el => el.child(div().pl(24).text_size(12).text_color(C.muted)
         .child(`To start, set ${missing.join(", ")}.`)));
   }
