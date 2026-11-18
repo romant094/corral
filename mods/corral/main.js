@@ -40,10 +40,20 @@ const saveWidth = (key, kind, value) => {
 const SETTINGS_KEY = "corral.settings";
 const settingsState = () => ({ section: "telegram", ...(shared(SETTINGS_KEY) ?? {}) });
 const setSettings = (change) => setShared(SETTINGS_KEY, { ...settingsState(), ...change });
+// Files: names the tree never shows, as WebStorm's "Ignored files and folders". No list saved means these.
+const IGNORE_DEFAULTS = [".DS_Store", "Thumbs.db", "*.pyc", "*.pyo", "__pycache__", "*~", ".hg", ".svn", "CVS"];
+const ignorePatterns = () => {
+  const saved = settingsState().files?.ignore;
+  return Array.isArray(saved) ? saved.filter(p => typeof p === "string") : IGNORE_DEFAULTS;
+};
+const setIgnorePatterns = (ignore) => setSettings({ files: { ...settingsState().files, ignore } });
+// A WebStorm-style name pattern: `*` any characters, `?` one; matched against the whole name.
+const namePattern = (p) => new RegExp("^" + p.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$");
 // One entry per section: a new section is one more entry and its render method on Board.
 // `badge`: something there wants the person; the gear shows a dot then.
 const SECTIONS = [
   { id: "telegram", title: "Telegram", badge: () => false, render: "telegramSection" },
+  { id: "files", title: "Files", badge: () => false, render: "filesSection" },
   { id: "updates", title: "Updates", badge: () => updateReady(), render: "updatesSection" },
 ];
 // Telegram: the bridge (telegram/, installed by install.sh) does all talking to Telegram and launchd;
@@ -327,7 +337,7 @@ const setFilter = (change) => setShared(FILTER_KEY, { ...filter(), ...change });
 const projects = () => shared(PROJECTS_KEY) ?? [];
 const live = () => shared(LIVE_KEY) ?? { sessions: {}, limits: [] };
 const view = () => shared(VIEW_KEY) ?? "board";
-const gitState = () => shared(GIT_KEY) ?? { folder: null, root: null, branch: "", files: [], worktrees: [] };
+const gitState = () => shared(GIT_KEY) ?? { folder: null, root: null, branch: "", files: [], worktrees: [], ignored: [] };
 const showHidden = () => !!shared(HIDDEN_KEY);
 const targetAgent = () => {
   const all = agents();
@@ -503,6 +513,58 @@ const opaque = (color, under) => {
 };
 const laneColors = () => { const t = theme(); return [t.ansi4, t.ansi2, t.ansi5, t.ansi3, t.ansi6, t.ansi1, t.ansi12, t.ansi14]; };
 const relPath = (root, path) => root && path.startsWith(root + "/") ? path.slice(root.length + 1) : path;
+// Files shows these as pictures. Bigger ones are not decoded.
+const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg"]);
+const IMAGE_MAX = 20 * 1024 * 1024;
+// image() takes only a path inside Herdr's home, so a picture is shown from a copy there.
+// A new name for each open: GPUI keeps a decoded picture by its path, and a changed file would show the old one.
+const PREVIEW_DIR = "corral/cache";
+const previewCopy = async (bytes, ext, seq) => {
+  const dir = `${appHome()}/${PREVIEW_DIR}`;
+  await fs.mkdir(dir, { recursive: true });
+  for (const name of await fs.readdir(dir)) await fs.unlink(`${dir}/${name}`).catch(() => {});
+  const name = `preview-${Date.now()}-${seq}.${ext}`;
+  await fs.writeFile(`${dir}/${name}`, bytes);
+  return `${PREVIEW_DIR}/${name}`;
+};
+// How many git-ignored paths the Files tree dims by name.
+const IGNORED_MAX = 2000;
+const imageExt = (path) => {
+  const ext = /\.([^./]+)$/.exec(path)?.[1].toLowerCase();
+  return IMAGE_EXT.has(ext) ? ext : null;
+};
+// Width and height from the file's header, or null when the header is not one of that format.
+// SVG has no fixed size in pixels; ICO keeps one per icon inside, the first is taken.
+const imageSize = (b, ext) => {
+  const be16 = (i) => (b[i] << 8) | b[i + 1];
+  const le16 = (i) => b[i] | (b[i + 1] << 8);
+  const le24 = (i) => le16(i) | (b[i + 2] << 16);
+  const le32 = (i) => (le16(i) | (le16(i + 2) << 16)) | 0;
+  const tag = (i, s) => String.fromCharCode(...b.subarray(i, i + s.length)) === s;
+  if (ext === "png") return b.length >= 24 && tag(1, "PNG") ? { w: (be16(16) << 16 | be16(18)) >>> 0, h: (be16(20) << 16 | be16(22)) >>> 0 } : null;
+  if (ext === "gif") return b.length >= 10 && tag(0, "GIF") ? { w: le16(6), h: le16(8) } : null;
+  if (ext === "bmp") return b.length >= 26 && tag(0, "BM") ? { w: le32(18), h: Math.abs(le32(22)) } : null;
+  if (ext === "ico") return b.length >= 8 && le16(2) === 1 ? { w: b[6] || 256, h: b[7] || 256 } : null;
+  if (ext === "webp") {
+    if (b.length < 30 || !tag(0, "RIFF") || !tag(8, "WEBP")) return null;
+    if (tag(12, "VP8 ")) return { w: le16(26) & 0x3fff, h: le16(28) & 0x3fff };
+    if (tag(12, "VP8L")) return { w: 1 + (((b[22] & 0x3f) << 8) | b[21]), h: 1 + (((b[24] & 0xf) << 10) | (b[23] << 2) | ((b[22] & 0xc0) >> 6)) };
+    if (tag(12, "VP8X")) return { w: 1 + le24(24), h: 1 + le24(27) };
+    return null;
+  }
+  if (ext === "jpg" || ext === "jpeg") {
+    if (b[0] !== 0xff || b[1] !== 0xd8) return null;
+    // Walk the markers to the first start-of-frame; C4, C8 and CC share the range but are not frames.
+    for (let i = 2; i + 9 < b.length;) {
+      if (b[i] !== 0xff) return null;
+      const m = b[i + 1];
+      if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return { w: be16(i + 7), h: be16(i + 5) };
+      i += 2 + be16(i + 2);
+    }
+    return null;
+  }
+  return null;
+};
 // "Today 2:01 AM", "Yesterday 9:56 PM", "Nov 9, 11:15 PM", with the year when it isn't this one.
 const logDate = (sec) => {
   const d = new Date(sec * 1000);
@@ -729,6 +791,8 @@ export default class Board extends View {
       this.tg = { loaded: false, busy: null, error: null, check: null, editToken: false };
       this.tokenInput = InputState.new({ placeholder: "123456789:AAH…" });
       this.ownerInput = InputState.new({ placeholder: "login" });
+      this.ignoreInput = InputState.new({ placeholder: "*.log" });
+      this.ignoreInput.on("submit", (_e, cx) => this.addIgnore(cx));
       // The field shows the saved limit; Enter or leaving the field saves a new one.
       this.foldInput = InputState.new({ placeholder: "1200" });
       this.foldInput.on("change", () => { this.foldEdited = this.foldInput.value() !== String(this.tg.settings?.fold_chars ?? 1200); });
@@ -778,6 +842,8 @@ export default class Board extends View {
       setShared(GIT_JOBS_KEY, []);
       this.jobsStarted = new Set();
       this.treeFocus = cx.focus_handle();
+      // The Files tree keeps its scroll here, not in the element: a click redraws the tree and must not move it.
+      this.treeScroll = ScrollHandle.new();
       this.refSearch = InputState.new({ placeholder: "Branch or tag" });
       this.refSearch.on("change", (_e, cx) => cx.notify());
       this.logSearch = InputState.new({ placeholder: "Text or hash" });
@@ -837,6 +903,7 @@ export default class Board extends View {
       this.dirs = {};
       this.dirError = null;
       this.file = null;
+      this.fileSeq = (this.fileSeq ?? 0) + 1;
       this.treeSel = null;
       this.changeSel = null;
       this.diff = null;
@@ -874,6 +941,7 @@ export default class Board extends View {
       this.dirs = {};
       this.dirError = null;
       this.file = null;
+      this.fileSeq = (this.fileSeq ?? 0) + 1;
       this.treeSel = null;
       this.changeSel = null;
       this.diff = null;
@@ -1053,19 +1121,25 @@ export default class Board extends View {
     return this.viewHeight ? Math.max(Math.floor(this.viewHeight - dockAbove()), DOCK_BAR) : null;
   }
   async refreshGit(folder) {
-    const next = { folder, root: null, branch: "", files: [], worktrees: [] };
+    const next = { folder, root: null, branch: "", files: [], worktrees: [], ignored: [] };
     if (folder) {
       const git = (args) => exec("git", args, { cwd: folder, timeout: 10000 });
       try {
         const top = await git(["rev-parse", "--show-toplevel"]);
         if (top.code === 0) {
           next.root = top.stdout.trim();
-          // The four reads don't depend on each other: run them at once, so a new agent's repo shows sooner.
-          const [branch, worktrees, numstat, status] = await Promise.all([
+          // The reads don't depend on each other: run them at once, so a new agent's repo shows sooner.
+          // Ignored: untracked paths only (a tracked file is part of the project), a wholly ignored folder once, as `dist/`.
+          const [branch, worktrees, numstat, status, ignored] = await Promise.all([
             git(["branch", "--show-current"]), git(["worktree", "list", "--porcelain"]),
             git(["diff", "--numstat", "HEAD"]), git(["status", "--porcelain=v1", "--untracked-files=all"]),
+            git(["ls-files", "-z", "--full-name", "--others", "--ignored", "--exclude-standard", "--directory"]),
           ]);
           next.branch = branch.stdout.trim();
+          // Ignored files in tracked folders come one per file (`*.o` beside the sources): past IGNORED_MAX only the
+          // folders are kept, so a build does not resend thousands of paths every tick.
+          const all = ignored.code === 0 ? ignored.stdout.split("\0").filter(Boolean) : [];
+          next.ignored = all.length > IGNORED_MAX ? all.filter(p => p.endsWith("/")).slice(0, IGNORED_MAX) : all;
           for (const block of worktrees.stdout.split("\n\n")) {
             const path = block.match(/^worktree (.+)$/m)?.[1];
             if (!path) continue;
@@ -1088,7 +1162,7 @@ export default class Board extends View {
             if (untracked) {
               const at = `${next.root}/${path}`;
               this.newLines ??= new Map();
-              if (!this.newLines.has(at)) this.newLines.set(at, ((await readTextFile(at)) ?? "").split("\n").length);
+              if (!this.newLines.has(at)) this.newLines.set(at, ((await readTextFile(at).catch(() => null)) ?? "").split("\n").length);
               n = { add: this.newLines.get(at), del: 0 };
             }
             next.files.push({ path, mark, untracked, ...n });
@@ -1127,16 +1201,23 @@ export default class Board extends View {
     else { this.expanded.add(path); this.loadDir(path, cx); }
     cx.notify();
   }
-  openFile(path, cx) {
-    // Created here, in the click: editor state can't be made during render.
-    this.editor?.release();
-    this.editor = newEditor(path);
+  // `asText`: an SVG's text instead of its picture.
+  openFile(path, cx, asText = false) {
     this.treeSel = path;
+    this.editor?.release();
+    this.editor = null;
+    // Each open has its own number: a late read of an earlier open (the same file as text or as a picture) is dropped.
+    const seq = this.fileSeq = (this.fileSeq ?? 0) + 1;
+    const ext = asText ? null : imageExt(path);
+    if (ext) return this.openImage(path, ext, seq, cx);
+    // Created here, in the click: editor state can't be made during render.
+    this.editor = newEditor(path);
     this.file = { path, lines: null, note: "Loading…" };
     cx.notify();
     cx.spawn(async (cx) => {
-      const text = await readTextFile(path);
-      if (this.file?.path !== path) return;
+      // The reader refuses bytes that are not UTF-8: that is a binary file, not a read that never ends.
+      const text = await readTextFile(path).catch(() => "\u0000");
+      if (this.fileSeq !== seq) return;
       if (text == null) this.file = { path, lines: null, note: "Can't show this file: it is gone or over 1 MiB." };
       else if (text.includes("\u0000")) this.file = { path, lines: null, note: "Binary file." };
       else {
@@ -1145,6 +1226,29 @@ export default class Board extends View {
         this.file = { path, lines, size: text.length };
         this.editor.set_value(text);
       }
+      cx.notify();
+    });
+  }
+  // A picture: the size from the file's own header, so a broken one says so instead of showing nothing.
+  openImage(path, ext, seq, cx) {
+    this.file = { path, lines: null, note: "Loading…" };
+    cx.notify();
+    cx.spawn(async (cx) => {
+      let next;
+      try {
+        const st = await exec("stat", ["-f", "%z", path], { timeout: 10000 });
+        const size = Number(st.stdout.trim());
+        if (st.code !== 0) next = { note: "Can't show this file: it is gone." };
+        else if (size > IMAGE_MAX) next = { note: "Image is over 20 MiB.", size };
+        else {
+          const bytes = await fs.readFile(path);
+          const dims = imageSize(bytes, ext);
+          next = dims || ext === "svg" ? { image: { ext, ...dims, src: await previewCopy(bytes, ext, seq) }, size: bytes.length }
+            : { note: "Can't show this image.", size: bytes.length };
+        }
+      } catch { next = { note: "Can't show this image." }; }
+      if (this.fileSeq !== seq) return;
+      this.file = { path, lines: null, ...next };
       cx.notify();
     });
   }
@@ -1935,6 +2039,39 @@ export default class Board extends View {
         .child(smallButton(C, "tg-log", "Log", (_e, cx) => this.openBridgeLog(cx))))
       .when(known && !outside && !svc.running && missing.length > 0, el => el.child(div().pl(24).text_size(12).text_color(C.muted)
         .child(`To start, set ${missing.join(", ")}.`)));
+  }
+  // Files: the names the tree never shows. Each change saves at once.
+  addIgnore(cx) {
+    const p = this.ignoreInput.value().trim();
+    const list = ignorePatterns();
+    this.ignoreError = !p ? "Type a name or a pattern, like *.log."
+      : p.includes("/") ? "A pattern matches a name, not a path: leave out the /."
+      : list.includes(p) ? `${p} is already in the list.` : null;
+    if (!this.ignoreError) {
+      setIgnorePatterns([...list, p]);
+      this.ignoreInput.set_value("");
+    }
+    cx.notify();
+  }
+  filesSection(C) {
+    const list = ignorePatterns();
+    const isDefault = JSON.stringify(list) === JSON.stringify(IGNORE_DEFAULTS);
+    return v_flex().gap(8)
+      .child(div().text_size(13).font_semibold().child("Ignored files and folders"))
+      .child(div().text_size(12).text_color(C.muted)
+        .child("The Files tree does not show these names. * matches any characters, ? matches one."))
+      .child(v_flex().gap(2).p(6).rounded(6).bg(C.card).border(1).border_color(C.line)
+        .when(!list.length, el => el.child(div().p(4).text_size(12).text_color(C.dim).child("No names: the tree shows everything.")))
+        .children(list.map(p => h_flex().id(`ignore-${p}`).h(26).pl(6).gap(8).items_center().rounded(5).hover(s => s.bg(C.selected))
+          .child(div().flex_1().min_w(0).truncate().font_family("Geist Mono").text_size(12).child(p))
+          .child(xButton(C, `ignore-rm-${p}`, "Remove", () => { this.ignoreError = null; setIgnorePatterns(list.filter(x => x !== p)); })))))
+      .child(h_flex().gap(8).items_center()
+        .child(field(C, this.ignoreInput).w(220))
+        .child(smallButton(C, "ignore-add", "Add", (_e, cx) => this.addIgnore(cx)))
+        .child(div().flex_1())
+        .when(!isDefault, el => el.child(div().id("ignore-reset").text_size(12).text_color(C.accent).cursor_pointer()
+          .hover(s => s.underline()).child("Reset to defaults").on_click((_e, cx) => { this.ignoreError = null; setIgnorePatterns(IGNORE_DEFAULTS); cx.notify(); }))))
+      .when(!!this.ignoreError, el => el.child(div().text_size(12).text_color(C.danger).child(this.ignoreError)));
   }
   updatesSection(C) {
     const u = updatesState();
@@ -3270,9 +3407,10 @@ export default class Board extends View {
   treeRows() {
     const rows = [];
     const hidden = showHidden();
+    const skip = ignorePatterns().map(namePattern);
     const walk = (dir, depth) => {
       for (const e of this.dirs[dir] ?? []) {
-        if (e.name === ".git" || (!hidden && e.name.startsWith("."))) continue;
+        if (e.name === ".git" || (!hidden && e.name.startsWith(".")) || skip.some(re => re.test(e.name))) continue;
         const path = `${dir}/${e.name}`;
         rows.push({ path, name: e.name, dir: e.dir, depth });
         if (e.dir && this.expanded.has(path)) walk(path, depth + 1);
@@ -3286,17 +3424,27 @@ export default class Board extends View {
     const g = gitState();
     const marks = {};
     if (g.root) for (const f of g.files) marks[`${g.root}/${f.path}`] = f.mark;
+    // Ignored by git: the path itself, or a folder above it that git ignores whole (`dist/`).
+    const ignoredSet = new Set(g.root ? g.ignored ?? [] : []);
+    const ignored = (path, dir) => {
+      if (!ignoredSet.size || !path.startsWith(g.root + "/")) return false;
+      const rel = path.slice(g.root.length + 1);
+      if (ignoredSet.has(dir ? rel + "/" : rel)) return true;
+      for (let i = rel.indexOf("/"); i > 0; i = rel.indexOf("/", i + 1)) if (ignoredSet.has(rel.slice(0, i + 1))) return true;
+      return false;
+    };
     const rows = this.treeRows();
     const file = this.file;
     const tree = this.panel(C).size_full().p(6).when(!!this.treeFocus, el => el.track_focus(this.treeFocus))
       .when(rows.length === 0, el => el.child(div().p(8).text_size(12).text_color(C.muted)
         .child(this.dirError ? `Can't read the folder: ${this.dirError}` : this.dirs[this.folder] ? "Empty folder." : "Loading…")))
-      .child(v_flex().id("tree").flex_1().min_h(0).overflow_y_scrollbar().gap(1).children(rows.map(r => {
+      .child(v_flex().id("tree").flex_1().min_h(0).overflow_y_scrollbar().when(!!this.treeScroll, el => el.track_scroll(this.treeScroll)).gap(1).children(rows.map(r => {
         const selected = (this.treeSel ?? file?.path) === r.path;
         const mark = marks[r.path];
+        const dim = ignored(r.path, r.dir);
         return h_flex().id(`row-${r.path}`).h(24).flex_none().pl(8 + r.depth * 16).pr(8).gap(6).items_center().rounded(5)
           .bg(selected ? C.sel : C.card).hover(s => s.bg(selected ? C.sel : C.bar))
-          .cursor_pointer().text_size(12).text_color(mark === "D" ? C.dim : C.ink)
+          .cursor_pointer().text_size(12).text_color(mark === "D" || dim ? C.dim : C.ink)
           .on_click((_e, cx) => {
             this.treeSel = r.path;
             this.treeFocus?.focus();
@@ -3309,7 +3457,7 @@ export default class Board extends View {
           .child(r.dir
             ? svg(`mods/${MOD}/icons/${this.expanded.has(r.path) ? "chevron-down" : "chevron-right"}.svg`).size(11).text_color(C.dim).flex_none()
             : div().size(11).flex_none())
-          .child(svg(`mods/${MOD}/icons/${r.dir ? "folder" : "file"}.svg`).size(13).text_color(r.dir ? C.accent : C.muted).flex_none())
+          .child(svg(`mods/${MOD}/icons/${r.dir ? "folder" : "file"}.svg`).size(13).text_color(dim ? C.dim : r.dir ? C.accent : C.muted).flex_none())
           .child(div().flex_1().min_w(0).truncate().child(r.name))
           .when(!!mark, el => el.child(div().font_family("Geist Mono").text_size(10).font_semibold().text_color(markColor(mark)).child(mark)));
       })));
@@ -3318,18 +3466,25 @@ export default class Board extends View {
       body.push(this.empty(C, "Pick a file in the tree."));
     } else {
       const mark = marks[file.path];
+      const pic = file.image;
+      const kb = file.size != null ? `${(file.size / 1024).toFixed(1)} KB` : null;
+      const facts = file.lines ? `${file.lines.length} lines · ${kb}` : pic?.w ? `${pic.w} × ${pic.h} px · ${kb}` : kb;
       body.push(this.panelHeader(C, file.path, [
         mark ? badge(mark) : null,
-        file.lines ? div().text_size(11).text_color(C.muted).flex_none()
-          .child(`${file.lines.length} lines · ${(file.size / 1024).toFixed(1)} KB`) : null,
+        facts ? div().text_size(11).text_color(C.muted).flex_none().child(facts) : null,
       ].filter(Boolean))
         .when(!!mark && !!g.root, el => el.child(this.toolButton(C, "view-diff", "View diff", null, "Show the diff in Changes",
           () => { this.changeSel = relPath(g.root, file.path); setShared(VIEW_KEY, "changes"); })))
+        .when(pic?.ext === "svg", el => el.child(this.toolButton(C, "svg-text", "Open as text", null, "Show the SVG's text",
+          (_e, cx) => this.openFile(file.path, cx, true))))
         .child(this.toolButton(C, "copy-path", "Copy path", "copy", "Copy the full path", this.copyPath(file.path)))
         .child(this.toolButton(C, "open-file", "Open", "external", "Open in the default app",
           () => exec("open", [file.path]).catch(() => {}))));
       const lines = file.lines;
-      body.push(lines && this.editor
+      // At its own size in pixels, never bigger; a bigger one is fitted to the panel with its proportions kept.
+      if (pic) body.push(div().flex_1().min_h(0).p(16).flex().items_center().justify_center()
+        .child(pic.w ? image(pic.src).w(pic.w).h(pic.h).max_w_full().max_h_full() : image(pic.src).size_full()));
+      else body.push(lines && this.editor
         ? div().flex_1().min_h(0).py(4).on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Editor.new(this.editor).size_full())
         : this.empty(C, file.note));
     }

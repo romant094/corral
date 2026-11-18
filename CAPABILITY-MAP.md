@@ -20,3 +20,20 @@ Contracts at the boundaries:
 Build order: tg-bridge → settings-form → tg-settings → auto-update
 
 Specs: [SPEC-tg-bridge.md](SPEC-tg-bridge.md), [SPEC-settings.md](SPEC-settings.md) (settings-form, tg-settings, auto-update: one form, one spec, a part per module).
+
+## Files view additions (proposed 2026-11-18)
+
+| Module id       | Responsibility                                                                                              | Depends on    |
+|-----------------|-------------------------------------------------------------------------------------------------------------|---------------|
+| files-ignore    | Settings section "Files": a list of name patterns (`*.pyc`, `.DS_Store`) the Files tree never shows           | settings-form |
+| gitignore-marks | Files tree: names that git ignores (`.gitignore`, `.git/info/exclude`, global excludes) show dimmed          | —             |
+| image-preview   | Files: an image file shows as a picture, not as text; a file the text reader cannot read no longer hangs on "Loading…" | —      |
+
+Contracts at the boundaries:
+
+- `corral.settings` shared key gets `files: { ignore: [patterns] }`. Owned by `files-ignore`; read by the Files tree.
+- `corral.git` shared key gets `ignored: [paths]` (repo-relative, folders end with `/`). Owned by `gitignore-marks`.
+
+Build order: image-preview → gitignore-marks → files-ignore (each ships alone).
+
+Spec: [SPEC-files.md](SPEC-files.md) (one view, one spec, a part per module).

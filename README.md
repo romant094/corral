@@ -65,6 +65,12 @@ The gear right of the plan limits (or `herdr-app do corral.settings`) opens the 
 
 ![Bridge Logs](docs/images/settings-bridge-logs.png)
 
+### Files
+
+![Files settings](docs/images/settings-files.png)
+
+"Ignored files and folders": names the Files tree never shows, as WebStorm's list of the same name. `*` matches any characters and `?` one; a pattern matches a name, never a path, and a folder that matches hides with everything in it. Add with the field and Enter, remove with ×, "Reset to defaults" brings back `.DS_Store`, `Thumbs.db`, `*.pyc`, `*.pyo`, `__pycache__`, `*~`, `.hg`, `.svn` and `CVS`. Changes and Log are not filtered: they show what git sees.
+
 ### Updates
 
 ![Updates](docs/images/settings-updates.png)
@@ -112,7 +118,7 @@ When the space has several tabs, the merge button beside "+ Agent" puts every te
 
 ![Files](docs/images/files.png)
 
-The agent's folder as a tree with git marks (M, A, D), and a read-only code view with syntax colors and text selection. Right-click a row, or press ⌘⇧C / ⌥⇧C (Ctrl+Shift+C / Alt+Shift+C on Linux and Windows), to copy the relative or absolute path. Drag the divider to resize the tree; each agent keeps its own width. The worktree picker shows another worktree of the same repository.
+The agent's folder as a tree with git marks (M, A, D), and a read-only code view with syntax colors and text selection. What git ignores (`node_modules`, `dist`, `.env`…) shows dimmed; names in Settings → Files (`.DS_Store` and others by default) do not show at all. A picture (PNG, JPEG, GIF, WebP, BMP, ICO, SVG) shows as a picture, at its own size or fitted to the panel, with its size in pixels; an SVG can also be opened as text. Right-click a row, or press ⌘⇧C / ⌥⇧C (Ctrl+Shift+C / Alt+Shift+C on Linux and Windows), to copy the relative or absolute path. Drag the divider to resize the tree; each agent keeps its own width. The worktree picker shows another worktree of the same repository.
 
 ## Log
 

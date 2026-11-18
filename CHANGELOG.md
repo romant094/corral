@@ -2,6 +2,14 @@
 
 Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHub release notes.
 
+## 0.1.12
+
+- Files: pictures (PNG, JPEG, GIF, WebP, BMP, ICO, SVG) show as pictures with their size in pixels; an SVG opens as text too. A file that is not text says "Binary file." instead of "Loading…".
+- Files: what git ignores shows dimmed in the tree.
+- Settings → Files: "Ignored files and folders", names the tree never shows (`.DS_Store`, `*.pyc` and others by default), as in WebStorm.
+- Files: a click in the tree keeps its scroll.
+- Changes: a new picture that is not committed yet no longer hides the files after it.
+
 ## 0.1.11
 
 - Pane header: closing an agent's pane (× or Close pane in the ⋮ menu) asks "End this session?" when the agent has done work, as its card does; an agent that has not started closes at once.
