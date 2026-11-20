@@ -2,6 +2,10 @@
 
 Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHub release notes.
 
+## 0.1.14
+
+- Diffs (Changes, Log, file History): drag over lines, or Shift-click, to pick them; ⌘C or the "Copy N lines" button copies their text. Rows now take the whole width.
+
 ## 0.1.13
 
 - Settings → Restore: after a restart of the computer or of the terminal server, the Claude sessions that ran start again with `claude --resume`, each in its own terminal, and the empty shells of that restart close. "Restore now" does it by hand.

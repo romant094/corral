@@ -159,6 +159,7 @@ The agent's folder as a tree with git marks (M, A, D), read again every 4 second
 - **History:** the whole history, the newest 500 commits first. After a click in the list, ↑ ↓ move a commit at a time and Page Up and Page Down 20. The graph works as in IntelliJ: lanes close up to the left, each branch keeps its color, HEAD's commit is a ring, and an edge to a far parent is cut into a down arrow and an up arrow. Click an arrow to jump to the commit at its other end.
 - **Filters:** text or hash (with regex and match case), Branch, User and Paths with several values each, and Date. Paths lists the top level; type in its search to find any tracked folder or file below it (`mods/cor` finds `mods/corral`).
 - **Details:** the message, hash (click to copy), author, date, refs and the changed files as a tree. Click a file to see its diff in a fourth panel. Another commit opens with its folders open and no diff. A diff scrolls sideways to its longest line, here and in Changes.
+- **Copying from a diff** (Changes, Log, file History): press on a line and drag to pick lines, or Shift-click to stretch the pick; ⌘C (Ctrl+C) or the "Copy N lines" button in the diff's corner copies their text without the +/− signs; Esc drops the pick. A diff over 2000 lines is picked by clicks only.
 
 ![Branch menu](docs/images/branch-menu.png)
 

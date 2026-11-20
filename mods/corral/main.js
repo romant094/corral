@@ -1,4 +1,4 @@
-import { View, div, svg, image, uniform_list, PathBuilder } from "gpui-kit";
+import { View, div, svg, image, PathBuilder } from "gpui-kit";
 import { h_flex, v_flex, Input, InputState, Editor, EditorState, h_resizable, resizable_panel, v_virtual_list, VirtualListScrollHandle, ScrollHandle, TextView } from "gpui-base";
 import {
   agents, spaces, panes, props, run, setAgentOrder, theme, shared, setShared, pickFolder,
@@ -289,6 +289,8 @@ const GIT_MS = 4000;
 const ROW_H = 20;
 // The advance of one Geist Mono character at 12 px: the diff's width for its longest line.
 const DIFF_CHAR_W = 7.3;
+// Up to this many rows a diff draws each row, so lines can be picked by dragging; a longer one is a virtual list.
+const DIFF_DRAG_MAX = 2000;
 // Changed-file trees: one indent step, and how far a file sits in from its folder (past the folder's chevron).
 const TREE_STEP = 20;
 const TREE_FILE = 17;
@@ -413,8 +415,8 @@ const row2Y = () => 96 + headerTop();
 // Copy-path chords: Cmd on macOS, Ctrl elsewhere (GPUI's "cmd" is the Windows/Super key there).
 // The window is not there while the module loads, so this is asked on use.
 const copyKeys = () => (appWindow()?.platform ?? "macos") === "macos"
-  ? { relative: "cmd-shift-c", absolute: "alt-shift-c", relLabel: "⌘⇧C", absLabel: "⌥⇧C" }
-  : { relative: "ctrl-shift-c", absolute: "alt-shift-c", relLabel: "Ctrl+Shift+C", absLabel: "Alt+Shift+C" };
+  ? { relative: "cmd-shift-c", absolute: "alt-shift-c", relLabel: "⌘⇧C", absLabel: "⌥⇧C", copy: "cmd-c" }
+  : { relative: "ctrl-shift-c", absolute: "alt-shift-c", relLabel: "Ctrl+Shift+C", absLabel: "Alt+Shift+C", copy: "ctrl-c" };
 const copyText = (cx, text) => cx.write_to_clipboard(text);
 // Context and plan limits, colored as the statusline colors them: green under 50%, yellow under 80%, red from there.
 const ctxColor = (C, pct) => pct >= 80 ? C.danger : pct >= 50 ? theme().blocked : theme().done;
@@ -972,6 +974,8 @@ export default class Board extends View {
       this.treeScroll = ScrollHandle.new();
       // Files: a file's commit list keeps the keyboard and its scroll here.
       this.historyFocus = cx.focus_handle();
+      // Diffs: picked lines take ⌘C while the diff holds the keyboard.
+      this.diffFocus = cx.focus_handle();
       this.historyScroll = ScrollHandle.new();
       this.refSearch = InputState.new({ placeholder: "Branch or tag" });
       this.refSearch.on("change", (_e, cx) => cx.notify());
@@ -982,6 +986,7 @@ export default class Board extends View {
       cx.bind_keys([
         { keystroke: keys.relative, action: "corral-copy-relative", context: "CorralPaths" },
         { keystroke: keys.absolute, action: "corral-copy-absolute", context: "CorralPaths" },
+        { keystroke: keys.copy, action: "corral-copy-lines", context: "CorralDiff" },
       ]);
       // Updates: at start and an hour after the last check, unless the person turned it off. The time
       // is the last check's, so it holds across reloads, and `herdr-app do corral.updates-due` can move it to see a
@@ -4073,15 +4078,58 @@ export default class Board extends View {
     // The rows are as wide as the longest line, and the list scrolls sideways to it: a tab counts as 4 columns.
     const cols = lines.reduce((n, d) => Math.max(n, d.text.length + 3 * (d.text.match(/\t/g)?.length ?? 0)), 0);
     const width = 40 + 40 + 16 + Math.ceil(cols * DIFF_CHAR_W) + 14;
-    return div().id(`${id}-x`).flex_1().min_h(0).overflow_x_scrollbar()
-      .child(v_flex().h_full().min_w_full().w(width)
-        .child(uniform_list(id, lines.length, i => String(i), (range) => lines.slice(range.start, range.end).map(d => {
-          const k = kinds[d.kind];
-          return h_flex().h(ROW_H).bg(k.bg).font_family("Geist Mono").text_size(12)
-            .child(gutter(d.old)).child(gutter(d.now))
-            .child(div().w(16).flex_none().text_center().text_color(k.color).child(k.sign))
-            .child(div().flex_1().pr(14).whitespace_nowrap().text_color(k.color).child(d.text.replace(/\t/g, "    ") || " "));
-        })).flex_1().py(6)));
+    // Picked lines: a press starts the pick, dragging over rows or Shift and a click stretches it; ⌘C copies their text.
+    const pick = this.diffPick?.lines === lines ? this.diffPick : null;
+    const [lo, hi] = pick ? [Math.min(pick.from, pick.to), Math.max(pick.from, pick.to)] : [-1, -1];
+    const press = (i, shift, cx) => {
+      this.diffPick = shift && pick ? { ...pick, to: i } : { lines, from: i, to: i };
+      this.diffDrag = true;
+      cx.notify();
+    };
+    const copy = (cx) => {
+      if (!pick) return;
+      cx.write_to_clipboard(lines.slice(lo, hi + 1).map(d => d.text).join("\n"));
+      notify({ title: `Copied ${hi - lo + 1} line${hi === lo ? "" : "s"}`, level: "info", timeout: 2000 });
+    };
+    const row = (d, i) => {
+      const k = kinds[d.kind];
+      return h_flex().w_full().h(ROW_H).flex_none().bg(i >= lo && i <= hi ? C.sel : k.bg).font_family("Geist Mono").text_size(12)
+        .child(gutter(d.old)).child(gutter(d.now))
+        .child(div().w(16).flex_none().text_center().text_color(k.color).child(k.sign))
+        .child(div().flex_1().pr(14).whitespace_nowrap().text_color(k.color).child(d.text.replace(/\t/g, "    ") || " "));
+    };
+    // Rows of their own, so each can take the drag; a very long diff stays a virtual list, picked by clicks only.
+    const list = lines.length <= DIFF_DRAG_MAX
+      ? v_flex().id(id).flex_1().min_h(0).overflow_y_scrollbar().py(6)
+        .children(lines.map((d, i) => row(d, i).id(`${id}-${i}`)
+          .on_mouse_down("left", (e, cx) => press(i, !!e.modifiers?.shift, cx))
+          .on_mouse_move((_e, cx) => {
+            if (!this.diffDrag || !pick || pick.to === i) return;
+            this.diffPick = { ...pick, to: i };
+            cx.notify();
+          })))
+      : v_virtual_list(id, lines.length, ROW_H, i => String(i), (range) => lines.slice(range.start, range.end).map((d, j) => row(d, range.start + j)))
+        .flex_1().py(6).on_item_click((key, cx) => press(Number(key), this.diffShift, cx));
+    // The keyboard comes to the diff when the press ends: the view around takes it on the press itself.
+    const body = div().id(`${id}-x`).size_full().overflow_x_scrollbar()
+      .on_mouse_down("left", (e) => { this.diffShift = !!e.modifiers?.shift; })
+      .on_mouse_up("left", () => { this.diffDrag = false; this.diffFocus?.focus(); })
+      .child(v_flex().h_full().min_w_full().w(width).child(list));
+    return div().flex_1().min_h(0).relative()
+      .when(!!this.diffFocus, el => el.track_focus(this.diffFocus))
+      .key_context("CorralDiff")
+      .on_action("corral-copy-lines", (_e, cx) => copy(cx))
+      .on_key_down((e, cx) => { if (pick && e.keystroke === "escape") { this.diffPick = null; cx.notify(); } })
+      .child(body)
+      // While lines are picked: a button for the copy, for when the keyboard is elsewhere.
+      .when(!!pick, el => el.child(h_flex().id(`${id}-copy`).absolute().top(8).right(14).h(26).px(10).gap(6).items_center()
+        .rounded(6).bg(C.bar).border(1).border_color(C.input).cursor_pointer().text_size(12).text_color(C.ink)
+        .hover(s => s.border_color(C.accent))
+        .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+        .on_click((_e, cx) => { cx.stop_propagation(); copy(cx); })
+        .child(svg(`mods/${MOD}/icons/copy.svg`).size(12).text_color(C.muted))
+        .child(`Copy ${hi - lo + 1} line${hi === lo ? "" : "s"}`)
+        .child(div().text_color(C.muted).child(copyKeys().copy === "cmd-c" ? "⌘C" : "Ctrl+C"))));
   }
   // A dropdown notes when it closed, for openDropdown.
   async close() {
