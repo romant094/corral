@@ -54,6 +54,7 @@ const namePattern = (p) => new RegExp("^" + p.replace(/[.+^${}()|[\]\\]/g, "\\$&
 const SECTIONS = [
   { id: "telegram", title: "Telegram", badge: () => false, render: "telegramSection" },
   { id: "files", title: "Files", badge: () => false, render: "filesSection" },
+  { id: "restore", title: "Restore", badge: () => false, render: "restoreSection" },
   { id: "updates", title: "Updates", badge: () => updateReady(), render: "updatesSection" },
 ];
 // Telegram: the bridge (telegram/, installed by install.sh) does all talking to Telegram and launchd;
@@ -104,6 +105,98 @@ const bridgeJson = async (args, timeout = 60000) => {
   }
 };
 const parseJson = (text) => { try { return text ? JSON.parse(text) : null; } catch { return null; } };
+// Restore: the Claude sessions that run, kept as they change, so a restart of the computer or of Herdr can start them
+// again with `claude --resume`. { agents: [{ sid, folder, space, spaceFolder, gone? }] }
+const RESTORE_KEY = "corral.restore";
+// The list as it was when this copy started: what Restore now and the restore at start use.
+const RESTORE_LAST_KEY = "corral.restoreLast";
+// The pid of the terminal server the restore at start last ran for.
+const RESTORE_DONE_KEY = "corral.restoreDone";
+// A session that ends stays in the list this long: Herdr quitting ends every terminal, and that must not empty it.
+const RESTORE_GONE_MS = 30000;
+// How long after the start the restore waits: the running sessions show in the statusline data by then.
+const RESTORE_WAIT_MS = 10000;
+// After a fresh terminal server: no session can run, only Herdr's own start is waited for.
+const RESTORE_FRESH_MS = 0;
+// The first entry of each session: a list kept by an older build can name one session more than once.
+const uniqueSessions = (list) => (list ?? []).filter((e, i, all) => all.findIndex(x => x.sid === e.sid) === i);
+const restoreAuto = () => settingsState().restore?.auto ?? true;
+const setRestoreAuto = (auto) => setSettings({ restore: { ...settingsState().restore, auto } });
+// Starts each saved session that does not run now. A stopped terminal server keeps each terminal and its place, with a
+// shell in place of the program: the session starts in that shell. Else it goes to a new tab of its project's space
+// (a new space when none is open). Answers how many it started.
+// The sessions running now: from the statusline data, and from each terminal's command (`claude --resume <id>`),
+// which is right at once. `fresh`: the terminal server just started; the statusline data may still be the last run's.
+const runningSessions = async (fresh) => {
+  const sids = new Set(fresh ? [] : Object.values(live().sessions).map(s => s.sid).filter(Boolean));
+  // Every live terminal of the server: panes() has only the shown space's.
+  const all = parseJson((await hc(["ls"]).catch(() => null))?.stdout)?.terminals ?? [];
+  for (const { address } of all) {
+    const t = parseJson((await hc(["get", address, "--json"]).catch(() => null))?.stdout);
+    const argv = t?.foreground?.argv ?? [];
+    const i = argv.indexOf("--resume");
+    if (i >= 0 && argv[i + 1]) sids.add(argv[i + 1]);
+  }
+  return sids;
+};
+const restoreAgents = async (cx, list, used = new Set(), fresh = false) => {
+  const running = await runningSessions(fresh);
+  const quote = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
+  let started = 0;
+  for (const e of list ?? []) {
+    if (!e.sid || running.has(e.sid)) continue;
+    running.add(e.sid);
+    if (e.terminal && paneOf(e.terminal) && !agents().some(a => a.address === e.terminal)) {
+      const sent = await hc(["send", e.terminal, `cd ${quote(e.folder)} && claude --resume ${e.sid}`]).catch(() => null);
+      if (sent && (sent.code ?? 0) === 0) { used.add(e.terminal); started++; continue; }
+    }
+    const argv = ["claude", "--resume", e.sid];
+    const find = () => spaces().find(s => !s.machine && (e.spaceFolder ? s.folder === e.spaceFolder : s.name === e.space));
+    const space = find();
+    if (space) run("tab.new", { space: space.id, folder: e.folder, name: "claude", argv });
+    else {
+      run("space.new", { name: e.space || baseName(e.folder), folder: e.spaceFolder || e.folder, tab: "claude", argv });
+      // The next session of this space opens a tab in it, not a second space.
+      for (let i = 0; i < 40 && !find(); i++) await cx.sleep(50);
+    }
+    started++;
+  }
+  return started;
+};
+// A terminal server that started a moment ago gave every kept terminal a shell in place of its lost program.
+// Those shells, idle and as old as the server, close; the ones a session went back into (`used`) stay.
+// Answers how many it closed. A server that ran before Herdr started keeps the person's shells as they are.
+const RECOVERED_MS = 300000;
+const SHELLS = new Set(["zsh", "bash", "fish", "sh"]);
+const closeRecoveredShells = async (used) => {
+  const status = parseJson((await hc(["server", "status"]).catch(() => null))?.stdout);
+  const uptime = status?.uptime_ms;
+  if (uptime == null || uptime > RECOVERED_MS) return 0;
+  const started = Date.now() - uptime;
+  let closed = 0;
+  // Panes closed per space so far: panes() may still list them.
+  const gone = new Map();
+  for (const p of panes()) {
+    if (!p.terminal || used.has(p.terminal) || agents().some(a => a.address === p.terminal)) continue;
+    // The last pane of a space stays: closing it would close the space, and Herdr asks about that.
+    const space = spaceOfTab(p.tab);
+    if (!space || panes().filter(q => space.tabs.some(t => t.id === q.tab)).length - (gone.get(space.id) ?? 0) <= 1) continue;
+    const t = parseJson((await hc(["get", p.terminal, "--json"]).catch(() => null))?.stdout);
+    // Idle: the shell itself is in the foreground. As old as the server: started in its first half minute.
+    const idle = t && t.foreground?.pid === t.pid && SHELLS.has(t.foreground?.name);
+    if (!idle || !t.keep || t.created_ms > started + 30000) continue;
+    // How long the shell has run, as ps prints it: [[dd-]hh:]mm:ss.
+    const ps = await exec("ps", ["-o", "etime=", "-p", String(t.pid)]).catch(() => null);
+    const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(ps?.stdout?.trim() ?? "");
+    if (!m) continue;
+    const ran = ((((Number(m[1] ?? 0) * 24) + Number(m[2] ?? 0)) * 60 + Number(m[3])) * 60 + Number(m[4])) * 1000;
+    if (Math.abs(Date.now() - ran - started) > 30000) continue;
+    run("pane.close", { pane: p.pane });
+    gone.set(space.id, (gone.get(space.id) ?? 0) + 1);
+    closed++;
+  }
+  return closed;
+};
 // Updates: GitHub's latest release (never a draft or a pre-release) against VERSION.
 const REPO = "romant094/corral";
 // How often the automatic check runs: an hour, as VS Code and Zed do.
@@ -189,9 +282,13 @@ const setChangeTree = (on) => {
 const ATTENTION = ["blocked", "done"];
 const RELOAD_MS = 3000;
 const PID_RETRY_MS = 10000;
+// No session file this long while a Claude agent works: the limits are shown as stale.
+const LIMITS_STALE_MS = 600000;
 const SYNC_MS = 250;
 const GIT_MS = 4000;
 const ROW_H = 20;
+// The advance of one Geist Mono character at 12 px: the diff's width for its longest line.
+const DIFF_CHAR_W = 7.3;
 // Changed-file trees: one indent step, and how far a file sits in from its folder (past the folder's chevron).
 const TREE_STEP = 20;
 const TREE_FILE = 17;
@@ -202,6 +299,10 @@ const LOG_FIRST = 500;
 const LOG_ROW = 26;
 const LANE_W = 14;
 const LOG_MS = 10000;
+// How many commits Page Up and Page Down move the selection.
+const LOG_PAGE = 20;
+// Files: the most room a file's commit list takes above its diff.
+const HISTORY_H = 220;
 // Log filters, set from the toolbar and its popups: a ref, authors, a start date, paths, and how the text search matches.
 const LOG_FILTER_KEY = "corral.logFilter";
 // refs, users and paths take any number of values; since is one start date.
@@ -250,7 +351,7 @@ const gitBusy = async (name, label, work) => {
 // Dropdowns open from a button. A press on that button while its dropdown is open closes the dropdown
 // as a press outside it, and the click that follows would open it again: within this time it doesn't.
 const POPUP_REOPEN_MS = 400;
-const DROPDOWNS = new Set(["panemenu", "spaces", "projectfilter", "statusfilter", "worktrees", "agents", "logfilter"]);
+const DROPDOWNS = new Set(["panemenu", "spaces", "projectfilter", "statusfilter", "worktrees", "agents", "agentprojects", "logfilter"]);
 const dropdownKey = (p) => `${p?.role}:${p?.field ?? ""}`;
 const openDropdown = (spec) => {
   const closed = shared(POPUP_CLOSED_KEY);
@@ -355,6 +456,14 @@ const viewFolder = () => {
   return a && wt?.address === a.address ? wt.path : agentFolder(a);
 };
 const agentProjects = () => projectRows(agents()).filter(r => r.agents.length);
+// The project of the target agent, and the agents the agent picker lists: that project's, or all without one.
+const targetProject = () => {
+  const a = targetAgent();
+  return a ? agentProjects().find(r => r.agents.some(x => x.address === a.address)) ?? null : null;
+};
+const projectAgents = () => targetProject()?.agents ?? agents();
+// An explicit height for the project picker's list: without one its scroll list (flex_1) collapses to nothing.
+const agentProjectsHeight = () => Math.min(POPUP_MAX, 40 + Math.max(1, agentProjects().length) * (PROJECT_ROW_H + 2) + 12);
 const checkListHeight = (n) => Math.min(POPUP_MAX, 60 + (n + 1) * 46);
 // The board shows the columns of the picked statuses only.
 const shownStates = () => states().filter(s => !filter().statuses || filter().statuses.includes(s.key));
@@ -421,6 +530,9 @@ const sortAgents = () => {
   }
 };
 const paneOf = (terminal) => panes().find(p => p.terminal === terminal);
+// Claude again in the agent's place, on the same session (`claude --resume <id>`), or a new one before its first reply.
+// The pane header and the card that ask for it go with the old pane, so the bar copy does the work.
+const restartAgent = (terminal) => queuePaneJob({ kind: "restart", terminal, sid: live().sessions[terminal]?.sid ?? "" });
 const spaceOfTab = (tab) => spaces().find(s => s.tabs.some(t => t.id === tab));
 const removeProject = (folder) => setShared(PROJECTS_KEY, projects().filter(p => p.folder !== folder));
 // Reuse the project's space when one is open there; otherwise start a space for it.
@@ -446,13 +558,17 @@ const summarize = (d) => ({
   title: d.session_name ?? "",
 });
 // five_hour and seven_day are plan-wide; any other window (a per-model one, e.g. Fable) is grouped by model.
-const limitsOf = (rl) => Object.entries(rl ?? {}).filter(([, v]) => v && v.used_percentage != null).map(([key, v]) => ({
-  key,
-  group: LIMIT_LABELS[key] ? "" : (key.match(/fable|opus|sonnet|haiku/i)?.[0] ?? key),
-  label: LIMIT_LABELS[key] ?? (key.includes("seven_day") ? "7d" : key.includes("five_hour") ? "5h" : key),
-  pct: Math.round(v.used_percentage),
-  reset: resetText(v.resets_at),
-}));
+// A window whose reset time has passed is empty again, whatever the last session file says.
+const limitsOf = (rl) => Object.entries(rl ?? {}).filter(([, v]) => v && v.used_percentage != null).map(([key, v]) => {
+  const over = !!v.resets_at && v.resets_at * 1000 <= Date.now();
+  return {
+    key,
+    group: LIMIT_LABELS[key] ? "" : (key.match(/fable|opus|sonnet|haiku/i)?.[0] ?? key),
+    label: LIMIT_LABELS[key] ?? (key.includes("seven_day") ? "7d" : key.includes("five_hour") ? "5h" : key),
+    pct: over ? 0 : Math.round(v.used_percentage),
+    reset: over ? "" : resetText(v.resets_at),
+  };
+});
 
 const dot = (color, size = 7) => div().size(size).rounded(size).bg(color).flex_none();
 const icon = (C, program, size = 18) => program?.icon
@@ -480,12 +596,14 @@ const parseDiff = (text) => {
 // Runs a git command that changes the repository. A failure shows its last lines as an error;
 // answers the result so a dialog can show it too.
 // Git never waits for a password here: with no terminal to type it in, it fails at once and says why.
-const gitRun = async (root, args, done) => {
+// `quiet`: no toast at all, for a command the person did not ask for.
+const gitRun = async (root, args, done, quiet = false) => {
   const r = await exec("env", ["GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=15", "git", ...args],
     { cwd: root, timeout: 120000 }).catch(e => ({ code: 1, stdout: "", stderr: String(e) }));
   setShared(GIT_BUMP_KEY, Date.now());
   const message = (r.stderr || r.stdout || "").trim().split("\n").slice(-4).join("\n");
   // Both outcomes toast at the "info" level, the one the toast mod is seen to show; a failure stays longer.
+  if (quiet) return { ok: r.code === 0, message };
   if (r.code !== 0) notify({ title: `git ${args[0]} failed`, body: message || undefined, level: "info", timeout: 8000 });
   // A success says what was done, with git's last line under it ("main -> main", "Fast-forward"), when there is one.
   else if (done) notify({ title: done, body: message.split("\n").pop() || undefined, level: "info", timeout: 3000 });
@@ -817,14 +935,22 @@ export default class Board extends View {
         this.filterSearch.on("change", (_e, cx) => cx.notify());
         this.filterSearch.focus();
       }
-      // Paths lists the repository's top level.
+      // Paths lists the repository's top level; a search finds any tracked file or folder below it.
       if (p.field === "paths") cx.spawn(async (cx) => {
+        const root = gitState().root;
         try {
-          const entries = await fs.readdir(gitState().root, { withFileTypes: true });
+          const entries = await fs.readdir(root, { withFileTypes: true });
           this.pathEntries = entries.filter(e => e.name !== ".git")
             .map(e => ({ name: e.name, dir: typeof e.isDirectory === "function" ? e.isDirectory() : !!e.isDirectory }))
             .sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
         } catch { this.pathEntries = []; }
+        cx.notify();
+        const r = await exec("git", ["ls-files", "-z"], { cwd: root, timeout: 20000 }).catch(() => null);
+        const files = (r?.code === 0 ? r.stdout.split("\0") : []).filter(Boolean);
+        const dirs = new Set();
+        for (const f of files) for (let i = f.indexOf("/"); i > 0; i = f.indexOf("/", i + 1)) dirs.add(f.slice(0, i));
+        this.pathAll = [...[...dirs].map(name => ({ name, dir: true })), ...files.map(name => ({ name, dir: false }))]
+          .sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
         cx.notify();
       });
     }
@@ -844,6 +970,9 @@ export default class Board extends View {
       this.treeFocus = cx.focus_handle();
       // The Files tree keeps its scroll here, not in the element: a click redraws the tree and must not move it.
       this.treeScroll = ScrollHandle.new();
+      // Files: a file's commit list keeps the keyboard and its scroll here.
+      this.historyFocus = cx.focus_handle();
+      this.historyScroll = ScrollHandle.new();
       this.refSearch = InputState.new({ placeholder: "Branch or tag" });
       this.refSearch.on("change", (_e, cx) => cx.notify());
       this.logSearch = InputState.new({ placeholder: "Text or hash" });
@@ -897,6 +1026,41 @@ export default class Board extends View {
       this.liveText = "";
       cx.spawn(async () => this.reload());
       cx.timer.every(RELOAD_MS, (cx) => { cx.spawn(async () => this.reload()); });
+      // The sessions saved by the last run; the list is kept again from RESTORE_WAIT_MS on, after the restore.
+      if (!checking()) {
+        setShared(RESTORE_LAST_KEY, { agents: uniqueSessions(shared(RESTORE_KEY)?.agents) });
+        cx.spawn(async (cx) => {
+          // After a restart of the terminal server the saved agents are gone: say at once that they come back.
+          const saved = shared(RESTORE_LAST_KEY)?.agents ?? [];
+          const status = parseJson((await hc(["server", "status"]).catch(() => null))?.stdout);
+          const uptime = status?.uptime_ms;
+          const fresh = uptime != null && uptime <= RECOVERED_MS;
+          // Once per run of the terminal server: a reload of the mod (an install, an update) must not restore again.
+          const server = status?.pid ?? null;
+          if (server != null && shared(RESTORE_DONE_KEY) === server) { this.restoreReady = true; return; }
+          if (server != null) setShared(RESTORE_DONE_KEY, server);
+          if (restoreAuto() && saved.length && fresh) {
+            const n = new Set(saved.map(e => e.spaceFolder || e.folder)).size;
+            notify({ title: "Restoring the last session…",
+              body: `${saved.length} agent${saved.length === 1 ? "" : "s"} in ${n} project${n === 1 ? "" : "s"} start again.`,
+              level: "info", timeout: 5000 });
+          }
+          // A fresh server ran no agent before: nothing to wait for but Herdr's panes. Else the running sessions
+          // must show in the statusline data first, so that none starts twice.
+          // Herdr asks about each space at the start of a fresh server; the restore waits a few seconds past that.
+          if (fresh) { for (let i = 0; i < 100 && !panes().length; i++) await cx.sleep(50); if (RESTORE_FRESH_MS) await cx.sleep(RESTORE_FRESH_MS); }
+          else await cx.sleep(RESTORE_WAIT_MS);
+          if (restoreAuto()) {
+            const used = new Set();
+            const n = await restoreAgents(cx, shared(RESTORE_LAST_KEY)?.agents, used, fresh);
+            const closed = await closeRecoveredShells(used);
+            if (n || closed) notify({ title: `Restored ${n} agent${n === 1 ? "" : "s"}`,
+              body: `Their sessions go on with claude --resume.${closed ? ` Closed ${closed} empty terminal${closed === 1 ? "" : "s"}.` : ""}`,
+              level: "info", timeout: 6000 });
+          }
+          this.restoreReady = true;
+        });
+      }
       // Files and Changes: the tree, the open file and the diff follow the target agent's folder.
       this.folder = null;
       this.expanded = new Set();
@@ -941,6 +1105,7 @@ export default class Board extends View {
       this.dirs = {};
       this.dirError = null;
       this.file = null;
+      this.history = null;
       this.fileSeq = (this.fileSeq ?? 0) + 1;
       this.treeSel = null;
       this.changeSel = null;
@@ -953,10 +1118,16 @@ export default class Board extends View {
     if (Date.now() - this.gitAt >= GIT_MS && !this.gitBusy) {
       this.gitAt = Date.now();
       this.gitBusy = true;
+      if (view() === "files" && folder) this.refreshDirs(cx);
       cx.spawn(async () => { try { await this.refreshGit(folder); } finally { this.gitBusy = false; } });
     }
     if (view() === "changes") this.loadDiff(cx);
     if (view() === "log") this.loadLog(cx);
+    // Opening Log (or another repository in it) fetches all remotes once, as the fetch button does.
+    const g = gitState();
+    const logRoot = view() === "log" && g.folder === this.folder ? g.root : null;
+    if (logRoot && this.logFetched !== logRoot) { this.logFetched = logRoot; this.fetchAll(logRoot, cx, true); }
+    if (view() !== "log") this.logFetched = null;
     this.findNewAgents();
   }
   // A new agent whose folder is in a saved project (not the home folder) but runs in another space
@@ -1020,6 +1191,7 @@ export default class Board extends View {
         if (job.kind === "merge") await this.mergeTabs(cx, job.space);
         if (job.kind === "split") await this.splitTab(cx, job.tab);
         if (job.kind === "home") await this.homeAgent(cx, job);
+        if (job.kind === "restart") await this.restartAgent(cx, job);
       } finally {
         setShared(PANE_JOBS_KEY, (shared(PANE_JOBS_KEY) ?? []).filter(j => j.id !== job.id));
         this.paneJobBusy = false;
@@ -1088,6 +1260,23 @@ export default class Board extends View {
     if (ok) notify({ title: `Agent moved to ${name}`,
       body: `${loose ? "Its folder is in no saved project." : "It started outside its project's space."} Click to go to it.`,
       level: "info", timeout: 6000, action: { name: "agent.focus", args: { terminal } } });
+  }
+  // The new Claude starts right of the old one, in its folder; then the old pane closes and the new one takes its room.
+  // An agent the views followed is followed in its new terminal.
+  async restartAgent(cx, { terminal, sid }) {
+    const from = paneOf(terminal);
+    if (!from) return;
+    const before = new Set(panes().map(p => p.pane));
+    run("pane.split", { pane: from.pane, direction: "right", argv: sid ? ["claude", "--resume", sid] : ["claude"] });
+    const fresh = () => panes().find(p => !before.has(p.pane) && p.tab === from.tab && p.terminal);
+    if (!await this.settle(cx, () => !!fresh())) {
+      notify({ title: "Couldn't restart the agent", body: "The new terminal did not open.", level: "info", timeout: 6000 });
+      return;
+    }
+    const next = fresh();
+    run("pane.close", { pane: from.pane });
+    if (shared(TARGET_KEY)?.address === terminal) setShared(TARGET_KEY, { address: next.terminal, focus: next.terminal });
+    run("pane.focus", { pane: next.pane });
   }
   // Every terminal of the space's other tabs, side by side to the right in its shown tab.
   async mergeTabs(cx, spaceId) {
@@ -1179,6 +1368,26 @@ export default class Board extends View {
     if (this.dirs[path]) return;
     this.dirs[path] = [];
     cx.spawn(async (cx) => {
+      this.dirs[path] = await this.readDir(path);
+      cx.notify();
+    });
+  }
+  // Files: the shown folders read again, so files made or removed since show up. Only a changed folder redraws.
+  refreshDirs(cx) {
+    const shown = Object.keys(this.dirs).filter(p => p === this.folder || this.expanded.has(p));
+    cx.spawn(async (cx) => {
+      let changed = false;
+      for (const path of shown) {
+        const list = await this.readDir(path);
+        if (!this.dirs[path] || JSON.stringify(list) === JSON.stringify(this.dirs[path])) continue;
+        this.dirs[path] = list;
+        changed = true;
+      }
+      if (changed) cx.notify();
+    });
+  }
+  async readDir(path) {
+    {
       let list = null;
       try {
         const entries = await fs.readdir(path, { withFileTypes: true });
@@ -1192,9 +1401,8 @@ export default class Board extends View {
           else this.dirError = r.stderr.trim() || `ls exited with ${r.code}`;
         } catch (err) { this.dirError = String(err); }
       }
-      this.dirs[path] = (list ?? []).sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
-      cx.notify();
-    });
+      return (list ?? []).sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
+    }
   }
   toggleDir(path, cx) {
     if (this.expanded.has(path)) this.expanded.delete(path);
@@ -1204,6 +1412,7 @@ export default class Board extends View {
   // `asText`: an SVG's text instead of its picture.
   openFile(path, cx, asText = false) {
     this.treeSel = path;
+    if (this.history?.path !== path) this.history = null;
     this.editor?.release();
     this.editor = null;
     // Each open has its own number: a late read of an earlier open (the same file as text or as a picture) is dropped.
@@ -1324,7 +1533,13 @@ export default class Board extends View {
       // A new session has no rate limits until its first reply; take the newest one that has them.
       const latest = Object.values(byPid).filter(d => d.rate_limits)
         .sort((x, y) => (y.herdr_written_at ?? 0) - (x.herdr_written_at ?? 0))[0];
-      const next = { sessions, limits: latest ? limitsOf(latest.rate_limits) : [] };
+      // A Claude agent works, yet no session file was written for a while: the statusline hook does not run
+      // (statusLine in ~/.claude/settings.json points elsewhere), and the limits are old.
+      const newest = Math.max(0, ...Object.values(byPid).map(d => d.herdr_written_at ?? 0)) * 1000;
+      const working = agents().some(a => a.status === "working" && /claude/i.test(a.program?.name ?? ""));
+      const stale = working && now - newest > LIMITS_STALE_MS;
+      const next = { sessions, limits: latest ? limitsOf(latest.rate_limits) : [], stale, staleSince: stale ? newest : 0 };
+      if (this.restoreReady) this.keepSessions(sessions, now);
       const text = JSON.stringify(next);
       if (text !== this.liveText) {
         this.liveText = text;
@@ -1333,6 +1548,21 @@ export default class Board extends View {
     } finally {
       this.loading = false;
     }
+  }
+  // The restore list: the Claude sessions running now, and for RESTORE_GONE_MS the ones that ended.
+  keepSessions(sessions, now) {
+    const saved = shared(RESTORE_KEY)?.agents ?? [];
+    let running = agents().filter(a => sessions[a.address]?.sid).map(a => {
+      const space = spaces().find(s => s.id === a.space);
+      return { sid: sessions[a.address].sid, folder: sessions[a.address].folder, space: space?.name ?? "", spaceFolder: space?.folder ?? "",
+        terminal: a.address };
+    });
+    // One entry per session, even when two terminals run it.
+    const sids = new Set();
+    running = running.filter(e => !sids.has(e.sid) && sids.add(e.sid));
+    const ended = saved.filter((e, i) => !sids.has(e.sid) && saved.findIndex(x => x.sid === e.sid) === i).map(e => e.gone ? e : { ...e, gone: now }).filter(e => now - e.gone < RESTORE_GONE_MS);
+    const next = { agents: [...running, ...ended] };
+    if (JSON.stringify(next) !== JSON.stringify(shared(RESTORE_KEY))) setShared(RESTORE_KEY, next);
   }
   // Drag and drop inside this copy's block: a press arms it, a 5px move starts it, the release drops it.
   // Herdr gives mods no drag events across blocks, so drop zones are drawn in the block itself.
@@ -1431,6 +1661,7 @@ export default class Board extends View {
             }))
           .child(sid))
         .child(div().flex_1())
+        .child(iconButton(C, `restart-${a.address}`, "Restart Claude in the same session", "restart", () => restartAgent(a.address)))
         .child(xButton(C, `close-${a.address}`, "Close session", (_e, cx) => this.closeSession(a, info, cx))))
       .child(div().text_size(13).font_medium().text_color(C.ink).truncate().child(info?.title || a.tab_name))
       .when(confirming, el => el.child(h_flex().gap(8).items_center().px(8).py(6).rounded(6).bg(wash(C.danger, C))
@@ -1469,7 +1700,7 @@ export default class Board extends View {
       .child(h_flex().items_center().gap(12)
         .child(this.viewSwitch(C))
         .child(vbar(C, 22))
-        .when(v !== "board", el => el.child(this.agentPicker(C)))
+        .when(v !== "board", el => el.child(this.projectPicker(C)).child(this.agentPicker(C)))
         .when(v === "board", el => el.child(h_flex().id("space-picker").h(34).pl(12).pr(10).gap(8).items_center().rounded(7).flex_none()
           .bg(C.bg).border(1).border_color(C.line).cursor_pointer().hover(s => s.border_color(C.input))
           .on_click(() => openDropdown({ mod: MOD, props: { role: "spaces" }, kind: "popup", width: 460,
@@ -1478,6 +1709,7 @@ export default class Board extends View {
           .child(div().text_size(14).font_semibold().text_color(C.ink).child(active?.name ?? "No space"))
           .child(div().text_size(11).text_color(C.muted).child("▾"))))
         .child(div().flex_1())
+        .when(!!live().stale, el => el.child(this.staleLimits(C)))
         .when(plan.length > 0, el => el.child(limitPill(C, plan, "", C.ink, C.line)))
         .children(groups.map(g => limitPill(C, limits.filter(l => l.group === g),
           g[0].toUpperCase() + g.slice(1), C.fable, wash(C.fable, C))))
@@ -1502,12 +1734,23 @@ export default class Board extends View {
       .when(v === "changes", el => el.child(this.changesBar(C)))
       .when(v === "log", el => el.child(this.logBar(C)));
   }
+  // Left of the limit pills while their data is old: the statusline hook has not written for a while.
+  staleLimits(C) {
+    const since = live().staleSince;
+    const mins = since ? Math.floor((Date.now() - since) / 60000) : null;
+    return h_flex().id("limits-stale").h(34).px(12).gap(6).items_center().rounded(7).flex_none()
+      .bg(wash(theme().blocked, C)).border(1).border_color(theme().blocked)
+      .text_size(12).font_semibold().text_color(theme().blocked)
+      .tooltip(`${mins != null ? `No status line data for ${mins} min` : "No status line data"} while agents work. `
+        + "Check that statusLine in ~/.claude/settings.json runs corral-statusline.py.")
+      .child("Limits stale");
+  }
   // The gear right of the limit pills, as tall as they are; a dot when a section wants the person.
   gearButton(C) {
     const flagged = SECTIONS.some(s => s.badge());
     return div().id("settings").size(34).flex().flex_none().items_center().justify_center().relative().rounded(7)
       .bg(C.bg).border(1).border_color(C.line).text_color(C.muted).cursor_pointer()
-      .hover(s => s.border_color(C.input).text_color(C.ink)).tooltip("Settings")
+      .hover(s => s.border_color(C.input).text_color(C.ink)).tooltip("Corral settings")
       .on_click(() => openSettings())
       .child(svg(`mods/${MOD}/icons/settings.svg`).size(16))
       .when(flagged, el => el.child(div().absolute().top(5).right(5).child(dot(theme().blocked, 8))));
@@ -1522,7 +1765,7 @@ export default class Board extends View {
       .on_click((_e, cx) => { this.bridgeLog = null; cx.notify(); }).child("←");
     return h_flex().size_full().bg(C.bg).text_color(C.ink)
       .child(v_flex().w(180).h_full().flex_none().p(10).gap(2).bg(C.bar)
-        .child(div().px(10).pt(6).pb(10).text_size(14).font_semibold().child("Settings"))
+        .child(div().px(10).pt(6).pb(10).text_size(14).font_semibold().child("Corral settings"))
         .children(SECTIONS.map(s => h_flex().id(`section-${s.id}`).h(32).px(10).gap(8).items_center().rounded(6)
           .text_size(13).cursor_pointer().when(s === current, el => el.bg(C.selected))
           .text_color(s === current ? C.ink : C.muted).hover(st => st.bg(C.selected))
@@ -2073,6 +2316,31 @@ export default class Board extends View {
           .hover(s => s.underline()).child("Reset to defaults").on_click((_e, cx) => { this.ignoreError = null; setIgnorePatterns(IGNORE_DEFAULTS); cx.notify(); }))))
       .when(!!this.ignoreError, el => el.child(div().text_size(12).text_color(C.danger).child(this.ignoreError)));
   }
+  restoreSection(C) {
+    const auto = restoreAuto();
+    const last = uniqueSessions(shared(RESTORE_LAST_KEY)?.agents);
+    const running = new Set(Object.values(live().sessions).map(s => s.sid).filter(Boolean));
+    const waiting = last.filter(e => !running.has(e.sid));
+    const ui = (this.restoreUi ??= { busy: false, done: null });
+    return v_flex().gap(14)
+      .child(div().text_size(12).text_color(C.muted)
+        .child("Corral keeps a list of the Claude sessions that run. After a restart of the computer or of Herdr, each one starts again with claude --resume, in a tab of its project's space."))
+      .child(h_flex().id("restore-auto").gap(10).items_center().cursor_pointer()
+        .on_click(() => setRestoreAuto(!auto))
+        .child(checkBox(C, auto))
+        .child(div().text_size(13).child("Restore agents when Corral starts"))
+        .child(div().text_size(12).text_color(C.muted).child(auto ? "after a restart of the terminal server" : "off: use Restore now")))
+      .child(h_flex().gap(10).items_center()
+        .child(settingsButton(C, "restore-now", ui.busy ? "Restoring…" : "Restore now", false, (_e, cx) => {
+          if (ui.busy) return;
+          ui.busy = true;
+          cx.notify();
+          cx.spawn(async (cx) => { ui.done = await restoreAgents(cx, last); ui.busy = false; cx.notify(); });
+        }))
+        .child(div().text_size(12).text_color(C.muted).child(ui.done != null
+          ? `Started ${ui.done} agent${ui.done === 1 ? "" : "s"}.`
+          : `${last.length} session${last.length === 1 ? "" : "s"} saved at the last start, ${waiting.length} not running.`)));
+  }
   updatesSection(C) {
     const u = updatesState();
     const ui = (this.updUi ??= { busy: null, linked: undefined });
@@ -2367,7 +2635,9 @@ export default class Board extends View {
     if (k >= 0) this.logScroll?.scroll_to_item(k, "center");
   }
   // Message, author and changed files of one commit, against its first parent.
+  // Another commit starts with its folders open and no file picked.
   selectCommit(hash, cx) {
+    if (this.logSel !== hash) { this.commitCollapsed = new Set(); this.commitFile = null; }
     this.logSel = hash;
     const root = gitState().root;
     const c = this.commitAt(hash);
@@ -2840,13 +3110,23 @@ export default class Board extends View {
       .child(chipFor("date", "Date", SINCE.find(([v]) => v === f.since)?.[1] ?? null, { since: null }))
       .child(chipFor("paths", "Paths", f.paths.length === 1 ? f.paths[0] : f.paths.length ? `${f.paths.length} paths` : null, { paths: [] }))
       .child(div().flex_1())
-      .child(iconButton(C, "git-fetch", this.fetching ? "Fetching…" : "Fetch all remotes", "fetch", (_e, cx) => {
-        if (this.fetching) return;
-        this.fetching = true;
-        cx.notify();
-        cx.spawn(async (cx) => { await gitRun(g.root, ["fetch", "--all", "--prune"], "Fetched"); this.fetching = false; cx.notify(); });
-      }));
+      .child(iconButton(C, "git-fetch", this.fetching ? "Fetching…" : "Fetch all remotes", "fetch", (_e, cx) => this.fetchAll(g.root, cx)));
+    // Up and Down move the selection a commit at a time, as a click does, and keep it in view.
+    const step = (by, cx) => {
+      if (!shown.length) return;
+      const k = Math.max(0, Math.min(shown.length - 1, this.shownAt(this.logSel) < 0 ? 0 : this.shownAt(this.logSel) + by));
+      this.selectCommit(all[shown[k]].hash, cx);
+      this.logScroll?.scroll_to_item(k);
+      cx.notify();
+    };
     const commits = this.panel(C).size_full().p(4)
+      .when(!!this.treeFocus, el => el.track_focus(this.treeFocus))
+      .on_key_down((e, cx) => {
+        const by = { up: -1, down: 1, pageup: -LOG_PAGE, pagedown: LOG_PAGE }[e.keystroke];
+        if (!by) return;
+        cx.stop_propagation();
+        step(by, cx);
+      })
       .child(toolbar)
       .child(!log?.commits
         ? this.empty(C, "Loading…")
@@ -2901,6 +3181,17 @@ export default class Board extends View {
           .child(panel(null, 0, 0, commits, "x"))
           .child(panel(saved.right ?? 380, 240, 900, details, "l")));
   }
+  // `git fetch --all --prune`, one at a time. The button toasts the outcome; the fetch on opening Log is quiet.
+  fetchAll(root, cx, quiet = false) {
+    if (this.fetching || !root) return;
+    this.fetching = true;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      await gitRun(root, ["fetch", "--all", "--prune"], quiet ? null : "Fetched", quiet);
+      this.fetching = false;
+      cx.notify();
+    });
+  }
   // Row two of the header on Log: the worktree and the repository path. The filters sit over the commit list.
   logBar(C) {
     const g = gitState();
@@ -2932,7 +3223,13 @@ export default class Board extends View {
       items = [[null, "Any time"], ...SINCE].map(([v, label]) => row(`f-${label}`, () => { setLogFilter({ since: v }); closeOverlay(overlay); }, f.since === v)
         .child(div().flex_1().child(label)));
     } else {
-      items = (this.pathEntries ?? []).filter(e => matches(q, e.name)).map(e => row(`f-${e.name}`, () => setLogFilter({ paths: toggleIn(f.paths, e.name) }), false)
+      // No search: the picked paths deeper down first, so they can be unpicked, then the top level.
+      // A search: every tracked folder and file whose path has it, folders first.
+      const top = this.pathEntries ?? [];
+      const shown = q
+        ? (this.pathAll ?? top).filter(e => matches(q, e.name)).slice(0, 300)
+        : [...f.paths.filter(p => !top.some(e => e.name === p)).map(name => ({ name, dir: !!this.pathAll?.some(e => e.dir && e.name === name) })), ...top];
+      items = shown.map(e => row(`f-${e.name}`, () => setLogFilter({ paths: toggleIn(f.paths, e.name) }), false)
         .child(box(f.paths.includes(e.name)))
         .child(svg(`mods/${MOD}/icons/${e.dir ? "folder" : "file"}.svg`).size(12).text_color(e.dir ? C.accent : C.muted).flex_none())
         .child(div().flex_1().min_w(0).truncate().child(e.name)));
@@ -3063,14 +3360,57 @@ export default class Board extends View {
     return { info, model: info?.model || a.program.name, sid: info?.sid ? info.sid.slice(0, 8) : a.address,
       place: project?.name ?? (folder ? baseName(folder) : a.space_name) };
   }
+  // Files, Log and Changes: the project of the target agent. Picking one picks its first agent.
+  projectPicker(C) {
+    const row = targetProject();
+    return h_flex().id("agent-project-picker").h(34).pl(12).pr(10).gap(8).items_center().rounded(7).flex_none()
+      .bg(C.bg).border(1).border_color(C.line).cursor_pointer().hover(s => s.border_color(C.input)).tooltip("Pick a project")
+      .on_click(() => openDropdown({ mod: MOD, props: { role: "agentprojects" }, kind: "popup", width: 420,
+        height: agentProjectsHeight(), at: { x: PICKER_X, y: spacesY() } }))
+      .child(dot(row ? statusCounts(row.agents)[0]?.color ?? C.dim : C.dim, 8))
+      .child(div().text_size(14).font_semibold().text_color(row ? C.ink : C.muted).child(row?.name ?? "No projects"))
+      .child(div().text_size(11).text_color(C.muted).child("▾"));
+  }
+  agentProjectsPopup(C) {
+    const overlay = props().overlay;
+    const current = targetProject();
+    const rows = agentProjects();
+    return v_flex().w_full().h(agentProjectsHeight()).p(6).gap(2).bg(C.bg).text_color(C.ink)
+      .child(div().px(10).pt(6).pb(2).text_size(10).text_color(C.muted).child("PROJECTS WITH AGENTS"))
+      .child(v_flex().id("agent-project-list").flex_1().min_h(0).overflow_y_scrollbar().gap(2)
+        .children(rows.map(r => {
+          const counts = statusCounts(r.agents);
+          const selected = current?.folder === r.folder;
+          return h_flex().id(`agent-project-${r.folder}`).flex_none().h(PROJECT_ROW_H - 4).px(10).gap(10).items_center().rounded(6)
+            .cursor_pointer().bg(selected ? C.selected : C.bg).hover(s => s.bg(C.selected))
+            .on_click(() => {
+              if (!selected) {
+                const a = r.agents[0];
+                setShared(TARGET_KEY, { address: a.address, focus: a.address });
+                run("agent.focus", { terminal: a.address });
+              }
+              closeOverlay(overlay);
+            })
+            .child(dot(counts[0]?.color ?? C.dim, 8))
+            .child(v_flex().flex_1().min_w(0).gap(2)
+              .child(div().text_size(13).font_semibold().truncate().child(r.name))
+              .child(div().font_family("Geist Mono").text_size(11).text_color(C.muted).truncate().child(tilde(r.folder) || "~")))
+            .child(div().flex_none().text_size(11).text_color(C.muted).child(`${r.agents.length} agent${r.agents.length === 1 ? "" : "s"}`))
+            .when(selected, el => el.child(div().text_size(13).text_color(C.accent).child("✓")));
+        }))
+        .when(!rows.length, el => el.child(div().px(10).py(12).text_size(12).text_color(C.muted).child("No agents run."))));
+  }
+  // Right of the project picker; it lists the agents of that project only.
   agentPicker(C) {
     const a = targetAgent();
     const l = a && this.agentLabel(a);
-    const n = agents().length;
+    const n = projectAgents().length;
+    // Where the button starts: after the project picker, whose width follows its name (14 px semibold, about 8 px a letter).
+    const x = PICKER_X + 54 + Math.round((targetProject()?.name ?? "No projects").length * 8) + 12;
     return h_flex().id("agent-picker").h(34).pl(12).pr(10).gap(8).items_center().rounded(7).flex_none()
       .bg(C.bg).border(1).border_color(C.line).cursor_pointer().hover(s => s.border_color(C.input)).tooltip("Pick an agent")
       .on_click(() => openDropdown({ mod: MOD, props: { role: "agents" }, kind: "popup", width: 520,
-        height: 40 + Math.max(1, n) * 73 + 46, at: { x: PICKER_X, y: spacesY() } }))
+        height: 40 + Math.max(1, n) * 73 + 46, at: { x, y: spacesY() } }))
       .child(dot(a ? states().find(s => s.key === a.status)?.color ?? C.dim : C.dim, 8))
       .when(!!a, el => el
         .child(div().text_size(14).font_semibold().text_color(C.ink).child(l.model))
@@ -3086,7 +3426,7 @@ export default class Board extends View {
     return v_flex().size_full().p(6).gap(2).bg(C.bg).text_color(C.ink)
       .child(div().px(10).pt(6).pb(2).text_size(10).text_color(C.muted).child("ACTIVE AGENTS"))
       // A thin line between agents, so the rows don't run together.
-      .children(agents().flatMap((a, i) => {
+      .children(projectAgents().flatMap((a, i) => {
         const l = this.agentLabel(a);
         const st = states().find(s => s.key === a.status);
         const selected = current?.address === a.address;
@@ -3356,7 +3696,7 @@ export default class Board extends View {
         .when(!narrow, el => el.child(vbar(C)))))
       .when(!!p && narrow && !asking, el => el.child(iconButton(C, `pane-more-${p.pane}`, "More", "more",
         () => {
-          const rows = 3 + (info ? 1 : 0) + (info?.sid ? 1 : 0) + (p.terminal ? 1 : 0);
+          const rows = 3 + (info ? 1 : 0) + (info?.sid ? 1 : 0) + (p.terminal ? 1 : 0) + (agent ? 1 : 0);
           openDropdown({ mod: MOD, kind: "popup", width: 260, height: 12 + rows * 34 + 5,
             props: { role: "panemenu", pane: p.pane } });
         })))
@@ -3367,6 +3707,8 @@ export default class Board extends View {
           () => run("pane.split", { pane: p.pane, direction: "down" })))
         .when(!!p.terminal, el => el.child(iconButton(C, `detach-${p.pane}`, "Move to its own tab, in its project's space when one is open", "external",
           () => queuePaneJob({ kind: "detach", terminal: p.terminal }))))
+        .when(!!agent, el => el.child(iconButton(C, `restart-${p.pane}`, "Restart Claude in the same session", "restart",
+          () => restartAgent(p.terminal))))
         .child(vbar(C))
         .child(xButton(C, `pane-close-${p.pane}`, "Close pane", (_e, cx) => {
           if (info?.tokens) { this.closing = true; cx.notify(); } else run("pane.close", { pane: p.pane });
@@ -3419,6 +3761,74 @@ export default class Board extends View {
     if (this.folder) walk(this.folder, 0);
     return rows;
   }
+  // Files: the commits that changed the open file, renames included, in place of its text. A second press closes it.
+  openHistory(path, cx) {
+    const root = gitState().root;
+    if (!root || this.history?.path === path) { this.history = null; cx.notify(); return; }
+    this.history = { path, commits: null, sel: null, lines: null };
+    this.historyFocus?.focus();
+    cx.notify();
+    cx.spawn(async (cx) => {
+      // One record per commit: its fields, then the file's path in that commit (it differs before a rename).
+      const r = await exec("git", ["log", "--follow", "-M", "--format=%x1e%H%x1f%an%x1f%at%x1f%s", "--name-only", "--", relPath(root, path)],
+        { cwd: root, timeout: 30000 }).catch(() => null);
+      if (this.history?.path !== path) return;
+      this.history.commits = (r?.stdout ?? "").split("\x1e").filter(s => s.trim()).map(block => {
+        const [head, ...names] = block.split("\n");
+        const [hash, author, at, ...subject] = head.split("\x1f");
+        return { hash, author, time: Number(at), subject: subject.join("\x1f"), file: names.find(Boolean) ?? relPath(root, path) };
+      });
+      if (this.history.commits[0]) this.historyCommit(this.history.commits[0], cx);
+      cx.notify();
+    });
+  }
+  // The file's diff in one commit of its history, as the Log shows it.
+  historyCommit(c, cx) {
+    const root = gitState().root;
+    const h = this.history;
+    if (!h || !root) return;
+    h.sel = c.hash;
+    h.lines = null;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      const r = await exec("git", ["show", "-M", "--format=", c.hash, "--", c.file], { cwd: root, timeout: 20000 }).catch(() => null);
+      if (this.history !== h || h.sel !== c.hash) return;
+      h.lines = parseDiff(r?.stdout ?? "");
+      cx.notify();
+    });
+  }
+  historyView(C) {
+    const h = this.history;
+    if (!h.commits) return this.empty(C, "Loading…");
+    if (!h.commits.length) return this.empty(C, "No commit changed this file.");
+    // Up and Down move a commit at a time, as in the Log, once a click put the keyboard on the list.
+    const step = (by, cx) => {
+      const k = Math.max(0, Math.min(h.commits.length - 1, h.commits.findIndex(c => c.hash === h.sel) + by));
+      this.historyCommit(h.commits[k], cx);
+      this.historyScroll?.scroll_to_item(k);
+    };
+    return v_flex().flex_1().min_h(0)
+      .child(v_flex().id("file-history").flex_none().max_h(HISTORY_H).overflow_y_scrollbar().p(4).gap(1).border_b(1).border_color(C.line)
+        .when(!!this.historyFocus, el => el.track_focus(this.historyFocus))
+        .when(!!this.historyScroll, el => el.track_scroll(this.historyScroll))
+        .on_key_down((e, cx) => {
+          const by = { up: -1, down: 1, pageup: -LOG_PAGE, pagedown: LOG_PAGE }[e.keystroke];
+          if (!by) return;
+          cx.stop_propagation();
+          step(by, cx);
+        })
+        .children(h.commits.map(c => {
+          const selected = h.sel === c.hash;
+          return h_flex().id(`history-${c.hash}`).h(LOG_ROW).flex_none().px(8).gap(10).items_center().rounded(4).cursor_pointer()
+            .bg(selected ? C.sel : C.card).hover(s => s.bg(selected ? C.sel : C.bar)).text_size(12)
+            .on_click((_e, cx) => { this.historyFocus?.focus(); this.historyCommit(c, cx); })
+            .child(div().flex_none().font_family("Geist Mono").text_color(C.accent).child(c.hash.slice(0, 8)))
+            .child(div().flex_1().min_w(0).truncate().text_color(C.ink).child(c.subject))
+            .child(div().w(140).flex_none().truncate().text_color(C.muted).child(c.author))
+            .child(div().w(150).flex_none().text_color(C.muted).child(logDate(c.time)));
+        })))
+      .child(h.lines ? this.diffList(C, "history-diff", h.lines) : this.empty(C, "Loading…"));
+  }
   filesView(C) {
     if (!this.folder) return this.empty(C, "No agent folder yet. Focus an agent, or pick one above.");
     const g = gitState();
@@ -3467,6 +3877,7 @@ export default class Board extends View {
     } else {
       const mark = marks[file.path];
       const pic = file.image;
+      const history = this.history?.path === file.path;
       const kb = file.size != null ? `${(file.size / 1024).toFixed(1)} KB` : null;
       const facts = file.lines ? `${file.lines.length} lines · ${kb}` : pic?.w ? `${pic.w} × ${pic.h} px · ${kb}` : kb;
       body.push(this.panelHeader(C, file.path, [
@@ -3477,12 +3888,16 @@ export default class Board extends View {
           () => { this.changeSel = relPath(g.root, file.path); setShared(VIEW_KEY, "changes"); })))
         .when(pic?.ext === "svg", el => el.child(this.toolButton(C, "svg-text", "Open as text", null, "Show the SVG's text",
           (_e, cx) => this.openFile(file.path, cx, true))))
+        .when(!!g.root && !g.files.some(f => f.untracked && `${g.root}/${f.path}` === file.path),
+          el => el.child(this.toolButton(C, "file-history", history ? "Hide history" : "History", "commit",
+            history ? "Back to the file" : "The commits that changed this file", (_e, cx) => this.openHistory(file.path, cx))))
         .child(this.toolButton(C, "copy-path", "Copy path", "copy", "Copy the full path", this.copyPath(file.path)))
         .child(this.toolButton(C, "open-file", "Open", "external", "Open in the default app",
           () => exec("open", [file.path]).catch(() => {}))));
       const lines = file.lines;
+      if (history) body.push(this.historyView(C));
       // At its own size in pixels, never bigger; a bigger one is fitted to the panel with its proportions kept.
-      if (pic) body.push(div().flex_1().min_h(0).p(16).flex().items_center().justify_center()
+      else if (pic) body.push(div().flex_1().min_h(0).p(16).flex().items_center().justify_center()
         .child(pic.w ? image(pic.src).w(pic.w).h(pic.h).max_w_full().max_h_full() : image(pic.src).size_full()));
       else body.push(lines && this.editor
         ? div().flex_1().min_h(0).py(4).on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Editor.new(this.editor).size_full())
@@ -3564,6 +3979,8 @@ export default class Board extends View {
       .child(item("panemenu-down", "Split down", "split-down", () => { run("pane.split", { pane, direction: "down" }); close(); }))
       .when(!!p.terminal, el => el.child(item("panemenu-detach", "Move to its own tab", "external",
         () => { queuePaneJob({ kind: "detach", terminal: p.terminal }); close(); })))
+      .when(!!p.terminal && agents().some(a => a.address === p.terminal), el => el.child(item("panemenu-restart", "Restart in the same session", "restart",
+        () => { restartAgent(p.terminal); close(); })))
       .child(div().h(1).mx(4).my(2).bg(C.line))
       .child(item("panemenu-close", "Close pane", null, (cx) => {
         if (info?.tokens) { this.closing = true; cx.notify(); } else { run("pane.close", { pane }); close(); }
@@ -3653,13 +4070,18 @@ export default class Board extends View {
     };
     const gutter = (text) => div().w(40).flex_none().pr(6).text_right().text_color(theme().unknown ?? C.dim).child(String(text));
     if (!lines.length) return this.empty(C, "No text changes.");
-    return uniform_list(id, lines.length, i => String(i), (range) => lines.slice(range.start, range.end).map(d => {
-      const k = kinds[d.kind];
-      return h_flex().h(ROW_H).bg(k.bg).font_family("Geist Mono").text_size(12)
-        .child(gutter(d.old)).child(gutter(d.now))
-        .child(div().w(16).flex_none().text_center().text_color(k.color).child(k.sign))
-        .child(div().flex_1().min_w(0).pr(14).whitespace_nowrap().overflow_hidden().text_color(k.color).child(d.text || " "));
-    })).flex_1().py(6);
+    // The rows are as wide as the longest line, and the list scrolls sideways to it: a tab counts as 4 columns.
+    const cols = lines.reduce((n, d) => Math.max(n, d.text.length + 3 * (d.text.match(/\t/g)?.length ?? 0)), 0);
+    const width = 40 + 40 + 16 + Math.ceil(cols * DIFF_CHAR_W) + 14;
+    return div().id(`${id}-x`).flex_1().min_h(0).overflow_x_scrollbar()
+      .child(v_flex().h_full().min_w_full().w(width)
+        .child(uniform_list(id, lines.length, i => String(i), (range) => lines.slice(range.start, range.end).map(d => {
+          const k = kinds[d.kind];
+          return h_flex().h(ROW_H).bg(k.bg).font_family("Geist Mono").text_size(12)
+            .child(gutter(d.old)).child(gutter(d.now))
+            .child(div().w(16).flex_none().text_center().text_color(k.color).child(k.sign))
+            .child(div().flex_1().pr(14).whitespace_nowrap().text_color(k.color).child(d.text.replace(/\t/g, "    ") || " "));
+        })).flex_1().py(6)));
   }
   // A dropdown notes when it closed, for openDropdown.
   async close() {
@@ -3688,6 +4110,7 @@ export default class Board extends View {
     if (role === "terminals") return this.rail(C, active);
     if (role === "pane") return this.paneHeader(C);
     if (role === "agents") return this.agentsPopup(C);
+    if (role === "agentprojects") return this.agentProjectsPopup(C);
     if (role === "worktrees") return this.worktreesPopup(C);
     if (role === "projectfilter") return this.projectFilterPopup(C);
     if (role === "statusfilter") return this.statusFilterPopup(C);

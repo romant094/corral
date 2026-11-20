@@ -25,7 +25,8 @@ while [ $# -gt 0 ]; do
       echo "Usage: ./install.sh [--link] [--statusline] [--name <mod folder>]"
       echo "  Copies layouts/, mods/corral/, themes/ and telegram/ into $HERDR_HOME."
       echo "  --link        symlinks main.js, the layout and telegram/ to this checkout instead of copying them."
-      echo "  --statusline  also copies statusline/corral-statusline.py into $STATUSLINE_DIR (an installed one is always updated)."
+      echo "  --statusline  also copies statusline/corral-statusline.py into $STATUSLINE_DIR (an installed one is always updated)"
+      echo "                and checks that statusLine in ~/.claude/settings.json runs it."
       echo "  --name        the mod's folder, when a gallery install had to rename it (Corral's update passes it)."
       exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -118,8 +119,74 @@ if $with_statusline; then
     echo "Updated $STATUSLINE_DIR/corral-statusline.py."
   else
     echo "Installed $STATUSLINE_DIR/corral-statusline.py."
-    echo "Point Claude Code at it in ~/.claude/settings.json:"
-    echo "  \"statusLine\": { \"type\": \"command\", \"command\": \"python3 $STATUSLINE_DIR/corral-statusline.py\" }"
+  fi
+  # Claude Code runs one statusLine command: without this hook the cards get no session data.
+  # "check" exits 0 when it runs the hook, 1 when it doesn't, 2 when settings.json can't be read.
+  # "set" points it at the hook, after a timestamped backup; another command stays, chained.
+  SETTINGS="$HOME/.claude/settings.json"
+  # read stops at the end of the text with status 1; the text is all there.
+  read -r -d '' statusline_py <<'PY' || true
+import datetime, json, os, shlex, shutil, sys
+mode, path, script = sys.argv[1:4]
+# The ~ form, as in the README; Claude Code runs the command in a shell.
+home = os.path.expanduser("~") + "/"
+want = "python3 " + ("~/" + shlex.quote(script[len(home):]) if script.startswith(home) else shlex.quote(script))
+
+def runs_hook(command):
+    """Does the command run a corral-statusline.py that exists?"""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    for word in words:
+        if word.endswith("corral-statusline.py"):
+            return os.path.isfile(os.path.expanduser(os.path.expandvars(word)))
+    return False
+
+try:
+    settings = json.load(open(path)) if os.path.exists(path) else {}
+    if not isinstance(settings, dict):
+        raise ValueError
+except ValueError:
+    print(f"Couldn't read {path}; set statusLine in it by hand:")
+    print(f'  "statusLine": {{ "type": "command", "command": {json.dumps(want)} }}')
+    sys.exit(2)
+line = settings.get("statusLine")
+command = line.get("command") if isinstance(line, dict) else None
+# A command of the person's own, not an older Corral hook: it is kept as the chained one.
+theirs = command.strip() if isinstance(command, str) and "corral-statusline.py" not in command else ""
+if mode == "check":
+    if isinstance(command, str) and runs_hook(command):
+        print(f"Claude Code's statusLine runs the hook ({path}).")
+        sys.exit(0)
+    print("Warning: Claude Code's statusLine does not run the hook, so the cards get no session data.")
+    print(f"  Now in {path}: {json.dumps(line) if line is not None else 'no statusLine'}")
+    print(f'  Set it to: "statusLine": {{ "type": "command", "command": {json.dumps(want)} }}')
+    if theirs:
+        print("  To keep your status line, chain it: "
+              + json.dumps(f"CORRAL_STATUSLINE_CHAIN={shlex.quote(theirs)} {want}"))
+    sys.exit(1)
+if os.path.exists(path):
+    backup = f"{path}.bak-{datetime.datetime.now():%Y%m%d-%H%M%S}"
+    shutil.copy2(path, backup)
+    print(f"Saved a backup: {backup}")
+line = line if isinstance(line, dict) else {}
+line["type"] = "command"
+line["command"] = f"CORRAL_STATUSLINE_CHAIN={shlex.quote(theirs)} {want}" if theirs else want
+settings["statusLine"] = line
+os.makedirs(os.path.dirname(path), exist_ok=True)
+json.dump(settings, open(path, "w"), indent=2, ensure_ascii=False)
+open(path, "a").write("\n")
+print(f"Set statusLine in {path}{' (your status line is chained)' if theirs else ''}.")
+PY
+  statusline_check=0
+  python3 -c "$statusline_py" check "$SETTINGS" "$STATUSLINE_DIR/corral-statusline.py" || statusline_check=$?
+  # Set it only with the person's yes: never in a run without a terminal, such as Corral's own update.
+  if [ "$statusline_check" = 1 ] && [ -t 0 ]; then
+    read -r -p "Set statusLine in $SETTINGS now (a backup is kept)? [y/N] " answer || answer=
+    if [[ "$answer" =~ ^[yY] ]]; then
+      python3 -c "$statusline_py" set "$SETTINGS" "$STATUSLINE_DIR/corral-statusline.py"
+    fi
   fi
 fi
 

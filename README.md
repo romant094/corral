@@ -23,7 +23,7 @@ cd corral
 herdr-app do layout.switch --name corral
 ```
 
-`install.sh` copies `layouts/corral.json`, `mods/corral/`, `themes/` and the Telegram bridge (`telegram/`) into `~/.config/herdr-app` (or `$HERDR_APP_HOME`), then runs `herdr-app check` on the mod. With `--statusline` it also copies the Claude Code statusline hook into `~/.claude/scripts/`; a hook installed before is always updated. `--name <folder>` installs the mod into another folder, for a gallery install that had to rename it. It also adds Corral's keys (`mods/corral/keys.json`) to your `~/.config/herdr-app/keys.json`; a key you already use keeps its action. Herdr treats an edited `keys.json` as yours and stops adding its new default keys to it. To go back to your own layout, press `ctrl-shift-l` or run `herdr-app do layout.switch --name main`.
+`install.sh` copies `layouts/corral.json`, `mods/corral/`, `themes/` and the Telegram bridge (`telegram/`) into `~/.config/herdr-app` (or `$HERDR_APP_HOME`), then runs `herdr-app check` on the mod. With `--statusline` it also copies the Claude Code statusline hook into `~/.claude/scripts/`; a hook installed before is always updated. Then it checks that `statusLine` in `~/.claude/settings.json` runs the hook, and if not, shows the current value and the line to set; in a terminal it offers to set it for you, after a timestamped backup (`settings.json.bak-<date>-<time>`). `--name <folder>` installs the mod into another folder, for a gallery install that had to rename it. It also adds Corral's keys (`mods/corral/keys.json`) to your `~/.config/herdr-app/keys.json`; a key you already use keeps its action. Herdr treats an edited `keys.json` as yours and stops adding its new default keys to it. To go back to your own layout, press `ctrl-shift-l` or run `herdr-app do layout.switch --name main`.
 
 ### Connect the session data
 
@@ -35,23 +35,33 @@ The cards read the JSON that Claude Code sends to its statusline. Set the hook i
 }
 ```
 
-The hook prints one line (`model | context | cost | [folder]`) and saves the JSON to `~/.cache/corral/sessions/<claude pid>.json`. The mod matches each file to its terminal by the terminal's foreground pid. If you already have a statusline, call the script from it and pass the same stdin. Without the hook the board still works; the cards say that no session data is available yet.
+The hook prints one line (`model | context | cost | [folder]`) and saves the JSON to `~/.cache/corral/sessions/<claude pid>.json`. The mod matches each file to its terminal by the terminal's foreground pid. Without the hook the board still works; the cards say that no session data is available yet.
+
+Claude Code runs one `statusLine` command. To keep a status line of your own, name its command in `CORRAL_STATUSLINE_CHAIN`:
+
+```json
+{
+  "statusLine": { "type": "command", "command": "CORRAL_STATUSLINE_CHAIN='bash ~/.claude/my-statusline.sh' python3 ~/.claude/scripts/corral-statusline.py" }
+}
+```
+
+The hook gives your command the same stdin JSON and prints its output instead of Corral's line, as the cards already show what that line does. It still saves the session file. If your command fails, prints nothing or takes more than 2 seconds, the hook prints its own line. When `install.sh` sets `statusLine` for you, it chains the command that was there.
 
 ### What the mod can do on your machine
 
 Herdr mods are trusted JavaScript. Corral:
 
 - runs `git` in the folders of your agents (read commands every few seconds; the branch actions you click also write: checkout, push, delete and so on);
-- runs `hc` (herdr-core) to find a terminal's foreground pid and to send `/compact` when you ask for it;
+- runs `hc` (herdr-core) to find a terminal's foreground pid, to send `/compact` when you ask for it, and to start saved sessions again after a restart (Settings → Restore);
 - runs `osascript` on macOS for the multi-folder picker, and `open` for "Open in the default app";
 - reads `~/.cache/corral/sessions/` and the files of the folder you browse in Files;
 - from the settings: runs `node` with the Telegram bridge, `launchctl` for the bridge's service and writes `telegram.json`.
 
-Network: Corral asks `github.com` for its latest release at start and every hour (turn it off in Settings → Updates), and `api.github.com` once per new release for its notes, and downloads a release from GitHub when you press Update. The Telegram bridge talks to `api.telegram.org` once you turn it on. `git fetch`, `pull` and `push` reach your git remotes when you click them.
+Network: Corral asks `github.com` for its latest release at start and every hour (turn it off in Settings → Updates), and `api.github.com` once per new release for its notes, and downloads a release from GitHub when you press Update. The Telegram bridge talks to `api.telegram.org` once you turn it on. `git pull` and `push` reach your git remotes when you click them; `git fetch --all --prune` runs when you open Log and when you click the fetch button.
 
 ## Settings
 
-The gear right of the plan limits (or `herdr-app do corral.settings`) opens the settings:
+The gear right of the plan limits (or `herdr-app do corral.settings`) opens Corral's settings:
 
 ### Telegram
 
@@ -71,6 +81,19 @@ The gear right of the plan limits (or `herdr-app do corral.settings`) opens the 
 
 "Ignored files and folders": names the Files tree never shows, as WebStorm's list of the same name. `*` matches any characters and `?` one; a pattern matches a name, never a path, and a folder that matches hides with everything in it. Add with the field and Enter, remove with ×, "Reset to defaults" brings back `.DS_Store`, `Thumbs.db`, `*.pyc`, `*.pyo`, `__pycache__`, `*~`, `.hg`, `.svn` and `CVS`. Changes and Log are not filtered: they show what git sees.
 
+### Restore
+
+![Restore settings](docs/images/settings-restore.png)
+
+Corral keeps a list of the Claude sessions that run, with each one's folder, space and terminal. A session that ends stays in the list for 30 seconds, so Herdr quitting does not empty it. After a restart of the computer, or of the terminal server (`hc server stop`), Herdr keeps each terminal in its place with an empty shell in it. With "Restore agents when Corral starts" on (the default), Corral then:
+
+1. Says "Restoring the last session…" in a toast.
+2. Runs `claude --resume <session id>` in each agent's own terminal. An agent whose terminal is gone gets a tab in its project's space (a new space when none is open).
+3. Closes the other empty shells of that restart. The last pane of a space stays.
+4. Says how many agents it restored and how many terminals it closed.
+
+It runs once per start of the terminal server: reloading or updating the mod does not start sessions again. A session that runs already, in any space, is never started twice. "Restore now" starts the saved sessions that do not run, at any time.
+
 ### Updates
 
 ![Updates](docs/images/settings-updates.png)
@@ -83,8 +106,8 @@ The view switch at the top changes what the top area shows: Board, Files, Log or
 
 ![Board](docs/images/board.png)
 
-- **Columns:** Needs you, Working, Done, Idle. A card shows the model, the session id (click to copy), the task, context use with tokens, the project, the cost and the time in this status. The focused agent's card is outlined. A session that has done work asks before it closes.
-- **Context colors:** green below 50%, yellow from 50%, red from 80%, as in the statusline. The 5-hour and 7-day plan limits in the header use the same colors and show the reset time.
+- **Columns:** Needs you, Working, Done, Idle. A card shows the model, the session id (click to copy), the task, context use with tokens, the project, the cost and the time in this status. The focused agent's card is outlined. A session that has done work asks before it closes. ↺ restarts the agent: Claude starts again on the same session (`claude --resume`) beside it, in its folder, and the old pane closes.
+- **Context colors:** green below 50%, yellow from 50%, red from 80%, as in the statusline. The 5-hour and 7-day plan limits in the header use the same colors and show the reset time. A window whose reset time has passed shows 0%. When a Claude agent works but no session data came for 10 minutes, a yellow "Limits stale" pill says so: the statusline hook does not run (check `statusLine` in `~/.claude/settings.json`).
 - **Filters:** "All projects" and "All statuses" open lists with checkboxes. A status you leave out hides its column.
 - **+ Agent** starts Claude to the right of the focused terminal of the shown tab, in that terminal's folder. With no terminal in the tab, it opens a new tab.
 
@@ -108,30 +131,38 @@ The bar under the board holds the plain terminals of the active space as chips: 
 
 ![Terminals folded](docs/images/board-collapsed.png)
 
-Each pane header shows the status, the agent's task as on its card (the model is in the tooltip; a long task ends in an ellipsis), the session id (click to copy), the context use, a compact button that sends `/compact` after you confirm, the cost, split right, split down, move to its own tab (in its project's space when one is open) and close. Closing an agent that has done work asks first, as its card does; one that has not started closes at once. In a pane narrower than 640 px the session id and the buttons move into a ⋮ menu.
+Each pane header shows the status, the agent's task as on its card (the model is in the tooltip; a long task ends in an ellipsis), the session id (click to copy), the context use, a compact button that sends `/compact` after you confirm, the cost, split right, split down, move to its own tab (in its project's space when one is open), restart (as ↺ on the card) and close. Closing an agent that has done work asks first, as its card does; one that has not started closes at once. In a pane narrower than 640 px the session id and the buttons move into a ⋮ menu.
 
 ![Narrow pane header](docs/images/pane-narrow.png)
 
 When the space has several tabs, the merge button beside "+ Agent" puts every terminal of the space side by side in the shown tab; the split button next to it does the reverse, a tab for each terminal of the shown tab. `herdr-app do corral.detach`, `corral.merge` and `corral.split` do the same from a command or a key.
 
+## Picking the agent
+
+Files, Log and Changes follow one agent. Two pickers in the header choose it: the project, then an agent of that project. Picking a project picks its first agent; the agent list shows only that project's agents. Picking an agent also focuses its terminal.
+
 ## Files
 
 ![Files](docs/images/files.png)
 
-The agent's folder as a tree with git marks (M, A, D), and a read-only code view with syntax colors and text selection. What git ignores (`node_modules`, `dist`, `.env`…) shows dimmed; names in Settings → Files (`.DS_Store` and others by default) do not show at all. A picture (PNG, JPEG, GIF, WebP, BMP, ICO, SVG) shows as a picture, at its own size or fitted to the panel, with its size in pixels; an SVG can also be opened as text. Right-click a row, or press ⌘⇧C / ⌥⇧C (Ctrl+Shift+C / Alt+Shift+C on Linux and Windows), to copy the relative or absolute path. Drag the divider to resize the tree; each agent keeps its own width. The worktree picker shows another worktree of the same repository.
+The agent's folder as a tree with git marks (M, A, D), read again every 4 seconds while Files is open, and a read-only code view with syntax colors and text selection. What git ignores (`node_modules`, `dist`, `.env`…) shows dimmed; names in Settings → Files (`.DS_Store` and others by default) do not show at all. A picture (PNG, JPEG, GIF, WebP, BMP, ICO, SVG) shows as a picture, at its own size or fitted to the panel, with its size in pixels; an SVG can also be opened as text. Right-click a row, or press ⌘⇧C / ⌥⇧C (Ctrl+Shift+C / Alt+Shift+C on Linux and Windows), to copy the relative or absolute path. Drag the divider to resize the tree; each agent keeps its own width. The worktree picker shows another worktree of the same repository.
+
+![File history](docs/images/files-history.png)
+
+**History** (left of Copy path) shows the commits that changed the open file, renames included (`git log --follow`): hash, subject, author and date. Click a commit, or move with ↑ ↓ (Page Up and Page Down: 20 at a time), to see the file's diff in it. "Hide history" goes back to the file.
 
 ## Log
 
 ![Log](docs/images/log.png)
 
 - **Branch tree:** HEAD, Local, Remote and Tags, in folders by `/`. Starred branches come first in their folder. A local branch shows commits to push (↗, green) and to pull (↙, blue) and its tracked branch; click a count to see just those commits. A click on a branch selects its newest commit; a double click filters the log to it.
-- **History:** the whole history, the newest 500 commits first. The graph works as in IntelliJ: lanes close up to the left, each branch keeps its color, HEAD's commit is a ring, and an edge to a far parent is cut into a down arrow and an up arrow. Click an arrow to jump to the commit at its other end.
-- **Filters:** text or hash (with regex and match case), Branch, User and Paths with several values each, and Date.
-- **Details:** the message, hash (click to copy), author, date, refs and the changed files as a tree. Click a file to see its diff in a fourth panel.
+- **History:** the whole history, the newest 500 commits first. After a click in the list, ↑ ↓ move a commit at a time and Page Up and Page Down 20. The graph works as in IntelliJ: lanes close up to the left, each branch keeps its color, HEAD's commit is a ring, and an edge to a far parent is cut into a down arrow and an up arrow. Click an arrow to jump to the commit at its other end.
+- **Filters:** text or hash (with regex and match case), Branch, User and Paths with several values each, and Date. Paths lists the top level; type in its search to find any tracked folder or file below it (`mods/cor` finds `mods/corral`).
+- **Details:** the message, hash (click to copy), author, date, refs and the changed files as a tree. Click a file to see its diff in a fourth panel. Another commit opens with its folders open and no diff. A diff scrolls sideways to its longest line, here and in Changes.
 
 ![Branch menu](docs/images/branch-menu.png)
 
-Right-click a branch for: new branch or worktree from it, checkout, update, push, rename, delete (on the remote too, after a confirmation) and star. The fetch button over the list runs `git fetch --all --prune`. Each result shows as a toast.
+Right-click a branch for: new branch or worktree from it, checkout, update, push, rename, delete (on the remote too, after a confirmation) and star. The fetch button over the list runs `git fetch --all --prune`; opening Log runs it too, without a toast. Each result of a click shows as a toast.
 
 ## Changes
 

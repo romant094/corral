@@ -2,6 +2,19 @@
 
 Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHub release notes.
 
+## 0.1.13
+
+- Settings → Restore: after a restart of the computer or of the terminal server, the Claude sessions that ran start again with `claude --resume`, each in its own terminal, and the empty shells of that restart close. "Restore now" does it by hand.
+- Board and pane header: ↺ restarts an agent on the same session.
+- Files, Log and Changes: a project picker before the agent picker; the agent list shows that project's agents.
+- Files: History shows the commits that changed the open file and its diff in each; ↑ ↓ move through them.
+- Files: the tree shows files made or removed while it is open (the open folders are read again every 4 seconds).
+- Log: ↑ ↓ (and Page Up/Down) move through the commits; opening Log fetches all remotes; the Paths filter finds nested folders and files; another commit opens with its folders open and no diff.
+- Diffs scroll sideways to their longest line.
+- Limits: a window past its reset time shows 0%; "Limits stale" shows when agents work but the statusline hook sends nothing.
+- Statusline: `install.sh` checks that `statusLine` runs the hook and offers to set it; `CORRAL_STATUSLINE_CHAIN` keeps your own status line.
+- The settings dialog is titled "Corral settings".
+
 ## 0.1.12
 
 - Files: pictures (PNG, JPEG, GIF, WebP, BMP, ICO, SVG) show as pictures with their size in pixels; an SVG opens as text too. A file that is not text says "Binary file." instead of "Loading…".
