@@ -536,6 +536,44 @@ const paneOf = (terminal) => panes().find(p => p.terminal === terminal);
 // The pane header and the card that ask for it go with the old pane, so the bar copy does the work.
 const restartAgent = (terminal) => queuePaneJob({ kind: "restart", terminal, sid: live().sessions[terminal]?.sid ?? "" });
 const spaceOfTab = (tab) => spaces().find(s => s.tabs.some(t => t.id === tab));
+// The root of the project that holds a folder: the deepest saved project, so a worktree inside it counts too.
+const projectRoot = (f) => {
+  let best = null;
+  for (const p of f ? projects() : []) {
+    if ((f === p.folder || f.startsWith(p.folder + "/")) && (!best || p.folder.length > best.length)) best = p.folder;
+  }
+  return best;
+};
+// The folder a Claude worktree (<repo>/.claude/worktrees/<name>) belongs to.
+const worktreeHome = (f) => {
+  const i = f ? f.indexOf("/.claude/worktrees/") : -1;
+  return i > 0 ? f.slice(0, i) : null;
+};
+// The main checkout of the git repository that holds a folder: for a worktree, the repository it belongs to.
+const repoRoot = async (f) => {
+  if (!f) return null;
+  const r = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: f, timeout: 5000 }).catch(() => null);
+  const dir = r && (r.code ?? 0) === 0 ? r.stdout.trim() : "";
+  return dir.endsWith("/.git") ? dir.slice(0, -5) : null;
+};
+// Where a new terminal or agent starts: the root of the project that holds the folder, else of its git repository.
+// Never a worktree: Herdr starts new terminals in the space's folder, which can be a worktree an agent opened.
+const startFolder = async (f) => projectRoot(f) ?? await repoRoot(f) ?? f;
+// The folder of the space's shown terminal (else the space's own one), taken back to its project root.
+const spaceStart = (space) => {
+  const tab = space?.tabs.find(t => t.active);
+  const inTab = panes().filter(p => p.tab === tab?.id && p.cwd);
+  return startFolder((inTab.find(p => p.focused) ?? inTab[0])?.cwd ?? space?.folder ?? null);
+};
+// A new terminal beside a pane starts at the project root, not in the space's folder.
+// pane.split takes no folder, so the pane is focused and terminal.open places the terminal beside it.
+const splitPane = async (pane, direction, argv) => {
+  const p = panes().find(x => x.pane === pane);
+  const folder = await startFolder(p?.cwd ?? spaceOfTab(p?.tab)?.folder ?? null);
+  if (!p || !folder) return run("pane.split", { pane, direction, ...(argv ? { argv } : {}) });
+  run("pane.focus", { pane });
+  run("terminal.open", { folder, place: direction, ...(argv ? { argv } : {}) });
+};
 const removeProject = (folder) => setShared(PROJECTS_KEY, projects().filter(p => p.folder !== folder));
 // Reuse the project's space when one is open there; otherwise start a space for it.
 // With claude false it opens a plain terminal there instead.
@@ -557,6 +595,8 @@ const summarize = (d) => ({
   tokens: d.context_window?.total_input_tokens ?? 0,
   cost: d.cost?.total_cost_usd ?? 0,
   folder: d.workspace?.current_dir ?? d.cwd ?? "",
+  // A Claude worktree session: the folder Claude started in, which holds the project.
+  origin: d.worktree?.original_cwd ?? "",
   title: d.session_name ?? "",
 });
 // five_hour and seven_day are plan-wide; any other window (a per-model one, e.g. Fable) is grouped by model.
@@ -1645,7 +1685,9 @@ export default class Board extends View {
     const mins = Math.floor((Date.now() - this.observed[a.address].at) / 60000);
     const elapsed = mins ? `${mins}m` : "<1m";
     const confirming = this.confirming === a.address;
-    const project = info && projects().find(p => p.folder === info.folder);
+    // An agent in a worktree inside a project (or started from one) shows that project.
+    const root = info && (projectRoot(info.folder) ?? projectRoot(info.origin) ?? projectRoot(worktreeHome(info.folder)));
+    const project = root && projects().find(p => p.folder === root);
     const sid = info?.sid ? info.sid.slice(0, 8) : a.address;
     // The card of the agent shown in the workspace below stands out.
     const border = confirming ? C.danger : a.focused ? C.accent : C.line;
@@ -1687,7 +1729,8 @@ export default class Board extends View {
         .child(project
           ? h_flex().flex_1().min_w(0).gap(5).items_center().text_color(C.ink).font_medium().tooltip(tilde(info.folder))
             .child(div().size(7).rounded(2).bg(C.accent).flex_none()).child(div().truncate().child(project.name))
-          : div().flex_1().min_w(0).truncate().font_family("Geist Mono").child(info ? tilde(info.folder) : a.space_name))
+          : div().flex_1().min_w(0).truncate().font_family("Geist Mono").tooltip(info ? tilde(info.folder) : "")
+            .child(info ? tilde(info.origin || worktreeHome(info.folder) || info.folder) : a.space_name))
         .when(!!info, el => el.child(div().font_family("Geist Mono").text_color(C.ink).child(`$${info.cost.toFixed(2)}`)))
         .child(div().flex_none().child(`· ${elapsed}`)));
   }
@@ -2442,14 +2485,15 @@ export default class Board extends View {
       cx.notify();
     });
   }
-  // + Agent: Claude to the right of the focused terminal of the shown tab, else in a new tab.
-  newAgent(active) {
+  // + Agent: Claude to the right of the focused terminal of the shown tab, else in a new tab; at the project root.
+  async newAgent(active) {
     const tab = active?.tabs.find(t => t.active);
     const inTab = panes().filter(p => p.tab === tab?.id && p.terminal);
     const pane = inTab.find(p => p.focused) ?? inTab[0];
-    if (pane) run("pane.split", { pane: pane.pane, direction: "right", argv: ["claude"] });
-    else run("tab.new", active
-      ? { space: active.id, folder: active.folder, name: "claude", argv: ["claude"] }
+    if (pane) return splitPane(pane.pane, "right", ["claude"]);
+    const folder = active && await spaceStart(active);
+    run("tab.new", active
+      ? { space: active.id, ...(folder ? { folder } : {}), name: "claude", argv: ["claude"] }
       : { name: "claude", argv: ["claude"] });
   }
   // Merge and split the shown space's tabs, beside + Agent.
@@ -3630,7 +3674,10 @@ export default class Board extends View {
       .child(h_flex().id("new-terminal").h(28).px(12).gap(6).items_center().rounded(6).flex_none().bg(C.accent).cursor_pointer()
         .text_size(12).font_semibold().text_color(C.card).hover(s => s.opacity(0.82))
         .tooltip("Open a shell in a new tab of this space")
-        .on_click(() => run("tab.new", active ? { space: active.id } : {}))
+        .on_click(async () => {
+          const folder = active && await spaceStart(active);
+          run("tab.new", active ? { space: active.id, ...(folder ? { folder } : {}) } : {});
+        })
         .child("+ Terminal"))
       .child(iconButton(C, "dock-toggle", collapsed ? "Expand terminals" : "Collapse terminals",
         collapsed ? "chevron-up" : "chevron-down", (_e, cx) => this.toggleDock(cx)));
@@ -3707,9 +3754,9 @@ export default class Board extends View {
         })))
       .when(!!p && !narrow && !asking, el => el
         .child(iconButton(C, `split-right-${p.pane}`, "Split right: a new terminal beside", "split-right",
-          () => run("pane.split", { pane: p.pane, direction: "right" })))
+          () => splitPane(p.pane, "right")))
         .child(iconButton(C, `split-down-${p.pane}`, "Split down: a new terminal below", "split-down",
-          () => run("pane.split", { pane: p.pane, direction: "down" })))
+          () => splitPane(p.pane, "down")))
         .when(!!p.terminal, el => el.child(iconButton(C, `detach-${p.pane}`, "Move to its own tab, in its project's space when one is open", "external",
           () => queuePaneJob({ kind: "detach", terminal: p.terminal }))))
         .when(!!agent, el => el.child(iconButton(C, `restart-${p.pane}`, "Restart Claude in the same session", "restart",
@@ -3980,8 +4027,8 @@ export default class Board extends View {
         (cx) => { copyText(cx, info.sid); close(); })))
       .when(!!info, el => el.child(item("panemenu-compact-ask", "Compact the context…", "compact",
         (cx) => { this.compacting = true; cx.notify(); })))
-      .child(item("panemenu-right", "Split right", "split-right", () => { run("pane.split", { pane, direction: "right" }); close(); }))
-      .child(item("panemenu-down", "Split down", "split-down", () => { run("pane.split", { pane, direction: "down" }); close(); }))
+      .child(item("panemenu-right", "Split right", "split-right", () => { splitPane(pane, "right"); close(); }))
+      .child(item("panemenu-down", "Split down", "split-down", () => { splitPane(pane, "down"); close(); }))
       .when(!!p.terminal, el => el.child(item("panemenu-detach", "Move to its own tab", "external",
         () => { queuePaneJob({ kind: "detach", terminal: p.terminal }); close(); })))
       .when(!!p.terminal && agents().some(a => a.address === p.terminal), el => el.child(item("panemenu-restart", "Restart in the same session", "restart",

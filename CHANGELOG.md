@@ -2,6 +2,11 @@
 
 Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHub release notes.
 
+## 0.1.15
+
+- Board: a card of an agent in a worktree shows its project, not the worktree path. Outside a saved project it shows the repository folder; the full path is in the tooltip.
+- "+ Agent", "+ Terminal", split right and split down start at the project root, not in a worktree an agent opened.
+
 ## 0.1.14
 
 - Diffs (Changes, Log, file History): drag over lines, or Shift-click, to pick them; ⌘C or the "Copy N lines" button copies their text. Rows now take the whole width.

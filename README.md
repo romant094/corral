@@ -106,10 +106,10 @@ The view switch at the top changes what the top area shows: Board, Files, Log or
 
 ![Board](docs/images/board.png)
 
-- **Columns:** Needs you, Working, Done, Idle. A card shows the model, the session id (click to copy), the task, context use with tokens, the project, the cost and the time in this status. The focused agent's card is outlined. A session that has done work asks before it closes. ↺ restarts the agent: Claude starts again on the same session (`claude --resume`) beside it, in its folder, and the old pane closes.
+- **Columns:** Needs you, Working, Done, Idle. A card shows the model, the session id (click to copy), the task, context use with tokens, the project, the cost and the time in this status. An agent in a worktree of a project shows that project; outside a saved project the card shows the repository folder, not the worktree. The focused agent's card is outlined. A session that has done work asks before it closes. ↺ restarts the agent: Claude starts again on the same session (`claude --resume`) beside it, in its folder, and the old pane closes.
 - **Context colors:** green below 50%, yellow from 50%, red from 80%, as in the statusline. The 5-hour and 7-day plan limits in the header use the same colors and show the reset time. A window whose reset time has passed shows 0%. When a Claude agent works but no session data came for 10 minutes, a yellow "Limits stale" pill says so: the statusline hook does not run (check `statusLine` in `~/.claude/settings.json`).
 - **Filters:** "All projects" and "All statuses" open lists with checkboxes. A status you leave out hides its column.
-- **+ Agent** starts Claude to the right of the focused terminal of the shown tab, in that terminal's folder. With no terminal in the tab, it opens a new tab.
+- **+ Agent** starts Claude to the right of the focused terminal of the shown tab, at the root of its project. With no terminal in the tab, it opens a new tab. New agents and terminals never start in a worktree: "+ Agent", "+ Terminal", split right and split down start at the project root (outside a saved project, at the root of the git repository).
 
 ![Card states](docs/images/cards.png)
 
