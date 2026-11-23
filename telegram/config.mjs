@@ -15,6 +15,7 @@ export function paths(env = process.env) {
     lock: join(dir, "telegram.lock"),
     inbox: join(dir, "inbox"),
     log: join(dir, "telegram.log"),
+    topics: join(dir, "telegram-topics.json"),
   };
 }
 
@@ -114,6 +115,32 @@ export async function loadState(file) {
   } catch {
     return emptyState();
   }
+}
+
+// Every topic the bridge made, by group. Clear all forgets the state but not this file,
+// so /clear still finds a topic whose agent the state no longer knows.
+export async function loadRegistry(file) {
+  try {
+    const saved = JSON.parse(await readFile(file, "utf8"));
+    return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+  } catch {
+    return {};
+  }
+}
+
+// One group's list: add on create, drop on delete.
+export function makeRegistry(list = [], save = () => {}) {
+  return {
+    add(id) { if (!list.includes(id)) { list.push(id); save(); } },
+    drop(id) { const i = list.indexOf(id); if (i >= 0) { list.splice(i, 1); save(); } },
+    ids: () => [...list],
+  };
+}
+
+// Topics the bridge made that no agent and no ended entry holds: the state lost them.
+export function orphans(state, registry, settings) {
+  const own = new Set([...Object.values(state.agents).map(a => a.topic_id), ...state.ended.map(e => e.topic_id), settings.root_topic_id]);
+  return registry.ids().filter(id => !own.has(id));
 }
 
 // Temp file and rename: the mod never reads half a file.

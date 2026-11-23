@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { makeSync, topicName, pickIcons } from "../agents.mjs";
+import { makeSync, topicName, pickIcons, resumedSession } from "../agents.mjs";
 import { world, term, status } from "./helpers.mjs";
 
 const tick = () => new Promise(r => setTimeout(r, 5));
@@ -8,7 +8,7 @@ const tick = () => new Promise(r => setTimeout(r, 5));
 function setup(opts) {
   const w = world(opts);
   const icons = Object.fromEntries(["starting", "working", "blocked", "done", "idle", "ended"].map(k => [k, `i-${k}`]));
-  const sync = makeSync({ ...w, icons, throttleMs: 0, blockedDelayMs: 0, replyRetryMs: 0, startCheckMs: 1, ...opts?.sync });
+  const sync = makeSync({ ...w, icons, throttleMs: 0, blockedDelayMs: 0, replyRetryMs: 0, sessionRetryMs: 0, startCheckMs: 1, ...opts?.sync });
   const feed = async (msg) => { for (const c of w.herd.apply(msg)) await sync.handle(c); await tick(); };
   return { ...w, sync, feed };
 }
@@ -244,4 +244,73 @@ test("/new: a terminal that ends before Claude starts closes its topic", async (
   await tick();
   assert.equal(s.api.of("closeForumTopic").length, 1);
   assert.equal(s.state.agents.t5, undefined);
+});
+
+// hc get answers with the command line each terminal runs.
+const argvs = (s, map) => { s.hc.get = async (t) => ({ foreground: { argv: map[t] ?? ["claude"], pid: 1 } }); };
+const finished = (t) => ({ method: "event", params: { type: "finished", terminal: t, data: {} } });
+
+test("resumedSession reads --resume, -r and --resume=", () => {
+  assert.equal(resumedSession(["claude", "--resume", "abc"]), "abc");
+  assert.equal(resumedSession(["claude", "-r", "abc"]), "abc");
+  assert.equal(resumedSession(["claude", "--resume=abc"]), "abc");
+  assert.equal(resumedSession(["claude", "--resume", "--model", "x"]), null);
+  assert.equal(resumedSession(["claude"]), null);
+  assert.equal(resumedSession(undefined), null);
+});
+
+test("a session resumed in another terminal opens its ended topic again", async () => {
+  const s = setup({ sync: { session: async () => ({ session_id: "S1" }) } });
+  argvs(s, { t2: ["claude", "--resume", "S1"] });
+  await s.feed({ terminals: [term("t1")] });
+  assert.equal(s.state.agents.t1.session_id, "S1");
+  await s.feed(finished("t1"));
+  assert.deepEqual(s.state.ended.map(e => [e.topic_id, e.session_id]), [[101, "S1"]]);
+  await s.feed({ terminals: [term("t2")] });
+  await tick();
+  assert.equal(s.api.of("createForumTopic").length, 1);
+  assert.deepEqual(s.api.of("reopenForumTopic").map(c => c.params.message_thread_id), [101]);
+  assert.equal(s.state.agents.t2.topic_id, 101);
+  assert.deepEqual(s.state.ended, []);
+  assert.match(s.api.of("sendMessage").at(-1).params.text, /^Resumed in/);
+  assert.equal(s.api.of("editForumTopic").at(-1).params.icon_custom_emoji_id, "i-idle");
+});
+
+test("Restart: the new terminal takes the live topic over, and the old one ending closes nothing", async () => {
+  const s = setup({ sync: { session: async () => ({ session_id: "S1" }) } });
+  argvs(s, { t2: ["claude", "--resume", "S1"] });
+  await s.feed({ terminals: [term("t1")] });
+  await s.feed({ terminals: [term("t1"), term("t2")] });
+  await tick();
+  assert.equal(s.state.agents.t2.topic_id, 101);
+  assert.equal(s.state.agents.t1, undefined);
+  await s.feed(status("t1", "working"));
+  await s.feed({ terminals: [term("t2")] });
+  assert.equal(s.api.of("createForumTopic").length, 1);
+  assert.equal(s.api.of("closeForumTopic").length, 0);
+  assert.deepEqual(s.state.ended, []);
+});
+
+test("a resumed session whose topic was deleted gets a new one", async () => {
+  const s = setup();
+  argvs(s, { t2: ["claude", "--resume", "S1"] });
+  s.state.ended.push({ topic_id: 40, title: "[t1] x", ended_at: "", session_id: "S1" });
+  const call = s.api.call;
+  s.api.call = async (m, p) => {
+    if (m === "reopenForumTopic") throw new Error("reopenForumTopic: 400 Bad Request: TOPIC_ID_INVALID");
+    return call(m, p);
+  };
+  await s.feed({ terminals: [term("t2")] });
+  assert.equal(s.api.of("createForumTopic").length, 1);
+  assert.equal(s.state.agents.t2.topic_id, 101);
+  assert.equal(s.state.agents.t2.session_id, "S1");
+});
+
+test("the registry holds each made topic until it is deleted", async () => {
+  const s = setup();
+  await s.feed({ terminals: [term("t1"), term("t2")] });
+  assert.deepEqual(s.registry.ids(), [101, 102]);
+  await s.sync.endAgent("t1", "delete");
+  await s.feed({ method: "event", params: { type: "removed", terminal: "t1", data: {} } });
+  assert.deepEqual(s.registry.ids(), [102]);
 });

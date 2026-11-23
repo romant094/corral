@@ -15,7 +15,7 @@ const tick = () => new Promise(r => setTimeout(r, 5));
 
 async function setup({ terminals = [term("t1")], screen = "" } = {}) {
   const w = world({ terminals: [], screen });
-  const sync = makeSync({ ...w, throttleMs: 0, blockedDelayMs: 0, replyRetryMs: 0 });
+  const sync = makeSync({ ...w, throttleMs: 0, blockedDelayMs: 0, replyRetryMs: 0, sessionRetryMs: 0 });
   const inbox = await mkdtemp(join(tmpdir(), "inbox-"));
   const commands = makeCommands({ ...w, sync, dashboard: { refresh() {} }, inbox, bot: "corral_bot", nowSec: () => 1000 });
   const feed = async (msg) => { for (const c of w.herd.apply(msg)) await sync.handle(c); await tick(); };

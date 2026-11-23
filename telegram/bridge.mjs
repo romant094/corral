@@ -8,7 +8,7 @@
 //   node bridge.mjs --restore-general --json  show and reopen General, the root topic, after it was hidden//   node bridge.mjs --service install|start|stop|restart|uninstall|status   the bridge under launchd
 import { readFile, writeFile, unlink, mkdir, chmod } from "node:fs/promises";
 import { writeFileSync, unlinkSync } from "node:fs";
-import { paths, loadSettings, loadState, saveState, trimLog } from "./config.mjs";
+import { paths, loadSettings, loadState, saveState, trimLog, loadRegistry, makeRegistry } from "./config.mjs";
 import { makeApi } from "./telegram.mjs";
 import { makeHc, makeHerd } from "./herdr.mjs";
 import { makeSync, loadIcons } from "./agents.mjs";
@@ -192,16 +192,26 @@ async function run() {
     }).then(() => { state.keyboard_version = KEYBOARD_VERSION; save(); }).catch(err => log(`keyboard: ${err.message}`));
   }
 
+  // The topics this bridge made in this group, in their own file: Clear all keeps it. The state's
+  // topics go in at the start, for a registry that begins after them.
+  const topicsFile = await loadRegistry(P.topics);
+  const made = (topicsFile[settings.chat_id] ??= []);
+  let savingTopics = Promise.resolve();
+  const registry = makeRegistry(made, () => {
+    savingTopics = savingTopics.then(() => saveState(P.topics, topicsFile)).catch(err => log(`save topics: ${err.message}`));
+  });
+  for (const id of [...Object.values(state.agents).map(a => a.topic_id), ...state.ended.map(e => e.topic_id)]) registry.add(id);
+
   const hc = makeHc();
   const herd = makeHerd(Date.now, (address) => !!state.agents[address]);
   const buttons = makeButtons();
   const icons = await loadIcons(api, log);
-  const dashboard = makeDashboard({ api, settings, state, save, herd, log });
+  const dashboard = makeDashboard({ api, settings, state, save, herd, log, registry });
   // The reply format and fold limit come from the settings file at each reply, so Corral changes them
   // without restarting the bridge. A file that does not read keeps the ones from the start.
   const formatting = () => loadSettings(P.settings, { partial: true }).catch(() => settings);
-  const sync = makeSync({ api, hc, settings, state, save, log, buttons, herd, icons, lastReply, session, formatting });
-  const commands = makeCommands({ api, hc, settings, state, save, herd, sync, buttons, dashboard, inbox: P.inbox, log, bot: me.username, session });
+  const sync = makeSync({ api, hc, settings, state, save, log, buttons, herd, icons, registry, lastReply, session, formatting });
+  const commands = makeCommands({ api, hc, settings, state, save, herd, sync, buttons, dashboard, inbox: P.inbox, log, registry, bot: me.username, session });
 
   // Agents → Telegram. Changes are handled in order, one at a time.
   let first = true, queue = Promise.resolve();

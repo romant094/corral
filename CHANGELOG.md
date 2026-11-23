@@ -6,6 +6,8 @@ Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHu
 
 - Board: a card of an agent in a worktree shows its project, not the worktree path. Outside a saved project it shows the repository folder; the full path is in the tooltip.
 - "+ Agent", "+ Terminal", split right and split down start at the project root, not in a worktree an agent opened.
+- Telegram: a topic belongs to the Claude session, not to the terminal. Restart, Restore after a reboot and `claude --resume` keep the session's topic; a closed one opens again with "Resumed in …".
+- Telegram: `/clear` and Clear all under the dashboard also delete the bot's topics that no agent holds, such as those left after Clear all in the settings. The bridge keeps the list of its topics in `telegram-topics.json`.
 
 ## 0.1.14
 

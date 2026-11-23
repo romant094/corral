@@ -1,7 +1,7 @@
 // Telegram → agents: what a message or a button press in the group does.
 import { escapeHtml } from "./telegram.mjs";
-import { rememberChat, rememberMessage } from "./config.mjs";
-import { renderStatus, renderAgent } from "./dashboard.mjs";
+import { rememberChat, rememberMessage, makeRegistry, orphans } from "./config.mjs";
+import { renderStatus, renderAgent, clearable } from "./dashboard.mjs";
 import { parseChoices } from "./dialog.mjs";
 import { dialogKey } from "./agents.mjs";
 import { projectOf } from "./herdr.mjs";
@@ -86,7 +86,7 @@ const OURS = new Set(COMMANDS.map(c => c.command));
 export const STALE_SECONDS = 120;
 
 export function makeCommands({
-  api, hc, settings, state, save, herd, sync, buttons, dashboard, inbox, log,
+  api, hc, settings, state, save, herd, sync, buttons, dashboard, inbox, log, registry = makeRegistry(),
   bot = null, nowSec = () => Date.now() / 1000, session = async () => null, noticeMs = 5000,
 }) {
   const chat_id = settings.chat_id;
@@ -132,13 +132,17 @@ export function makeCommands({
     if (cmd.name === "clear") return askClear(msg);
   }
 
-  // The confirm press deletes exactly the topics the question counted.
+  // The confirm press deletes exactly the topics the question counted: those of ended
+  // agents, and those the bridge made but no longer knows (the state was cleared).
   async function askClear(msg) {
-    const n = state.ended.length;
-    if (!n) return reply(msg, "Nothing to clear.");
-    return reply(msg, `Delete ${n} topic${n === 1 ? "" : "s"} of ended agents?`, {
+    const topics = clearable(state, registry, settings);
+    if (!topics.length) return reply(msg, "Nothing to clear.");
+    const plural = (k) => `${k} topic${k === 1 ? "" : "s"}`;
+    const ended = state.ended.length, lost = topics.length - ended;
+    const what = [ended && `${plural(ended)} of ended agents`, lost && `${plural(lost)} with no agent`].filter(Boolean).join(" and ");
+    return reply(msg, `Delete ${what}?`, {
       reply_markup: { inline_keyboard: [[
-        { text: "Delete all", callback_data: buttons.register({ type: "clear", topics: state.ended.map(e => e.topic_id) }) },
+        { text: "Delete all", callback_data: buttons.register({ type: "clear", topics }) },
         { text: "Cancel", callback_data: buttons.register({ type: "cancel" }) },
       ]] },
     });
@@ -248,6 +252,7 @@ export function makeCommands({
       if (!/thread not found|TOPIC_ID_INVALID/i.test(err.message)) throw err;
     }
     state.ended = state.ended.filter(e => e.topic_id !== topicId);
+    registry.drop(topicId);
     save();
   }
 
@@ -312,11 +317,13 @@ export function makeCommands({
       }
       case "clear": {
         buttons.drop(q.data);
-        const list = state.ended.filter(e => entry.topics.includes(e.topic_id));
+        // Only what is still clearable: a topic its agent took back since the question stays.
+        const now = new Set([...state.ended.map(e => e.topic_id), ...orphans(state, registry, settings)]);
+        const list = entry.topics.filter(id => now.has(id));
         await answer(q);
         let n = 0;
-        for (const e of list) {
-          try { await deleteTopic(e.topic_id); n++; } catch (err) { log(`delete topic ${e.topic_id}: ${err.message}`); }
+        for (const id of list) {
+          try { await deleteTopic(id); n++; } catch (err) { log(`delete topic ${id}: ${err.message}`); }
         }
         dashboard.refresh();
         return edit(q, `Deleted ${n} topic${n === 1 ? "" : "s"}.`);

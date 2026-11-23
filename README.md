@@ -189,6 +189,8 @@ Keep the group to yourself and the bot: everyone in it reads the agents' screens
 
 Each topic rename shows as a line in the topic. Mute the group if they distract you: the agents' questions still arrive.
 
+A topic belongs to a Claude session, not to a terminal. A session that goes on elsewhere (Restart, Restore after a reboot, `claude --resume`) keeps its topic: a closed one opens again with "Resumed in …".
+
 ### Commands
 
 | Command | Where | What it does |
@@ -196,7 +198,7 @@ Each topic rename shows as a line in the topic. Mute the group if they distract 
 | `/new` | root topic | buttons with your workspaces; a press starts Claude there, to the right of the workspace's agents |
 | `/status` | root topic | all agents, their status and a link to their topic |
 | `/status` | agent topic | this agent, as its card: status, model, context, cost, folder |
-| `/clear` | root topic | delete the topics of ended agents (also **Clear all** under the dashboard) |
+| `/clear` | root topic | delete the topics of ended agents and the bot's topics with no agent, such as those left after Clear all in the settings (also **Clear all** under the dashboard) |
 | `/stop` | agent topic | stop the current turn (Esc) |
 | `/close` | agent topic | end the agent and close or delete its topic |
 | `/help` | anywhere | the commands of this topic, and the command keyboard again |

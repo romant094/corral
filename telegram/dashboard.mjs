@@ -2,6 +2,7 @@
 // status, how long it has been in it, and a link to its topic.
 import { escapeHtml, topicLink } from "./telegram.mjs";
 import { EMOJI, topicName } from "./agents.mjs";
+import { makeRegistry, orphans } from "./config.mjs";
 
 export function duration(ms) {
   const min = Math.floor(ms / 60000);
@@ -46,22 +47,24 @@ export async function renderAgent(agent, name, session, now = Date.now()) {
   return lines.join("\n");
 }
 
+// What /clear deletes: the topics of ended agents and the topics the state lost.
+export const clearable = (state, registry, settings) => [...state.ended.map(e => e.topic_id), ...orphans(state, registry, settings)];
+
 // A fixed callback_data, not a registered button: the pinned dashboard lives
 // for days and must not expire.
-export const clearButton = (state) =>
-  state.ended.length
-    ? { inline_keyboard: [[{ text: `Clear all (${state.ended.length})`, callback_data: "clearask" }]] }
-    : { inline_keyboard: [] };
+export const clearButton = (n) =>
+  n ? { inline_keyboard: [[{ text: `Clear all (${n})`, callback_data: "clearask" }]] } : { inline_keyboard: [] };
 
-export function makeDashboard({ api, settings, state, save, herd, log, throttleMs = 10000, now = () => Date.now() }) {
+export function makeDashboard({ api, settings, state, save, herd, log, registry = makeRegistry(), throttleMs = 10000, now = () => Date.now() }) {
   const chat_id = settings.chat_id;
   let timer = null, at = 0, last = null, drawing = Promise.resolve();
 
   async function draw() {
     const time = new Date(now()).toTimeString().slice(0, 5);
     const text = `${renderStatus(herd.list(), state, chat_id, now())}\n\n<i>updated ${time}</i>`;
-    const reply_markup = clearButton(state);
-    const key = text.replace(/updated \d\d:\d\d/, "") + state.ended.length;
+    const n = clearable(state, registry, settings).length;
+    const reply_markup = clearButton(n);
+    const key = text.replace(/updated \d\d:\d\d/, "") + n;
     // A dashboard posted in another root topic (or another group) stays there; the root gets a new one.
     const where = `${chat_id}/${settings.root_topic_id ?? "general"}`;
     if (state.dashboard_message_id && (state.dashboard_where ?? where) !== where) {

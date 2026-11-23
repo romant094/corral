@@ -4,6 +4,7 @@
 import { escapeHtml, splitText } from "./telegram.mjs";
 import { richParts, splitParts, markdownToHtml, HTML_PART_CHARS } from "./format.mjs";
 import { tailScreen, parseChoices } from "./dialog.mjs";
+import { makeRegistry } from "./config.mjs";
 
 export const EMOJI = { starting: "🎬", working: "⚡", blocked: "❓", done: "✅", idle: "☕", ended: "🏁" };
 
@@ -51,10 +52,21 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 // What a dialog asks, to tell one dialog from the next while the agent waits.
 export const dialogKey = (options) => (options ?? []).map(o => `${o.n}.${o.label}`).join("|");
 
+// The Claude session a command line resumes: `claude --resume <id>`, `-r <id>` or `--resume=<id>`.
+export function resumedSession(argv) {
+  const list = Array.isArray(argv) ? argv : [];
+  for (let i = 0; i < list.length; i++) {
+    const a = String(list[i]);
+    if (a.startsWith("--resume=")) return a.slice(9) || null;
+    if ((a === "--resume" || a === "-r") && list[i + 1] && !String(list[i + 1]).startsWith("-")) return String(list[i + 1]);
+  }
+  return null;
+}
+
 export function makeSync({
-  api, hc, settings, state, save, log, buttons, herd, icons = {},
+  api, hc, settings, state, save, log, buttons, herd, icons = {}, registry = makeRegistry(),
   lastReply, session = async () => null, formatting = async () => settings, throttleMs = 10000, blockedDelayMs = 1500, now = () => Date.now(),
-  replyTries = 6, replyRetryMs = 500, startCheckMs = 5000, startGiveUpMs = 300000,
+  replyTries = 6, replyRetryMs = 500, startCheckMs = 5000, startGiveUpMs = 300000, sessionTries = 4, sessionRetryMs = 500,
 }) {
   const chat_id = settings.chat_id;
   const posted = new Map();    // address → the last reply posted, to tell a new one
@@ -62,6 +74,7 @@ export function makeSync({
   const creating = new Map();  // address → Promise of the new topic
   const questions = new Map(); // address → { qid, message_id, labels, pending } of the latest question
   const ending = new Map();    // address → "close" | "delete", set by /close
+  const moved = new Set();     // addresses whose session went on in another terminal, with its topic
   let qids = 0;
 
   const send = (topicId, text, extra = {}) =>
@@ -73,21 +86,75 @@ export function makeSync({
     return topicName(agent.project, title);
   }
 
-  async function create(agent, name, iconState) {
+  // The Claude session in a terminal: the id its command line resumes, else the one its
+  // statusline reports. The statusline comes a moment after Claude starts, so it is asked a few times.
+  async function sessionIdOf(agent, tries = sessionTries) {
+    for (let i = 0; i < tries; i++) {
+      const fg = (await hc.get?.(agent.address).catch(() => null))?.foreground;
+      const sid = resumedSession(fg?.argv) ?? (await session(fg?.pid ?? agent.pid))?.session_id;
+      if (sid) return sid;
+      if (i < tries - 1) await sleep(sessionRetryMs);
+    }
+    return null;
+  }
+
+  async function create(agent, name, iconState, session_id) {
     const icon = icons[iconState];
     const topic = await api.call("createForumTopic", { chat_id, name, ...(icon ? { icon_custom_emoji_id: icon } : {}) });
-    state.agents[agent.address] = { topic_id: topic.message_thread_id, title: topic.name, icon: icon ?? null, icon_ok: !!icon, state: iconState };
+    registry.add(topic.message_thread_id);
+    state.agents[agent.address] = { topic_id: topic.message_thread_id, title: topic.name, icon: icon ?? null, icon_ok: !!icon, state: iconState, session_id: session_id ?? null };
     save();
     await send(topic.message_thread_id, `Started in <code>${escapeHtml(agent.cwd)}</code>`);
     return topic.message_thread_id;
   }
 
-  // The agent's topic, made on first need. A topic deleted by hand is made again.
+  // A session that goes on in another terminal (a restart, Restore, `claude --resume`) keeps its
+  // topic: an ended one opens again, and a live one moves over from the terminal it leaves.
+  // Null when the session has no topic, or its topic is gone.
+  async function resume(agent, session_id) {
+    if (!session_id) return null;
+    const from = Object.keys(state.agents).find(a => a !== agent.address && state.agents[a].session_id === session_id);
+    if (from) {
+      const known = state.agents[from];
+      delete state.agents[from];
+      // Still an agent there (Restart: the new pane comes before the old one closes): its ended event is the topic's no more.
+      if (herd.get(from)) moved.add(from);
+      state.agents[agent.address] = { ...known, state: agent.state };
+      save();
+      log(`${agent.address} took over topic ${known.topic_id} from ${from}`);
+      scheduleRename(agent.address);
+      return known.topic_id;
+    }
+    const i = state.ended.findLastIndex(e => e.session_id === session_id);
+    if (i < 0) return null;
+    const e = state.ended[i];
+    state.ended.splice(i, 1);
+    save();
+    try {
+      await api.call("reopenForumTopic", { chat_id, message_thread_id: e.topic_id });
+    } catch (err) {
+      if (TOPIC_GONE.test(err.message)) { registry.drop(e.topic_id); return null; }
+      if (!NOT_MODIFIED.test(err.message)) log(`reopen topic ${e.topic_id}: ${err.message}`);
+    }
+    // The icon was 🏁: set as not taken, so the next rename sends the agent's own.
+    state.agents[agent.address] = { topic_id: e.topic_id, title: e.title, icon: icons.ended ?? null, icon_ok: false, state: agent.state, session_id };
+    save();
+    await send(e.topic_id, `Resumed in <code>${escapeHtml(agent.cwd)}</code>`).catch(err => log(`post ${e.topic_id}: ${err.message}`));
+    log(`${agent.address} resumed topic ${e.topic_id}`);
+    scheduleRename(agent.address);
+    return e.topic_id;
+  }
+
+  // The agent's topic, made on first need: its session's topic when it has one, else a new one.
+  // A topic deleted by hand is made again.
   async function topicOf(agent, name, iconState = agent.state) {
     const known = state.agents[agent.address];
     if (known) return known.topic_id;
     if (!creating.has(agent.address)) {
-      const make = async () => create(agent, name ?? await nameOf(agent), iconState);
+      const make = async () => {
+        const session_id = await sessionIdOf(agent);
+        return (await resume(agent, session_id)) ?? create(agent, name ?? await nameOf(agent), iconState, session_id);
+      };
       creating.set(agent.address, make().finally(() => creating.delete(agent.address)));
     }
     return creating.get(agent.address);
@@ -108,6 +175,7 @@ export function makeSync({
       if (!TOPIC_GONE.test(err.message)) throw err;
       if (!herd.live(agent.address) || state.agents[agent.address]?.topic_id !== id) throw err;
       log(`topic of ${agent.address} is gone, making a new one`);
+      registry.drop(id);
       delete state.agents[agent.address];
       return fn(await topicOf(agent));
     }
@@ -140,6 +208,8 @@ export function makeSync({
     const name = await nameOf(agent);
     const icon = icons[agent.state] ?? null;
     known.state = agent.state;
+    const sid = (await session(agent.pid))?.session_id;
+    if (sid && known.session_id !== sid) { known.session_id = sid; save(); }
     // Only what changed goes: Telegram answers "not modified" to an edit whose
     // name is the same, and then keeps the old icon. An icon counts as set only
     // after Telegram took it (icon_ok); older state is checked once.
@@ -278,6 +348,8 @@ export function makeSync({
   }
 
   async function ended(agent) {
+    // Its session went on elsewhere with the topic: nothing here to close.
+    if (moved.delete(agent.address)) return;
     const r = renames.get(agent.address);
     if (r?.timer) clearTimeout(r.timer);
     renames.delete(agent.address);
@@ -291,7 +363,8 @@ export function makeSync({
     save();
     const id = known.topic_id;
     if (mode === "delete") {
-      await api.call("deleteForumTopic", { chat_id, message_thread_id: id }).catch(err => log(`delete topic ${id}: ${err.message}`));
+      await api.call("deleteForumTopic", { chat_id, message_thread_id: id })
+        .then(() => registry.drop(id), err => log(`delete topic ${id}: ${err.message}`));
       return;
     }
     // The 🏁 icon marks it; without one in Telegram's set, the name carries it.
@@ -303,13 +376,15 @@ export function makeSync({
       reply_markup: { inline_keyboard: [[{ text: "Delete topic", callback_data: buttons.register({ type: "deltopic", topic_id: id }) }]] },
     }).catch(err => log(`post ${id}: ${err.message}`));
     await api.call("closeForumTopic", { chat_id, message_thread_id: id }).catch(err => log(`close topic ${id}: ${err.message}`));
-    state.ended.push({ topic_id: id, title, ended_at: new Date(now()).toISOString() });
+    state.ended.push({ topic_id: id, title, ended_at: new Date(now()).toISOString(), session_id: known.session_id ?? null });
     save();
   }
 
   // One change from the herd. Errors are logged: one bad call must not stop the stream.
   async function handle(change) {
     const { kind, agent } = change;
+    // A terminal its session left still reports until it closes; the topic is not its own any more.
+    if (moved.has(agent.address) && kind !== "ended") return;
     try {
       if (kind === "added") {
         if (state.agents[agent.address]) scheduleRename(agent.address);

@@ -11,7 +11,7 @@ const tick = () => new Promise(r => setTimeout(r, 5));
 
 async function setup({ terminals = [term("t1")], screen = "" } = {}) {
   const w = world({ terminals: [], screen });
-  const sync = makeSync({ ...w, throttleMs: 0, blockedDelayMs: 0, replyRetryMs: 0 });
+  const sync = makeSync({ ...w, throttleMs: 0, blockedDelayMs: 0, replyRetryMs: 0, sessionRetryMs: 0 });
   const dashboard = { refresh: () => { w.refreshed = (w.refreshed ?? 0) + 1; } };
   const inbox = await mkdtemp(join(tmpdir(), "inbox-"));
   const commands = makeCommands({ ...w, sync, dashboard, inbox, noticeMs: 10 });
@@ -167,6 +167,18 @@ test("/clear deletes only ended topics, after the confirm press", async () => {
   assert.deepEqual(s.api.of("deleteForumTopic").map(c => c.params.message_thread_id), [40, 41]);
   assert.deepEqual(s.state.ended, []);
   assert.ok(!s.api.of("deleteForumTopic").some(c => c.params.message_thread_id === s.topic));
+});
+
+test("/clear also deletes topics the bridge made but the state lost", async () => {
+  const s = await setup();
+  s.state.ended.push({ topic_id: 40, title: "🏁 a", ended_at: "" });
+  for (const id of [s.topic, 40, 50, 51]) s.registry.add(id);
+  await s.commands.handle(s.msg("/clear", { thread: null }));
+  const ask = s.api.of("sendMessage").at(-1).params;
+  assert.equal(ask.text, "Delete 1 topic of ended agents and 2 topics with no agent?");
+  await s.press(ask.reply_markup.inline_keyboard[0][0].callback_data);
+  assert.deepEqual(s.api.of("deleteForumTopic").map(c => c.params.message_thread_id), [40, 50, 51]);
+  assert.deepEqual(s.registry.ids(), [s.topic]);
 });
 
 test("Delete topic button deletes an ended topic only", async () => {

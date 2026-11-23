@@ -1,6 +1,6 @@
 // Fakes shared by the tests: a Bot API that records calls, an hc that records
 // calls, and a herd fed with terminal snapshots.
-import { emptyState } from "../config.mjs";
+import { emptyState, makeRegistry } from "../config.mjs";
 import { makeHerd } from "../herdr.mjs";
 import { makeButtons } from "../buttons.mjs";
 
@@ -55,7 +55,7 @@ export function world({ terminals = [], screen = "", reply = null } = {}) {
   const state = emptyState();
   const buttons = makeButtons();
   const logs = [];
-  const base = { api, hc, herd, state, buttons, settings, save: () => {}, log: (m) => logs.push(m), lastReply: async () => reply };
+  const base = { api, hc, herd, state, buttons, settings, registry: makeRegistry(), save: () => {}, log: (m) => logs.push(m), lastReply: async () => reply };
   herd.apply({ terminals });
   return { ...base, logs };
 }

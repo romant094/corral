@@ -151,8 +151,8 @@ file, then rename).
   "offset": 912345678,
   "chats": [{ "id": -1001234567890, "title": "Corral", "forum": true }],
   "topics": { "-1001234567890": [{ "id": 17, "name": "Corral" }] },
-  "agents": { "t1y": { "topic_id": 42, "title": "⚡ gmail / Claude Code", "state": "working" } },
-  "ended": [{ "topic_id": 37, "title": "🏁 xnms / 1", "ended_at": "…" }],
+  "agents": { "t1y": { "topic_id": 42, "title": "⚡ gmail / Claude Code", "state": "working", "session_id": "6b84…" } },
+  "ended": [{ "topic_id": 37, "title": "🏁 xnms / 1", "ended_at": "…", "session_id": "51d0…" }],
   "dashboard_message_id": 1001
 }
 ```
@@ -162,10 +162,17 @@ file, then rename).
 - `chats` and `topics` hold every group and topic the bot has seen in updates
   (`my_chat_member`, messages, `forum_topic_created`). The Bot API cannot list
   them, so the wizard in tg-settings reads them from here.
-- `agents` maps a terminal address to its topic, so a restart reuses topics
-  and does not duplicate them.
-- `ended` lists the closed topics of ended agents that still exist, for
-  **Delete topic** and **Clear all**. A deleted topic leaves the list.
+- `agents` maps a terminal address to its topic and the Claude session in it,
+  so a restart reuses topics and does not duplicate them.
+- `ended` lists the closed topics of ended agents that still exist, with their
+  session, for **Delete topic**, **Clear all** and a resumed session. A deleted
+  topic leaves the list.
+
+`telegram-topics.json` — the registry: every topic the bridge made, by group
+(`{ "-1001234567890": [37, 42] }`). A topic leaves it when deleted. Clear all
+in the settings removes the state but not this file, so `/clear` still finds
+topics whose agent the state no longer knows. At start the bridge adds the
+topics of `agents` and `ended`.
 
 ## Behaviour
 
@@ -184,8 +191,16 @@ file, then rename).
   blocked ❓ ⁉ ❗, done ✅ 🏆, idle ☕ 💬, ended 🏁 🏆. The first of each is in
   the set groups get without Premium. A status with none of them gets no icon;
   an ended topic without one gets 🏁 in its name.
-- On a new agent: `createForumTopic` with the name and icon, store the
-  mapping, post one line: `Started in <cwd>`.
+- On a new agent: find its Claude session (`--resume <id>` in the
+  foreground's argv from `hc get`, else `session_id` in the statusline file,
+  asked up to 4 times 0.5 s apart). A session in `ended` gets its topic back:
+  `reopenForumTopic`, post `Resumed in <cwd>`, the icon follows the status. A
+  session another address holds (Restart opens the new pane before it closes
+  the old one) takes that topic over; the old address's events and its end are
+  then ignored. Else `createForumTopic` with the name and icon, store the
+  mapping, post one line: `Started in <cwd>`. A topic that is gone gets a new one.
+- A status change reads the session id again: `/clear` or `/resume` inside
+  Claude changes it.
 - On a status or title change: `editForumTopic` with the new name and icon.
   Edits for one topic are throttled to one per 10 s; the last state wins.
 - On `done`: post the last assistant message from the session transcript.
@@ -252,7 +267,7 @@ the inbox folder.
 |---|---|
 | `/new` | one inline button per space from `doc.get herdr-app`. A press starts `claude` in that space, to the right of the panes of its tab that holds Claude agents (else its first tab; with no tab, a new one), and answers `Started Claude in <space>`. Its topic is made at once, named `[project] starting`. Until Claude reports a status the bridge reads the screen every 5 s (for 5 min) and posts a question it finds (such as "trust this folder?") with its buttons. A terminal that ends before that gets the ended path. |
 | `/status` | each live agent: emoji, topic name, time in the current state, link to its topic. |
-| `/clear` | `Delete N topics of ended agents?` with **Delete all** / **Cancel**. Delete all → `deleteForumTopic` for each entry of `ended`, then `Deleted N topics`. With no ended topics: `Nothing to clear`. |
+| `/clear` | `Delete N topics of ended agents and M topics with no agent?` (each part only when not 0) with **Delete all** / **Cancel**. "With no agent": topics in the registry that neither `agents` nor `ended` holds. Delete all → `deleteForumTopic` for each of them still clearable, then `Deleted N topics`. With none: `Nothing to clear`. Topics made before the registry are not found: delete them by hand. |
 | `/help` | the command list for this topic |
 | other text | ignored |
 
