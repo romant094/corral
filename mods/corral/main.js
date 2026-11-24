@@ -2485,11 +2485,11 @@ export default class Board extends View {
       cx.notify();
     });
   }
-  // + Agent: Claude to the right of the focused terminal of the shown tab, else in a new tab; at the project root.
+  // + Agent: Claude at the right end of the shown tab (right of its last pane), else in a new tab; at the project root.
   async newAgent(active) {
     const tab = active?.tabs.find(t => t.active);
     const inTab = panes().filter(p => p.tab === tab?.id && p.terminal);
-    const pane = inTab.find(p => p.focused) ?? inTab[0];
+    const pane = inTab.at(-1);
     if (pane) return splitPane(pane.pane, "right", ["claude"]);
     const folder = active && await spaceStart(active);
     run("tab.new", active

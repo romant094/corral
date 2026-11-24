@@ -2,6 +2,10 @@
 
 Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHub release notes.
 
+## 0.1.16
+
+- Board: "+ Agent" starts the new agent at the right end of the shown tab (right of its last terminal), not beside the focused one.
+
 ## 0.1.15
 
 - Board: a card of an agent in a worktree shows its project, not the worktree path. Outside a saved project it shows the repository folder; the full path is in the tooltip.
