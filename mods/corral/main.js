@@ -282,8 +282,6 @@ const setChangeTree = (on) => {
 const ATTENTION = ["blocked", "done"];
 const RELOAD_MS = 3000;
 const PID_RETRY_MS = 10000;
-// No session file this long while a Claude agent works: the limits are shown as stale.
-const LIMITS_STALE_MS = 600000;
 const SYNC_MS = 250;
 const GIT_MS = 4000;
 const ROW_H = 20;
@@ -291,6 +289,8 @@ const ROW_H = 20;
 const DIFF_CHAR_W = 7.3;
 // Up to this many rows a diff draws each row, so lines can be picked by dragging; a longer one is a virtual list.
 const DIFF_DRAG_MAX = 2000;
+// A row of the changed-file list in a commit's details, with the 1px gap below it.
+const COMMIT_ROW = 27;
 // Changed-file trees: one indent step, and how far a file sits in from its folder (past the folder's chevron).
 const TREE_STEP = 20;
 const TREE_FILE = 17;
@@ -1578,12 +1578,7 @@ export default class Board extends View {
       // A new session has no rate limits until its first reply; take the newest one that has them.
       const latest = Object.values(byPid).filter(d => d.rate_limits)
         .sort((x, y) => (y.herdr_written_at ?? 0) - (x.herdr_written_at ?? 0))[0];
-      // A Claude agent works, yet no session file was written for a while: the statusline hook does not run
-      // (statusLine in ~/.claude/settings.json points elsewhere), and the limits are old.
-      const newest = Math.max(0, ...Object.values(byPid).map(d => d.herdr_written_at ?? 0)) * 1000;
-      const working = agents().some(a => a.status === "working" && /claude/i.test(a.program?.name ?? ""));
-      const stale = working && now - newest > LIMITS_STALE_MS;
-      const next = { sessions, limits: latest ? limitsOf(latest.rate_limits) : [], stale, staleSince: stale ? newest : 0 };
+      const next = { sessions, limits: latest ? limitsOf(latest.rate_limits) : [] };
       if (this.restoreReady) this.keepSessions(sessions, now);
       const text = JSON.stringify(next);
       if (text !== this.liveText) {
@@ -1757,7 +1752,6 @@ export default class Board extends View {
           .child(div().text_size(14).font_semibold().text_color(C.ink).child(active?.name ?? "No space"))
           .child(div().text_size(11).text_color(C.muted).child("▾"))))
         .child(div().flex_1())
-        .when(!!live().stale, el => el.child(this.staleLimits(C)))
         .when(plan.length > 0, el => el.child(limitPill(C, plan, "", C.ink, C.line)))
         .children(groups.map(g => limitPill(C, limits.filter(l => l.group === g),
           g[0].toUpperCase() + g.slice(1), C.fable, wash(C.fable, C))))
@@ -1781,17 +1775,6 @@ export default class Board extends View {
       .when(v === "files", el => el.child(this.filesBar(C)))
       .when(v === "changes", el => el.child(this.changesBar(C)))
       .when(v === "log", el => el.child(this.logBar(C)));
-  }
-  // Left of the limit pills while their data is old: the statusline hook has not written for a while.
-  staleLimits(C) {
-    const since = live().staleSince;
-    const mins = since ? Math.floor((Date.now() - since) / 60000) : null;
-    return h_flex().id("limits-stale").h(34).px(12).gap(6).items_center().rounded(7).flex_none()
-      .bg(wash(theme().blocked, C)).border(1).border_color(theme().blocked)
-      .text_size(12).font_semibold().text_color(theme().blocked)
-      .tooltip(`${mins != null ? `No status line data for ${mins} min` : "No status line data"} while agents work. `
-        + "Check that statusLine in ~/.claude/settings.json runs corral-statusline.py.")
-      .child("Limits stale");
   }
   // The gear right of the limit pills, as tall as they are; a dot when a section wants the person.
   gearButton(C) {
@@ -3002,20 +2985,16 @@ export default class Board extends View {
     const more = d?.body ? d.body.split("\n").slice(1).join("\n").trim() : "";
     const open = this.commitFile?.hash === c.hash ? this.commitFile.path : null;
     const sel = C.sel;
-    const fileRow = (f, depth) => h_flex().id(`commit-file-${f.path}`).h(26).flex_none().pl(8 + depth * TREE_STEP + TREE_FILE).pr(8).gap(8)
+    // A virtual list: a commit can change thousands of files, and drawing each row overran the render.
+    // Its rows take no handlers of their own; the list reports the key of the row pressed.
+    const fileRow = (f, depth) => h_flex().h(COMMIT_ROW - 1).pl(8 + depth * TREE_STEP + TREE_FILE).pr(8).gap(8)
       .items_center().rounded(5).cursor_pointer().bg(open === f.path ? sel : C.card).hover(s => s.bg(open === f.path ? sel : C.bar))
-      .on_click((_e, cx) => { this.openCommitFile(f, cx); cx.notify(); })
-      .on_mouse_down("right", (e, cx) => this.openPathMenu(e, `${g.root}/${f.path}`, cx))
       .child(div().w(14).flex_none().font_family("Geist Mono").text_size(11).font_semibold().text_color(markColor(f.mark)).child(f.mark))
       .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(C.ink).child(f.path.split("/").pop()))
       .child(num(`+${f.add}`, theme().done))
       .when(f.del > 0, el => el.child(num(`−${f.del}`, C.danger)));
-    const dirRow = (r) => h_flex().id(`commit-dir-${r.path}`).h(26).flex_none().pl(8 + r.depth * TREE_STEP).pr(8).gap(6).items_center()
+    const dirRow = (r) => h_flex().h(COMMIT_ROW - 1).pl(8 + r.depth * TREE_STEP).pr(8).gap(6).items_center()
       .rounded(5).cursor_pointer().hover(s => s.bg(C.bar)).text_size(12)
-      .on_click((_e, cx) => {
-        this.commitCollapsed.has(r.path) ? this.commitCollapsed.delete(r.path) : this.commitCollapsed.add(r.path);
-        cx.notify();
-      })
       .child(svg(`mods/${MOD}/icons/${this.commitCollapsed.has(r.path) ? "chevron-right" : "chevron-down"}.svg`)
         .size(11).text_color(C.dim).flex_none())
       .child(svg(`mods/${MOD}/icons/folder.svg`).size(13).text_color(C.accent).flex_none())
@@ -3033,11 +3012,30 @@ export default class Board extends View {
         .child(div().text_size(12).text_color(C.muted).child(logDate(c.time)))
         .when(this.refKinds(c.refs).length > 0, el => el.child(h_flex().flex_wrap().gap(4)
           .children(c.refs.map(r => this.refPill(C, r)).filter(Boolean)))))
-      .child(v_flex().id("commit-files").flex_1().min_h(0).overflow_y_scrollbar().p(6).gap(1)
+      .child(v_flex().flex_1().min_h(0).p(6).gap(1)
         .when(!d?.files, el => el.child(div().p(8).text_size(12).text_color(C.muted).child("Loading…")))
-        .when(!!d?.files, el => el
-          .child(div().px(8).py(4).text_size(11).text_color(C.muted).child(`${d.files.length} file${d.files.length === 1 ? "" : "s"} changed`))
-          .children(this.changeTree(d.files, this.commitCollapsed).map(r => r.dir ? dirRow(r) : fileRow(r.file, r.depth)))));
+        .when(!!d?.files, el => {
+          const rows = this.changeTree(d.files, this.commitCollapsed);
+          const keyOf = (r) => r.dir ? `d\t${r.path}` : `f\t${r.file.path}`;
+          const byKey = new Map(rows.map(r => [keyOf(r), r]));
+          return el
+            .child(div().flex_none().px(8).py(4).text_size(11).text_color(C.muted).child(`${d.files.length} file${d.files.length === 1 ? "" : "s"} changed`))
+            .child(v_virtual_list("commit-files", rows.length, COMMIT_ROW, (k) => keyOf(rows[k]),
+              (range) => rows.slice(range.start, range.end).map(r => r.dir ? dirRow(r) : fileRow(r.file, r.depth)))
+              .flex_1()
+              .on_item_click((key, cx) => {
+                const r = byKey.get(key);
+                if (!r) return;
+                if (!r.dir) this.openCommitFile(r.file, cx);
+                else if (this.commitCollapsed.has(r.path)) this.commitCollapsed.delete(r.path);
+                else this.commitCollapsed.add(r.path);
+                cx.notify();
+              })
+              .on_item_secondary_click((key, e, cx) => {
+                const r = byKey.get(key);
+                if (r && !r.dir) this.openPathMenu(e, `${g.root}/${r.file.path}`, cx);
+              }));
+        }));
   }
   logView(C) {
     const g = gitState();

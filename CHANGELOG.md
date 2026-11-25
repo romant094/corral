@@ -2,6 +2,11 @@
 
 Each release has a `## x.y.z` section; `scripts/release.sh` uses it as the GitHub release notes.
 
+## 0.1.17
+
+- Log: a commit that changes thousands of files no longer breaks the view; its file list draws only the rows in sight.
+- Limits: the "Limits stale" pill is gone; the limit pills always show the latest limits a session reported.
+
 ## 0.1.16
 
 - Board: "+ Agent" starts the new agent at the right end of the shown tab (right of its last terminal), not beside the focused one.
