@@ -9,7 +9,7 @@ import * as fs from "fs/promises";
 // The mod's folder name: icon paths and popups point back at it. install.sh --name rewrites it.
 const MOD = "corral";
 // This build's release; scripts/release.sh sets it. The Updates section compares it with GitHub's latest release.
-const VERSION = "0.1.16";
+const VERSION = "0.1.17";
 const FILTER_KEY = "corral.filter";
 const PROJECTS_KEY = "corral.projects";
 // Session data from the statusline hook (statusline/corral-statusline.py), published by the board copy.
